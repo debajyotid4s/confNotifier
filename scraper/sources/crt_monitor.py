@@ -17,7 +17,6 @@ BD_TLD_QUERIES = [
     "%.edu",
 ]
 
-CRTSH_URL = "https://crt.sh/?q={}&output=json"
 
 KEYWORDS = [
     "conference", "symposium", "workshop", "congress",
@@ -52,7 +51,7 @@ def _fetch_crt(query: str) -> list:
     Retries on 502 and timeout errors up to 3 times.
     Returns list of certificate entries or empty list on failure.
     """
-    url = CRTSH_URL.format(requests.utils.quote(query))
+    url = f"https://crt.sh/?q={query}&output=json"
     delays = [10, 20, 40]
 
     for attempt, delay in enumerate(delays, 1):
