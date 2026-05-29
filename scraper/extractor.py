@@ -13,9 +13,9 @@ logger = logging.getLogger(__name__)
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 MODELS = [
-    "google/gemma-4-26b-it:free",
     "meta-llama/llama-3.3-70b-instruct:free",
-    "deepseek/deepseek-chat-v4-free:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "deepseek/deepseek-v4-flash:free",
 ]
 MAX_TEXT_CHARS = 8000
 TIMEOUT_SEC = 60
