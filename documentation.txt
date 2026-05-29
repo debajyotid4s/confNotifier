@@ -1,0 +1,256 @@
+================================================================================
+  BD CONFERENCE BOT — PROJECT DOCUMENTATION
+================================================================================
+
+1. OVERVIEW
+--------------------------------------------------------------------------------
+An automated system that detects newly announced international conferences to
+be held in Bangladesh and notifies subscribers via a Telegram channel. Runs
+entirely on free infrastructure with zero manual intervention.
+
+  Detection:   crt.sh cert transparency + university homepage scanning +
+               special source monitoring (ICCIT, etc.)
+  Extraction:  OpenRouter LLM (3-model fallback chain)
+  Database:    PostgreSQL on Neon (free tier)
+  Scheduling:  GitHub Actions (cron every 6 hours)
+  Delivery:    Telegram public channel
+  Bot:         Koyeb (always-on free) — /start, /list, /subscribe
+
+
+2. DIRECTORY STRUCTURE
+--------------------------------------------------------------------------------
+bd-conf-bot/
+  .github/workflows/scraper.yml   — GitHub Actions cron job (every 6h)
+  config/
+    universities.json              — 159 Bangladeshi university domains
+    special_sources.json           — ICCIT and other independent confs
+  db/schema.sql                    — PostgreSQL table definitions
+  scraper/
+    __init__.py
+    browser.py                     — Selenium driver factory with anti-bot
+    main.py                        — Orchestrator: sources -> extract -> notify
+    extractor.py                   — OpenRouter LLM extraction (3 models)
+    deduplicator.py                — Duplicate check against PostgreSQL
+    notifier.py                    — Telegram message formatting + send
+    sources/
+      __init__.py
+      crt_monitor.py               — crt.sh cert transparency queries
+      homepage_links.py            — Scans uni homepages for outbound conf links
+      special.py                   — Probes ICCIT and similar independent confs
+  bot/bot.py                       — Telegram bot (webhook mode for Koyeb)
+  requirements.txt
+  .gitignore
+  README.md
+  BD_Conference_Bot_Full_Plan.md   — Original plan document
+  documentation.txt                — This file
+
+
+3. FILE DESCRIPTIONS
+--------------------------------------------------------------------------------
+
+config/universities.json
+  - JSON array of 159 Bangladeshi university domains (e.g. sust.edu, buet.ac.bd)
+  - Used by crt_monitor.py and homepage_links.py
+
+config/special_sources.json
+  - JSON array of independent conference base URLs
+  - Currently: ["https://iccit.org.bd"]
+
+db/schema.sql
+  - 3 tables: known_subdomains, seen_links, conferences
+  - Indexes on website, date_start, subdomain, and url columns
+  - NOTE: No subscribers table (not needed — delivery is channel-based)
+
+scraper/browser.py
+  - Selenium Chrome driver factory with anti-bot measures:
+    - --headless=new, --no-sandbox, --disable-blink-features
+    - Rotating user agents (3 Chrome versions)
+    - navigator.webdriver set to undefined via CDP
+    - set_page_load_timeout(20), set_script_timeout(10)
+  - human_delay(): random 1.5–4.0s pause
+  - slow_scroll(): scroll page in 4–8 random steps
+  - random_mouse_movement(): micro mouse movements via ActionChains
+  - load_page(): loads URL with retry logic (1 retry, 5s wait)
+  - BrowserManager: context manager for safe driver lifecycle
+
+scraper/sources/crt_monitor.py
+  - 3 broad crt.sh queries instead of 159 individual ones:
+    %.ac.bd, %.edu.bd, %.edu
+  - Filters results by conference-like subdomain patterns
+  - For %.edu results, filters by known BD university keywords
+  - Exponential backoff on 502/timeout (10s, 20s, 40s)
+  - Saves new subdomains to known_subdomains table
+  - Returns list of https:// URLs
+
+scraper/sources/homepage_links.py
+  - Uses Selenium to load each university homepage (HTTPS only)
+  - Extracts outbound <a href> links via BeautifulSoup
+  - Matches against regex patterns: ic[a-z]+\d{4}, conf[a-z]+, symposium, ieee, etc.
+  - Uses _save_link() — fresh DB connection per save, closed immediately
+  - Loads known links once upfront, then closes that connection
+  - Returns list of new candidate URLs
+
+scraper/sources/special.py
+  - Probes special source URLs with current year and next year
+  - Checks HTTP 200 + content > 500 chars
+  - Uses long-held DB connection for known links check + save
+  - Currently probes iccit.org.bd/2026/, iccit.org.bd/2027/
+  - Returns list of new candidate URLs
+
+scraper/extractor.py
+  - LLM extraction pipeline with 3-model fallback:
+    1. meta-llama/llama-3.3-70b-instruct:free
+    2. google/gemma-4-26b-a4b-it:free
+    3. deepseek/deepseek-v4-flash:free
+  - Fetches page text via Selenium + BeautifulSoup (first 8000 chars)
+  - Sends to OpenRouter with structured JSON prompt
+  - Strips markdown fences from response
+  - Returns parsed dict or None if all models fail
+  - Spawns new Chrome instance per URL (known performance issue)
+
+scraper/deduplicator.py
+  - Checks conferences table for duplicates by:
+    - website URL match (primary)
+    - title ILIKE + date_start match (secondary)
+  - Opens/closes its own DB connection per call
+  - Returns True if duplicate found
+
+scraper/notifier.py
+  - Formats conference data into emoji-rich Telegram message
+  - Generates PascalCase hashtags from title, category, city
+  - Posts to TELEGRAM_CHANNEL_ID via bot API
+  - Returns True/False on success/failure
+
+scraper/main.py
+  - Orchestrator that runs all phases:
+    Phase 1: crt_monitor.run()    (isolated try/except)
+    Phase 2: homepage_links.run() (isolated try/except)
+    Phase 3: special.run()        (isolated try/except)
+    Phase 4: Deduplicate + extract + save + notify loop
+  - One phase crashing does not kill the whole run
+  - Holds one DB connection for the extraction/notification phase
+  - Prints summary: X found, Y new, Z skipped, W failed
+
+bot/bot.py
+  - Telegram bot with 3 commands:
+    /start     — welcome message with channel link
+    /list      — queries upcoming conferences (LIMIT 10)
+    /subscribe — sends channel join link
+  - Runs in webhook mode on port 8080 (Koyeb deployment)
+  - Connects to same Neon PostgreSQL
+
+.github/workflows/scraper.yml
+  - Trigger: cron "0 */6 * * *" + workflow_dispatch
+  - Steps: install Chrome -> setup Python 3.11 -> pip install -> run scraper
+  - Passes 4 secrets: DATABASE_URL, OPENROUTER_API_KEY,
+    TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID
+  - Sets PYTHONPATH=. for scraper imports
+
+
+4. DATA FLOW (End to End)
+--------------------------------------------------------------------------------
+  crt.sh query (3 broad TLD queries)
+       |
+       v  New subdomain like icXXXX.university.ac.bd found
+       |
+  homepage_links (Selenium scans all 159 university homepages)
+       |
+       v  Outbound conf link found on a homepage
+       |
+  special.py (probes ICCIT and similar)
+       |
+       v  New annual edition detected
+       |
+  All candidates combined, deduplicated by URL set
+       |
+       v
+  extractor.py — load each URL in Selenium, send text to OpenRouter LLM
+       |
+       v  LLM returns structured JSON or null
+       |
+  deduplicator.py — check PostgreSQL for existing match
+       |
+       v  If new → save to conferences table
+       |
+  notifier.py — format + POST to Telegram channel
+       |
+       v  All channel subscribers see notification
+
+
+5. STATUS — Implemented vs Plan
+--------------------------------------------------------------------------------
+
+  All 16 files from the plan's "Files to Write" section exist.
+
+  Discrepancies from plan:
+  - LLM model order and exact model strings differ from plan
+  - No subscribers table in schema (not needed for channel-based delivery)
+  - Column names differ: source → raw_source, notified → is_notified
+  - README.md is outdated (references nonexistent files)
+  - universities.json has 159 domains (plan said 98)
+  - special.py probes /YYYY/ but ICCIT URL pattern is /YYYY/home/
+
+
+6. KNOWN ISSUES & TECHNICAL DEBT
+--------------------------------------------------------------------------------
+
+  a) extractor.py spawns a new Chrome instance per candidate URL
+     - Inefficient for many candidates; BrowserManager should be reused
+
+  b) special.py uses long-held DB connection
+     - Could benefit from same fresh-connection pattern as homepage_links.py
+
+  c) No shared db utility module
+     - DB connection code (3-retry pattern) is duplicated across 6 files
+
+  d) bot.py hardcodes CHANNEL_LINK and has no health check endpoint
+     - Koyeb may flag the service as unhealthy
+
+  e) Slow university homepages are fully skipped after 20s timeout + 1 retry
+     - Timeout kills the page but DOM may be partially available
+
+  f) special.py probes /YYYY/ not /YYYY/home/
+     - May miss ICCIT's actual URL pattern
+
+  g) No environment variable validation at startup
+     - Missing env vars cause KeyError at runtime
+
+
+7. INFRASTRUCTURE & SETUP
+--------------------------------------------------------------------------------
+
+  GitHub Secrets (required):
+    DATABASE_URL          — Neon PostgreSQL connection string
+    OPENROUTER_API_KEY    — From openrouter.ai (free account)
+    TELEGRAM_BOT_TOKEN    — From @BotFather
+    TELEGRAM_CHANNEL_ID   — Channel ID (e.g. @BDConferences)
+
+  One-time setup:
+    1. Create GitHub repo and push code
+    2. Sign up at neon.tech → create project → get DATABASE_URL
+    3. Run db/schema.sql on Neon to create tables
+    4. Sign up at openrouter.ai → get API key
+    5. Create bot via @BotFather → get TELEGRAM_BOT_TOKEN
+    6. Create public Telegram channel → add bot as admin
+    7. Add 4 secrets to GitHub repo (Settings → Secrets → Actions)
+    8. Deploy bot/bot.py on Koyeb with same env vars
+    9. Trigger first run manually via GitHub Actions → workflow_dispatch
+
+
+8. LLM MODELS (OpenRouter, all free)
+--------------------------------------------------------------------------------
+  Priority order:
+    1. meta-llama/llama-3.3-70b-instruct:free
+    2. google/gemma-4-26b-a4b-it:free
+    3. deepseek/deepseek-v4-flash:free
+
+  Fallback: if model N fails or returns invalid JSON, try N+1.
+  If all 3 fail → URL is logged and skipped (caught on next run).
+
+
+9. GITHUB ACTIONS SCHEDULE
+--------------------------------------------------------------------------------
+  .github/workflows/scraper.yml
+  - Cron: "0 */6 * * *" (every 6 hours)
+  - Also supports manual trigger via workflow_dispatch
+  - Estimated usage: ~360 min/month (18% of free quota)

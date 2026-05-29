@@ -1,5 +1,7 @@
 import logging
 import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -106,8 +108,32 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+class _HealthHandler(BaseHTTPRequestHandler):
+    """Handle GET /health for Koyeb health checks."""
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, format, *args):
+        pass
+
+
+def _start_health_check():
+    """Start a lightweight HTTP server for health checks in a daemon thread."""
+    port = int(os.environ.get("HEALTH_CHECK_PORT", "8081"))
+    server = HTTPServer(("0.0.0.0", port), _HealthHandler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    logger.info("Health check server listening on port %d", port)
+
+
 def main():
     """Start the bot in webhook mode for Koyeb deployment."""
+    _start_health_check()
+
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     app = Application.builder().token(token).build()
 

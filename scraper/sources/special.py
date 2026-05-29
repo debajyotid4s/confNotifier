@@ -79,10 +79,14 @@ def run():
         for base in sources:
             base = base.rstrip("/")
             for y in years_to_check:
-                url = f"{base}/{y}/"
-                if url in known:
-                    continue
-                if not _probe_url(url):
+                url = None
+                for candidate in [f"{base}/{y}/home/", f"{base}/{y}/"]:
+                    if candidate in known:
+                        continue
+                    if _probe_url(candidate):
+                        url = candidate
+                        break
+                if url is None:
                     continue
                 candidates.append(url)
                 known.add(url)
