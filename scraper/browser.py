@@ -35,6 +35,8 @@ def create_driver():
     driver.execute_script(
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
     )
+    driver.set_page_load_timeout(20)
+    driver.set_script_timeout(10)
     return driver
 
 

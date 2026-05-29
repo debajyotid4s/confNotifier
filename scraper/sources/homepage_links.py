@@ -100,10 +100,8 @@ def run():
             for domain in domains:
                 url = f"https://www.{domain}"
                 if not load_page(driver, url):
-                    url = f"http://www.{domain}"
-                    if not load_page(driver, url):
-                        logger.warning("Could not load homepage for %s", domain)
-                        continue
+                    logger.warning("Could not load %s, skipping", domain)
+                    continue
 
                 html = driver.page_source
                 soup = BeautifulSoup(html, "lxml")
