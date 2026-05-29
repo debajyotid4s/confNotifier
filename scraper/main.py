@@ -6,10 +6,10 @@ from datetime import datetime
 
 import psycopg2
 
-from scraper.sources import crt_monitor, homepage_links, special
-from scraper.extractor import extract
-from scraper.deduplicator import is_duplicate
-from scraper.notifier import notify
+from sources import crt_monitor, homepage_links, special
+from extractor import extract
+from deduplicator import is_duplicate
+from notifier import notify
 
 logging.basicConfig(
     level=logging.INFO,
