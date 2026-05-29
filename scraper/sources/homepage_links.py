@@ -2,7 +2,6 @@ import json
 import logging
 import os
 import re
-import time
 from urllib.parse import urlparse
 
 import psycopg2
@@ -62,20 +61,20 @@ def _build_url(base, href):
     return urljoin(base, href)
 
 
-def _get_db_connection():
-    """Create and return a new database connection with retry logic."""
-    dsn = os.environ["DATABASE_URL"]
-    for attempt in range(3):
-        try:
-            conn = psycopg2.connect(dsn)
-            return conn
-        except psycopg2.Error as e:
-            logger.error(
-                "DB connection attempt %d/3 failed: %s", attempt + 1, e,
-            )
-            if attempt < 2:
-                time.sleep(5)
-    raise RuntimeError("Could not connect to database after 3 attempts")
+def _save_link(url: str, source: str) -> None:
+    """Open a fresh connection, save link, close immediately."""
+    try:
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO seen_links (url, source) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            (url, source),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error("DB error saving link %s: %s", url, e)
 
 
 def run():
@@ -88,57 +87,40 @@ def run():
     """
     domains = _load_domains()
     candidates = []
-    conn = None
-    try:
-        conn = _get_db_connection()
-        cur = conn.cursor()
 
+    # Load known links with a fresh connection
+    try:
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        cur = conn.cursor()
         cur.execute("SELECT url FROM seen_links WHERE source = 'homepage'")
         known = {row[0] for row in cur.fetchall()}
-
-        with BrowserManager() as driver:
-            for domain in domains:
-                url = f"https://www.{domain}"
-                if not load_page(driver, url):
-                    logger.warning("Could not load %s, skipping", domain)
-                    continue
-
-                html = driver.page_source
-                soup = BeautifulSoup(html, "lxml")
-                for a_tag in soup.find_all("a", href=True):
-                    href = a_tag["href"].strip()
-                    if not href or href.startswith("#") or href.startswith("javascript:"):
-                        continue
-                    full_url = _build_url(url, href)
-                    if not _is_conference_link(full_url, domain):
-                        continue
-                    if full_url in known:
-                        continue
-                    candidates.append(full_url)
-                    known.add(full_url)
-                    try:
-                        cur.execute(
-                            "INSERT INTO seen_links (url, source) VALUES (%s, 'homepage') "
-                            "ON CONFLICT (url) DO UPDATE SET last_seen = NOW()",
-                            (full_url,),
-                        )
-                        conn.commit()
-                    except psycopg2.Error as e:
-                        conn.rollback()
-                        logger.error(
-                            "DB error saving link %s: %s", full_url, e,
-                        )
-
         cur.close()
+        conn.close()
     except Exception as e:
-        logger.error("homepage_links.run error: %s", e)
-        raise
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception as e:
-                logger.error("Error closing DB connection: %s", e)
+        logger.error("Failed to load known links: %s", e)
+        known = set()
+
+    with BrowserManager() as driver:
+        for domain in domains:
+            url = f"https://www.{domain}"
+            if not load_page(driver, url):
+                logger.warning("Could not load %s, skipping", domain)
+                continue
+
+            html = driver.page_source
+            soup = BeautifulSoup(html, "lxml")
+            for a_tag in soup.find_all("a", href=True):
+                href = a_tag["href"].strip()
+                if not href or href.startswith("#") or href.startswith("javascript:"):
+                    continue
+                full_url = _build_url(url, href)
+                if not _is_conference_link(full_url, domain):
+                    continue
+                if full_url in known:
+                    continue
+                candidates.append(full_url)
+                known.add(full_url)
+                _save_link(full_url, "homepage")
 
     logger.info(
         "homepage_links: found %d new conference-like links", len(candidates),

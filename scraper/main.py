@@ -103,21 +103,29 @@ def run():
         conn = _get_db_connection()
         logger.info("Connected to PostgreSQL")
 
-        logger.info("Phase 1: Running crt_monitor...")
-        crt_candidates = crt_monitor.run()
-        logger.info("crt_monitor returned %d candidates", len(crt_candidates))
+        # Phase 1
+        try:
+            crt_candidates = crt_monitor.run()
+            logger.info("crt_monitor returned %d candidates", len(crt_candidates))
+        except Exception as e:
+            logger.error("crt_monitor failed: %s", e)
+            crt_candidates = []
 
-        logger.info("Phase 2: Running homepage_links...")
-        homepage_candidates = homepage_links.run()
-        logger.info(
-            "homepage_links returned %d candidates", len(homepage_candidates),
-        )
+        # Phase 2
+        try:
+            homepage_candidates = homepage_links.run()
+            logger.info("homepage_links returned %d candidates", len(homepage_candidates))
+        except Exception as e:
+            logger.error("homepage_links failed: %s", e)
+            homepage_candidates = []
 
-        logger.info("Phase 3: Running special sources...")
-        special_candidates = special.run()
-        logger.info(
-            "special returned %d candidates", len(special_candidates),
-        )
+        # Phase 3
+        try:
+            special_candidates = special.run()
+            logger.info("special returned %d candidates", len(special_candidates))
+        except Exception as e:
+            logger.error("special failed: %s", e)
+            special_candidates = []
 
         all_candidates = list(
             set(crt_candidates + homepage_candidates + special_candidates)
