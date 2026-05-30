@@ -10,39 +10,108 @@ logger = logging.getLogger(__name__)
 # 3 broad queries instead of 159 individual domain queries.
 # %.ac.bd  → covers buet.ac.bd, cuet.ac.bd, ruet.ac.bd, kuet.ac.bd, etc.
 # %.edu.bd → covers aiub.edu.bd, daffodilvarsity.edu.bd, ulab.edu.bd, etc.
-# %.edu    → covers northsouth.edu, iubat.edu, aust.edu, etc.
+# %.edu    → covers sust.edu, northsouth.edu, iubat.edu, aust.edu, etc.
 BD_TLD_QUERIES = [
     "%.ac.bd",
     "%.edu.bd",
     "%.edu",
 ]
 
-
+# Keywords checked against subdomain names only — keep short/slug-like patterns
+# that actually appear in subdomain strings, not full English phrases
 KEYWORDS = [
-    "conference", "symposium", "workshop", "congress",
-    "ieee", "icon", "con",
+    "conference",
+    "symposium",
+    "workshop",
+    "congress",
+    "summit",
+    "ieee",
+    "icon",
+    "icece",
+    "iccit",
+    "icmiee",
+    "icace",
+    "icca",
+    "iciset",
+    "peeiacon",
+    "raaicon",
+    "spicscon",
+    "becithcon",
+    "icefront",
 ]
 
-# Only subdomains containing these Bangladesh-related university keywords
-# are kept from the broad %.edu query (to avoid non-BD .edu results)
-BD_EDU_HINTS = [
-    "aiub", "iubat", "northsouth", "aust", "uiu", "uap",
-    "bracu", "ewu", "iub", "ulab", "bup", "daffodil",
+# Subdomains starting with these prefixes are never conferences — blocked early
+SUBDOMAIN_BLOCKLIST = [
+    "cpcontacts",
+    "convocation",
+    "convapi",
+    "ictcell",
+    "ictserver",
+    "ictvm",
+    "webdisk",
+    "library",
+    "contact",
+    "mail",
+    "app",
+    "heqep",
+    "emss",
+    "clab",
+    "econ",
+    "info",
+    "secondaryschool",
+    "icpcdhaka",        # old ICPC event, not a conference site
+    "icpcbd",
 ]
+
+# Exact Bangladesh university domains that use plain .edu TLD
+# (not .edu.bd) — prevents catching MIT, Harvard, etc. from %.edu query
+BD_EDU_EXACT_DOMAINS = {
+    "sust.edu",
+    "northsouth.edu",
+    "iubat.edu",
+    "aust.edu",
+    "aiub.edu",
+    "uap-bd.edu",
+    "ewubd.edu",
+    "iub.edu.bd",
+}
 
 
 def _is_conference_subdomain(name: str) -> bool:
-    """Return True if the subdomain name looks like a conference site."""
+    """Return True if the subdomain name looks like a conference site.
+
+    First rejects known non-conference prefixes, then checks for
+    conference-like patterns.
+    """
     lower = name.lower()
+
+    # Strip www. prefix before checking
+    if lower.startswith("www."):
+        lower = lower[4:]
+
+    # Block obvious non-conference subdomains immediately
+    if any(lower.startswith(block) for block in SUBDOMAIN_BLOCKLIST):
+        return False
+
+    # Strong positive signals: starts with 'ic' or 'conf'
     if lower.startswith("ic") or lower.startswith("conf"):
         return True
+
+    # Keyword match in subdomain string
     return any(kw in lower for kw in KEYWORDS)
 
 
 def _is_bd_edu(name: str) -> bool:
-    """For %.edu results, keep only known Bangladesh university subdomains."""
+    """For %.edu results, keep only known Bangladesh university subdomains.
+
+    Uses exact domain suffix matching to avoid catching non-BD .edu domains
+    like mit.edu, harvard.edu, etc.
+    """
     lower = name.lower()
-    return any(hint in lower for hint in BD_EDU_HINTS)
+    return any(
+        lower == domain or lower.endswith("." + domain)
+        for domain in BD_EDU_EXACT_DOMAINS
+    )
 
 
 def _fetch_crt(query: str) -> list:
@@ -111,6 +180,11 @@ def run() -> list:
 
     Uses 3 requests total instead of 159 individual domain queries,
     preventing crt.sh rate limiting and 502 errors.
+
+    Key fixes vs previous version:
+    - _is_bd_edu() now uses exact domain suffix matching (catches sust.edu)
+    - _is_conference_subdomain() blocks known non-conference prefixes early
+    - KEYWORDS trimmed to subdomain-relevant slug patterns only
     """
     candidates = []
     conn = None
@@ -145,7 +219,7 @@ def run() -> list:
                     if not raw_name:
                         continue
 
-                    # For broad %.edu query, skip non-BD universities
+                    # For broad %.edu query, only keep known BD university domains
                     if query == "%.edu" and not _is_bd_edu(raw_name):
                         continue
 
@@ -160,6 +234,7 @@ def run() -> list:
 
                     url = f"https://{raw_name}"
                     candidates.append(url)
+                    logger.info("crt_monitor: new candidate → %s", url)
 
                     try:
                         cur.execute(
@@ -173,7 +248,9 @@ def run() -> list:
                         conn.commit()
                     except psycopg2.Error as e:
                         conn.rollback()
-                        logger.error("DB error saving subdomain %s: %s", raw_name, e)
+                        logger.error(
+                            "DB error saving subdomain %s: %s", raw_name, e,
+                        )
 
             # Polite delay between the 3 TLD queries
             time.sleep(5)
