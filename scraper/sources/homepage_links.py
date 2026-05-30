@@ -97,10 +97,8 @@ def _curl_fetch(url: str, timeout: int = 15) -> str | None:
 def fetch_homepage_fast(url: str, retries: int = 2):
     """Fetch a homepage with multiple fallback strategies.
 
-    Strategy order:
-    1. requests with proper headers
-    2. curl subprocess (handles malformed headers, TLS quirks)
-    3. Retry with backoff (for transient Cloudflare CDN blocks)
+    Returns (soup, strategy) where strategy is one of:
+    "requests", "curl", "selenium", or None if all failed.
     """
     domain = url.replace("https://", "").replace("http://", "").split("/")[0]
 
@@ -116,51 +114,59 @@ def fetch_homepage_fast(url: str, retries: int = 2):
         try:
             resp = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
 
-            # Cloudflare hard block (JS challenge) — try Selenium fallback
+            # Cloudflare hard block (JS challenge) — try Selenium immediately
             if resp.status_code == 403 and "cf-mitigated" in resp.headers:
                 logger.info("%s blocked by Cloudflare JS challenge, trying Selenium", domain)
                 html = _selenium_fetch(url)
                 if html:
-                    return BeautifulSoup(html, "lxml")
-                logger.warning("%s Selenium fallback also failed", domain)
-                return None
+                    return BeautifulSoup(html, "lxml"), "selenium"
+                return None, None
 
-            # Cloudflare soft block (CDN rate limit) — may work on retry
+            # Cloudflare soft block (CDN rate limit) — retry, then Selenium
             if resp.status_code == 403 and "cloudflare" in resp.headers.get("server", "").lower():
                 logger.info("%s Cloudflare 403 (attempt %d/%d), will retry", domain, attempt + 1, retries + 1)
                 last_error = "Cloudflare 403"
                 if attempt < retries:
                     time.sleep(3 * (attempt + 1))
                     continue
-                return None
+                logger.info("%s Cloudflare soft block retries exhausted, trying Selenium", domain)
+                html = _selenium_fetch(url)
+                if html:
+                    return BeautifulSoup(html, "lxml"), "selenium"
+                return None, None
 
             if resp.status_code == 200:
                 if "Just a moment" in resp.text[:500]:
-                    logger.warning("%s blocked by Cloudflare challenge page, skipping", domain)
-                    return None
-                return BeautifulSoup(resp.text, "lxml")
+                    logger.warning("%s blocked by Cloudflare challenge page, trying Selenium", domain)
+                    html = _selenium_fetch(url)
+                    if html:
+                        return BeautifulSoup(html, "lxml"), "selenium"
+                    return None, None
+                return BeautifulSoup(resp.text, "lxml"), "requests"
 
             # Non-200 status — try curl fallback
             logger.debug("%s HTTP %d, trying curl fallback", domain, resp.status_code)
 
         except urllib3.exceptions.HeaderParsingError:
-            # Category B: malformed headers — curl handles this fine
             logger.info("%s malformed HTTP headers, trying curl fallback", domain)
             html = _curl_fetch(url)
             if html:
-                return BeautifulSoup(html, "lxml")
-            return None
+                return BeautifulSoup(html, "lxml"), "curl"
+            return None, None
 
         except requests.exceptions.SSLError as e:
-            # Category C: TLS issues — try curl with -k (already in _curl_fetch)
             logger.info("%s SSL error (%s), trying curl fallback", domain, e)
             html = _curl_fetch(url)
             if html:
-                return BeautifulSoup(html, "lxml")
-            return None
+                return BeautifulSoup(html, "lxml"), "curl"
+            return None, None
 
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
             last_error = str(e)
+            # Network unreachable (IPv6) — skip immediately, no retry
+            if "Network is unreachable" in str(e) or "Errno 101" in str(e):
+                logger.warning("%s network unreachable (IPv6), skipping", domain)
+                return None, None
             logger.debug("%s connection error (attempt %d/%d): %s", domain, attempt + 1, retries + 1, e)
             if attempt < retries:
                 time.sleep(3 * (attempt + 1))
@@ -174,36 +180,39 @@ def fetch_homepage_fast(url: str, retries: int = 2):
         if attempt == retries:
             html = _curl_fetch(url)
             if html:
-                return BeautifulSoup(html, "lxml")
+                return BeautifulSoup(html, "lxml"), "curl"
+            # Last resort: try Selenium before giving up
+            logger.info("%s all HTTP retries failed, trying Selenium as last resort", domain)
+            html = _selenium_fetch(url)
+            if html:
+                return BeautifulSoup(html, "lxml"), "selenium"
             logger.warning("Could not load %s (last error: %s), skipping", domain, last_error)
-            return None
+            return None, None
 
-    return None
+    return None, None
 
 
 def fetch_homepage_with_www_fallback(domain: str):
     """Try www.{domain} first, then fall back to {domain} bare.
 
-    Handles:
-    - Category C (TLS hostname mismatch): cert only covers bare domain
-    - Category D (DNS): www subdomain doesn't exist
-    - General: some sites redirect www → bare or vice versa
+    Returns (soup, loaded_url, strategy) where strategy is one of:
+    "requests", "curl", "selenium", or None if all failed.
     """
     # Try www first
     url_www = f"https://www.{domain}"
-    soup = fetch_homepage_fast(url_www)
+    soup, strategy = fetch_homepage_fast(url_www)
     if soup is not None:
-        return soup, url_www
+        return soup, url_www, strategy
 
     # Fallback: bare domain (no www)
     url_bare = f"https://{domain}"
     if url_bare != url_www:
         logger.info("%s: www failed, trying bare domain %s", domain, url_bare)
-        soup = fetch_homepage_fast(url_bare)
+        soup, strategy = fetch_homepage_fast(url_bare)
         if soup is not None:
-            return soup, url_bare
+            return soup, url_bare, strategy
 
-    return None, url_www
+    return None, url_www, None
 
 
 def _save_link(url: str, source: str) -> None:
@@ -242,16 +251,17 @@ def run():
         known = set()
 
     for domain in domains:
-        # Try with www fallback (handles Cat C, D, and transient failures)
-        soup, loaded_url = fetch_homepage_with_www_fallback(domain)
+        soup, loaded_url, strategy = fetch_homepage_with_www_fallback(domain)
 
         if soup is None:
             stats["failed"] += 1
             logger.warning("Could not load %s, skipping", domain)
             continue
 
-        # Determine which variant worked
-        if loaded_url != f"https://www.{domain}":
+        if strategy == "selenium":
+            stats["selenium_fix"] += 1
+            logger.info("%s: Selenium fix — loaded via %s", domain, loaded_url)
+        elif loaded_url != f"https://www.{domain}":
             if domain in ("cvasu.ac.bd", "daffodilvarsity.edu.bd", "bdu.ac.bd"):
                 stats["tls_fix"] += 1
                 logger.info("%s: TLS fix — loaded via %s", domain, loaded_url)
