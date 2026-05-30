@@ -16,12 +16,6 @@ logger = logging.getLogger(__name__)
 
 MAX_TEXT_CHARS = 8000
 
-# Initialize DeepSeek client at module level
-client = OpenAI(
-    api_key=os.getenv("DeepSeek_API_Token"),
-    base_url="https://api.deepseek.com/v1"
-)
-
 SYSTEM_PROMPT = (
     "You are a precise conference data extractor for Bangladesh.\n"
     "Given raw webpage text, extract international conference details.\n"
@@ -95,6 +89,12 @@ def _call_deepseek(text, url):
     Returns:
         Parsed JSON dict, or None on failure.
     """
+    # Initialize client on demand with DeepSeek credentials
+    client = OpenAI(
+        api_key=os.getenv("DeepSeek_API_Token"),
+        base_url="https://api.deepseek.com/v1"
+    )
+    
     try:
         resp = client.chat.completions.create(
             model="deepseek-chat",
