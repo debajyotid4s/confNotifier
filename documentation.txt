@@ -22,7 +22,7 @@ entirely on free infrastructure with zero manual intervention.
 bd-conf-bot/
   .github/workflows/scraper.yml   — GitHub Actions cron job (every 6h)
   config/
-    universities.json              — 159 Bangladeshi university domains
+    universities.json              — Bangladeshi university domains
     special_sources.json           — ICCIT and other independent confs
   db/schema.sql                    — PostgreSQL table definitions
   scraper/
@@ -49,7 +49,7 @@ bd-conf-bot/
 --------------------------------------------------------------------------------
 
 config/universities.json
-  - JSON array of 159 Bangladeshi university domains (e.g. sust.edu, buet.ac.bd)
+  - JSON array of Bangladeshi university domains (e.g. sust.edu, buet.ac.bd)
   - Used by crt_monitor.py and homepage_links.py
 
 config/special_sources.json
@@ -59,7 +59,7 @@ config/special_sources.json
 db/schema.sql
   - 3 tables: known_subdomains, seen_links, conferences
   - Indexes on website, date_start, subdomain, and url columns
-  - NOTE: No subscribers table (not needed — delivery is channel-based)
+  - No subscribers table (not needed — delivery is channel-based)
 
 scraper/browser.py
   - Selenium Chrome driver factory with anti-bot measures:
@@ -67,8 +67,8 @@ scraper/browser.py
     - Rotating user agents (3 Chrome versions)
     - navigator.webdriver set to undefined via CDP
     - set_page_load_timeout(20), set_script_timeout(10)
-  - human_delay(): random 1.5–4.0s pause
-  - slow_scroll(): scroll page in 4–8 random steps
+  - human_delay(): random 1.5-4.0s pause
+  - slow_scroll(): scroll page in 4-8 random steps
   - random_mouse_movement(): micro mouse movements via ActionChains
   - load_page(): loads URL with retry logic (1 retry, 5s wait)
   - BrowserManager: context manager for safe driver lifecycle
@@ -77,14 +77,16 @@ scraper/sources/crt_monitor.py
   - 3 broad crt.sh queries instead of 159 individual ones:
     %.ac.bd, %.edu.bd, %.edu
   - Filters results by conference-like subdomain patterns
-  - For %.edu results, filters by known BD university keywords
+  - SUBDOMAIN_BLOCKLIST blocks known non-conference prefixes (includes ict.)
+  - For %.edu results, filters by exact BD university domain matching
   - Exponential backoff on 502/timeout (10s, 20s, 40s)
   - Saves new subdomains to known_subdomains table
   - Returns list of https:// URLs
 
 scraper/sources/homepage_links.py
-  - Uses Selenium to load each university homepage (HTTPS only)
-  - Extracts outbound <a href> links via BeautifulSoup
+  - Uses requests + BeautifulSoup (no Selenium) to fetch each homepage
+  - fetch_homepage_fast(): requests.get() with 10s timeout, no JS rendering
+  - Extracts outbound <a href> links via BS4
   - Matches against regex patterns: ic[a-z]+\d{4}, conf[a-z]+, symposium, ieee, etc.
   - Uses _save_link() — fresh DB connection per save, closed immediately
   - Loads known links once upfront, then closes that connection
@@ -92,12 +94,14 @@ scraper/sources/homepage_links.py
 
 scraper/sources/special.py
   - Probes special source URLs with current year and next year
+  - Tries /YYYY/home/ first, falls back to /YYYY/ if that fails
   - Checks HTTP 200 + content > 500 chars
   - Uses long-held DB connection for known links check + save
-  - Currently probes iccit.org.bd/2026/, iccit.org.bd/2027/
   - Returns list of new candidate URLs
 
 scraper/extractor.py
+  - DNS pre-check (_is_url_reachable()) before launching Selenium for each URL
+    - Skips dead URLs in ~1s instead of ~10s of failed Selenium attempts
   - LLM extraction pipeline with 3-model fallback:
     1. meta-llama/llama-3.3-70b-instruct:free
     2. google/gemma-4-26b-a4b-it:free
@@ -127,6 +131,7 @@ scraper/main.py
     Phase 2: homepage_links.run() (isolated try/except)
     Phase 3: special.run()        (isolated try/except)
     Phase 4: Deduplicate + extract + save + notify loop
+  - Validates all 4 required env vars at startup before doing anything
   - One phase crashing does not kill the whole run
   - Holds one DB connection for the extraction/notification phase
   - Prints summary: X found, Y new, Z skipped, W failed
@@ -136,6 +141,7 @@ bot/bot.py
     /start     — welcome message with channel link
     /list      — queries upcoming conferences (LIMIT 10)
     /subscribe — sends channel join link
+  - Health check endpoint (GET /health → "ok") on port 8081 in daemon thread
   - Runs in webhook mode on port 8080 (Koyeb deployment)
   - Connects to same Neon PostgreSQL
 
@@ -153,19 +159,19 @@ bot/bot.py
        |
        v  New subdomain like icXXXX.university.ac.bd found
        |
-  homepage_links (Selenium scans all 159 university homepages)
+  homepage_links (requests + BS4 scans all university homepages)
        |
        v  Outbound conf link found on a homepage
        |
-  special.py (probes ICCIT and similar)
+  special.py (probes ICCIT /YYYY/home/ and /YYYY/)
        |
        v  New annual edition detected
        |
   All candidates combined, deduplicated by URL set
        |
        v
-  extractor.py — load each URL in Selenium, send text to OpenRouter LLM
-       |
+  extractor.py — DNS check → load URL in Selenium → send text to OpenRouter LLM
+       |           (dead URLs skipped in ~1s via DNS, no Selenium waste)
        v  LLM returns structured JSON or null
        |
   deduplicator.py — check PostgreSQL for existing match
@@ -177,7 +183,35 @@ bot/bot.py
        v  All channel subscribers see notification
 
 
-5. STATUS — Implemented vs Plan
+5. FIXES & CHANGES LOG
+--------------------------------------------------------------------------------
+
+  Date        | File(s)                          | Change
+  ------------|----------------------------------|----------------------------------------------
+  May 2026    | scraper/browser.py               | Added set_page_load_timeout(20) and
+              |                                  | set_script_timeout(10)
+  May 2026    | scraper/sources/homepage_links.py| Removed HTTP fallback; HTTPS-only with skip
+  May 2026    | scraper/sources/crt_monitor.py   | Replaced CRTSH_URL constant with inline
+              |                                  | f-string; removed URL encoding
+  May 2026    | scraper/sources/homepage_links.py| Replaced long-held DB connection with
+              | scraper/main.py                  | _save_link() fresh-per-save pattern.
+              |                                  | Isolated phase failures in main.py
+  May 2026    | scraper/sources/special.py       | ICCIT URL pattern: /YYYY/home/ first,
+              |                                  | fall back to /YYYY/
+  May 2026    | bot/bot.py                       | Added health check (GET /health) on port
+              |                                  | 8081 via daemon thread
+  May 2026    | scraper/main.py                  | Added env var validation at startup
+  May 2026    | requirements.txt                 | openai==1.30.1 → openai>=1.55.0
+              |                                  | (httpx 0.28.x compatibility fix)
+  May 2026    | scraper/extractor.py             | Added DNS pre-check (_is_url_reachable)
+              |                                  | before Selenium — skips dead URLs
+  May 2026    | scraper/sources/crt_monitor.py   | Added "ict." and "www.ict." to
+              |                                  | SUBDOMAIN_BLOCKLIST
+  May 2026    | scraper/sources/homepage_links.py| Switched from Selenium to requests+BS4
+              |                                  | (no JS rendering needed for link scanning)
+
+
+6. STATUS — Implemented vs Plan
 --------------------------------------------------------------------------------
 
   All 16 files from the plan's "Files to Write" section exist.
@@ -185,38 +219,36 @@ bot/bot.py
   Discrepancies from plan:
   - LLM model order and exact model strings differ from plan
   - No subscribers table in schema (not needed for channel-based delivery)
-  - Column names differ: source → raw_source, notified → is_notified
+  - Column names differ: source -> raw_source, notified -> is_notified
   - README.md is outdated (references nonexistent files)
-  - universities.json has 159 domains (plan said 98)
-  - special.py probes /YYYY/ but ICCIT URL pattern is /YYYY/home/
+  - universities.json has more domains than original 98
 
 
-6. KNOWN ISSUES & TECHNICAL DEBT
+7. KNOWN ISSUES & TECHNICAL DEBT
 --------------------------------------------------------------------------------
 
   a) extractor.py spawns a new Chrome instance per candidate URL
      - Inefficient for many candidates; BrowserManager should be reused
 
   b) special.py uses long-held DB connection
-     - Could benefit from same fresh-connection pattern as homepage_links.py
+     - Should use same fresh-connection pattern as homepage_links.py
 
   c) No shared db utility module
-     - DB connection code (3-retry pattern) is duplicated across 6 files
+     - DB connection code (3-retry pattern) duplicated across 6 files
 
-  d) bot.py hardcodes CHANNEL_LINK and has no health check endpoint
-     - Koyeb may flag the service as unhealthy
+  d) bot.py hardcodes CHANNEL_LINK
+     - Not configurable via env var — changing channel requires code deploy
 
-  e) Slow university homepages are fully skipped after 20s timeout + 1 retry
-     - Timeout kills the page but DOM may be partially available
+  e) Health check on separate port (8081) not probed by Koyeb by default
+     - Koyeb's default health check hits port 8080; HEALTH_CHECK_PORT must be
+       set to match PORT (8080), or Koyeb health check configured separately
 
-  f) special.py probes /YYYY/ not /YYYY/home/
-     - May miss ICCIT's actual URL pattern
-
-  g) No environment variable validation at startup
-     - Missing env vars cause KeyError at runtime
+  f) deduplicator.py returns False on DB error
+     - If DB connection drops during dedup check, the conference is treated as
+       "not duplicate" and may be saved/notified a second time
 
 
-7. INFRASTRUCTURE & SETUP
+8. INFRASTRUCTURE & SETUP
 --------------------------------------------------------------------------------
 
   GitHub Secrets (required):
@@ -227,17 +259,18 @@ bot/bot.py
 
   One-time setup:
     1. Create GitHub repo and push code
-    2. Sign up at neon.tech → create project → get DATABASE_URL
+    2. Sign up at neon.tech -> create project -> get DATABASE_URL
     3. Run db/schema.sql on Neon to create tables
-    4. Sign up at openrouter.ai → get API key
-    5. Create bot via @BotFather → get TELEGRAM_BOT_TOKEN
-    6. Create public Telegram channel → add bot as admin
-    7. Add 4 secrets to GitHub repo (Settings → Secrets → Actions)
+    4. Sign up at openrouter.ai -> get API key
+    5. Create bot via @BotFather -> get TELEGRAM_BOT_TOKEN
+    6. Create public Telegram channel -> add bot as admin
+    7. Add 4 secrets to GitHub repo (Settings -> Secrets -> Actions)
     8. Deploy bot/bot.py on Koyeb with same env vars
-    9. Trigger first run manually via GitHub Actions → workflow_dispatch
+    9. Trigger first run manually via GitHub Actions -> workflow_dispatch
+   10. Confirm first run completes without errors in Actions log
 
 
-8. LLM MODELS (OpenRouter, all free)
+9. LLM MODELS (OpenRouter, all free)
 --------------------------------------------------------------------------------
   Priority order:
     1. meta-llama/llama-3.3-70b-instruct:free
@@ -245,10 +278,10 @@ bot/bot.py
     3. deepseek/deepseek-v4-flash:free
 
   Fallback: if model N fails or returns invalid JSON, try N+1.
-  If all 3 fail → URL is logged and skipped (caught on next run).
+  If all 3 fail -> URL is logged and skipped (caught on next run).
 
 
-9. GITHUB ACTIONS SCHEDULE
+10. GITHUB ACTIONS SCHEDULE
 --------------------------------------------------------------------------------
   .github/workflows/scraper.yml
   - Cron: "0 */6 * * *" (every 6 hours)
