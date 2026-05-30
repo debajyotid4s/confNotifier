@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import socket
 import time
 
 from openai import OpenAI
@@ -49,6 +50,16 @@ def _strip_markdown_fence(text):
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     return text.strip()
+
+
+def _is_url_reachable(url: str) -> bool:
+    """Quick DNS check before launching Selenium — avoids wasting time on dead sites."""
+    try:
+        hostname = url.replace("https://", "").replace("http://", "").split("/")[0]
+        socket.getaddrinfo(hostname, 443, proto=socket.IPPROTO_TCP)
+        return True
+    except socket.gaierror:
+        return False
 
 
 def _fetch_page_text(url):
@@ -133,6 +144,10 @@ def extract(url):
     Returns:
         Dict with conference data if found, or None.
     """
+    if not _is_url_reachable(url):
+        logger.warning("extractor: DNS resolution failed for %s, skipping", url)
+        return None
+
     text = _fetch_page_text(url)
     if text is None:
         logger.warning("Could not fetch page text for %s", url)

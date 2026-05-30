@@ -61,6 +61,8 @@ SUBDOMAIN_BLOCKLIST = [
     "secondaryschool",
     "icpcdhaka",        # old ICPC event, not a conference site
     "icpcbd",
+    "ict.",             # blocks ict.mbstu.ac.bd, ict.nu.ac.bd
+    "www.ict.",         # blocks www.ict.mbstu.ac.bd
 ]
 
 # Exact Bangladesh university domains that use plain .edu TLD
