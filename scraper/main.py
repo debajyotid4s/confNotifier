@@ -190,6 +190,20 @@ def run():
 
             new_count += 1
 
+            # Mark subdomain as extracted in known_subdomains
+            try:
+                subdomain = url.replace("https://", "").replace("http://", "")
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE known_subdomains SET extracted = TRUE WHERE subdomain = %s",
+                    (subdomain,),
+                )
+                conn.commit()
+                cur.close()
+            except psycopg2.Error as e:
+                conn.rollback()
+                logger.warning("Could not mark subdomain as extracted: %s", e)
+
         logger.info(
             "=== Run complete: %d found, %d new, %d skipped, %d failed ===",
             found, new_count, skipped, failed,

@@ -119,14 +119,15 @@ def _is_bd_edu(name: str) -> bool:
 
 
 def _fetch_crt(query: str) -> list:
-    """Fetch crt.sh results for a TLD query with single retry.
+    """Fetch crt.sh results for a TLD query with 3 retries.
 
-    Retries on 502, 503, and timeout errors once after 5 seconds.
-    Returns list of certificate entries or empty list on failure.
+    Retries on 502, 503, and timeout errors with exponential backoff
+    (10s, 20s, 40s). Returns list of certificate entries or empty list on failure.
     """
     url = f"https://crt.sh/?q={query}&output=json"
+    delays = [10, 20, 40]
 
-    for attempt in range(1, 3):  # 2 attempts total: attempt 1 and 1 retry
+    for attempt in range(len(delays) + 1):  # 4 attempts total: attempt 0 + 3 retries
         try:
             resp = requests.get(
                 url,
@@ -139,15 +140,16 @@ def _fetch_crt(query: str) -> list:
                 logger.info("crt.sh 404 for %s (no certs found)", query)
                 return []
             elif resp.status_code in [502, 503]:
-                if attempt == 1:
+                if attempt < len(delays):
                     logger.warning(
-                        "crt.sh HTTP %d for %s, retrying in 5s...",
-                        resp.status_code, query,
+                        "crt.sh HTTP %d for %s, retrying in %ds...",
+                        resp.status_code, query, delays[attempt],
                     )
-                    time.sleep(5)
+                    time.sleep(delays[attempt])
                 else:
                     logger.critical(
-                        "crt.sh %s failed after 1 retry, skipping", query
+                        "crt.sh %s failed after %d retries, skipping",
+                        query, len(delays),
                     )
                     return []
             else:
@@ -157,22 +159,23 @@ def _fetch_crt(query: str) -> list:
                 )
                 return []
         except requests.exceptions.Timeout:
-            if attempt == 1:
+            if attempt < len(delays):
                 logger.warning(
-                    "crt.sh timeout for %s, retrying in 5s...",
-                    query,
+                    "crt.sh timeout for %s, retrying in %ds...",
+                    query, delays[attempt],
                 )
-                time.sleep(5)
+                time.sleep(delays[attempt])
             else:
                 logger.critical(
-                    "crt.sh %s failed after 1 retry, skipping", query
+                    "crt.sh %s failed after %d retries, skipping",
+                    query, len(delays),
                 )
                 return []
         except Exception as e:
             logger.error("crt.sh unexpected error for %s: %s", query, e)
             return []
 
-    logger.critical("crt.sh %s failed after 1 retry, skipping", query)
+    logger.critical("crt.sh %s failed after %d retries, skipping", query, len(delays))
     return []
 
 
@@ -208,9 +211,18 @@ def run() -> list:
         conn = _get_db_connection()
         cur = conn.cursor()
 
-        # Load already-known subdomains from DB
-        cur.execute("SELECT subdomain FROM known_subdomains")
+        # Load already-known AND already-extracted subdomains
+        # Unextracted ones will be re-returned as candidates
+        cur.execute("SELECT subdomain FROM known_subdomains WHERE extracted = TRUE")
         known = {row[0] for row in cur.fetchall()}
+
+        # Also return any previously found but unextracted subdomains
+        cur.execute("SELECT subdomain FROM known_subdomains WHERE extracted = FALSE")
+        unextracted = cur.fetchall()
+        for (subdomain,) in unextracted:
+            url = f"https://{subdomain}"
+            candidates.append(url)
+            logger.info("crt_monitor: re-queuing unextracted → %s", url)
 
         for query in BD_TLD_QUERIES:
             logger.info("crt_monitor: querying crt.sh for %s ...", query)

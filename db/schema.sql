@@ -2,6 +2,7 @@ CREATE TABLE IF NOT EXISTS known_subdomains (
     id SERIAL PRIMARY KEY,
     subdomain TEXT NOT NULL UNIQUE,
     domain TEXT NOT NULL,
+    extracted BOOLEAN NOT NULL DEFAULT FALSE,
     first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
