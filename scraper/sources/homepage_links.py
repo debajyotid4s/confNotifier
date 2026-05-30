@@ -5,9 +5,8 @@ import re
 from urllib.parse import urlparse
 
 import psycopg2
+import requests
 from bs4 import BeautifulSoup
-
-from scraper.browser import BrowserManager, load_page
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +60,24 @@ def _build_url(base, href):
     return urljoin(base, href)
 
 
+def fetch_homepage_fast(url: str):
+    """Use requests instead of Selenium for homepage link scanning.
+    No JS needed — just extracting <a href> links.
+    """
+    try:
+        resp = requests.get(
+            url,
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; confbot/1.0)"},
+            allow_redirects=True,
+        )
+        if resp.status_code == 200:
+            return BeautifulSoup(resp.text, "lxml")
+        return None
+    except Exception:
+        return None
+
+
 def _save_link(url: str, source: str) -> None:
     """Open a fresh connection, save link, close immediately."""
     try:
@@ -100,16 +117,14 @@ def run():
         logger.error("Failed to load known links: %s", e)
         known = set()
 
-    with BrowserManager() as driver:
-        for domain in domains:
-            url = f"https://www.{domain}"
-            if not load_page(driver, url):
-                logger.warning("Could not load %s, skipping", domain)
-                continue
+    for domain in domains:
+        url = f"https://www.{domain}"
+        soup = fetch_homepage_fast(url)
+        if soup is None:
+            logger.warning("Could not load %s, skipping", domain)
+            continue
 
-            html = driver.page_source
-            soup = BeautifulSoup(html, "lxml")
-            for a_tag in soup.find_all("a", href=True):
+        for a_tag in soup.find_all("a", href=True):
                 href = a_tag["href"].strip()
                 if not href or href.startswith("#") or href.startswith("javascript:"):
                     continue
