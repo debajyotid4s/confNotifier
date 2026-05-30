@@ -68,49 +68,46 @@ def run():
     year = datetime.now().year
     years_to_check = [str(year), str(year + 1)]
     candidates = []
-    conn = None
-    try:
-        conn = _get_db_connection()
-        cur = conn.cursor()
 
+    # Load known links upfront with a fresh connection
+    try:
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        cur = conn.cursor()
         cur.execute("SELECT url FROM seen_links WHERE source = 'special'")
         known = {row[0] for row in cur.fetchall()}
-
-        for base in sources:
-            base = base.rstrip("/")
-            for y in years_to_check:
-                url = None
-                for candidate in [f"{base}/{y}/home/", f"{base}/{y}/"]:
-                    if candidate in known:
-                        continue
-                    if _probe_url(candidate):
-                        url = candidate
-                        break
-                if url is None:
-                    continue
-                candidates.append(url)
-                known.add(url)
-                try:
-                    cur.execute(
-                        "INSERT INTO seen_links (url, source) VALUES (%s, 'special') "
-                        "ON CONFLICT (url) DO UPDATE SET last_seen = NOW()",
-                        (url,),
-                    )
-                    conn.commit()
-                except psycopg2.Error as e:
-                    conn.rollback()
-                    logger.error("DB error saving special URL %s: %s", url, e)
-
         cur.close()
+        conn.close()
     except Exception as e:
-        logger.error("special.run error: %s", e)
-        raise
-    finally:
-        if conn is not None:
+        logger.error("Failed to load known special links: %s", e)
+        known = set()
+
+    for base in sources:
+        base = base.rstrip("/")
+        for y in years_to_check:
+            url = None
+            for candidate in [f"{base}/{y}/home/", f"{base}/{y}/"]:
+                if candidate in known:
+                    continue
+                if _probe_url(candidate):
+                    url = candidate
+                    break
+            if url is None:
+                continue
+            candidates.append(url)
+            known.add(url)
             try:
+                conn = psycopg2.connect(os.environ["DATABASE_URL"])
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO seen_links (url, source) VALUES (%s, 'special') "
+                    "ON CONFLICT (url) DO UPDATE SET last_seen = NOW()",
+                    (url,),
+                )
+                conn.commit()
+                cur.close()
                 conn.close()
-            except Exception as e:
-                logger.error("Error closing DB connection: %s", e)
+            except psycopg2.Error as e:
+                logger.error("DB error saving special URL %s: %s", url, e)
 
     logger.info("special: found %d new special source URLs", len(candidates))
     return candidates

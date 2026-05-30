@@ -71,6 +71,13 @@ def fetch_homepage_fast(url: str):
             headers={"User-Agent": "Mozilla/5.0 (compatible; confbot/1.0)"},
             allow_redirects=True,
         )
+        if resp.status_code == 403 and (
+            "cf-mitigated" in resp.headers or
+            "Just a moment" in resp.text[:300]
+        ):
+            domain = url.replace("https://", "").replace("http://", "").split("/")[0]
+            logger.warning("%s blocked by Cloudflare, skipping", domain)
+            return None
         if resp.status_code == 200:
             return BeautifulSoup(resp.text, "lxml")
         return None

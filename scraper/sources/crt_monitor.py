@@ -10,10 +10,12 @@ logger = logging.getLogger(__name__)
 # 3 broad queries instead of 159 individual domain queries.
 # %.ac.bd  → covers buet.ac.bd, cuet.ac.bd, ruet.ac.bd, kuet.ac.bd, etc.
 # %.edu.bd → covers aiub.edu.bd, daffodilvarsity.edu.bd, ulab.edu.bd, etc.
-# %.edu    → covers sust.edu, northsouth.edu, iubat.edu, aust.edu, etc.
+# %.sust.edu → covers sust.edu subdomains specifically
+# %.edu    → covers northsouth.edu, iubat.edu, aust.edu, etc.
 BD_TLD_QUERIES = [
     "%.ac.bd",
     "%.edu.bd",
+    "%.sust.edu",
     "%.edu",
 ]
 
@@ -119,11 +121,11 @@ def _is_bd_edu(name: str) -> bool:
 def _fetch_crt(query: str) -> list:
     """Fetch crt.sh results for a TLD query with exponential backoff.
 
-    Retries on 502 and timeout errors up to 3 times.
+    Retries on 502 and timeout errors up to 2 times.
     Returns list of certificate entries or empty list on failure.
     """
     url = f"https://crt.sh/?q={query}&output=json"
-    delays = [10, 20, 40]
+    delays = [5, 15]
 
     for attempt, delay in enumerate(delays, 1):
         try:
@@ -139,7 +141,7 @@ def _fetch_crt(query: str) -> list:
                 return []
             elif resp.status_code == 502:
                 logger.warning(
-                    "crt.sh 502 for %s (attempt %d/3), retrying in %ds...",
+                    "crt.sh 502 for %s (attempt %d/2), retrying in %ds...",
                     query, attempt, delay,
                 )
                 time.sleep(delay)
@@ -151,7 +153,7 @@ def _fetch_crt(query: str) -> list:
                 return []
         except requests.exceptions.Timeout:
             logger.warning(
-                "crt.sh timeout for %s (attempt %d/3), retrying in %ds...",
+                "crt.sh timeout for %s (attempt %d/2), retrying in %ds...",
                 query, attempt, delay,
             )
             time.sleep(delay)
@@ -159,7 +161,7 @@ def _fetch_crt(query: str) -> list:
             logger.error("crt.sh unexpected error for %s: %s", query, e)
             return []
 
-    logger.error("crt.sh all 3 attempts failed for %s, skipping", query)
+    logger.critical("crt.sh all 2 attempts failed for %s, skipping", query)
     return []
 
 

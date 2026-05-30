@@ -14,7 +14,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-CHANNEL_LINK = "https://t.me/BDConferences"
+CHANNEL_LINK = os.environ.get("TELEGRAM_CHANNEL_LINK", "https://t.me/BDConferences")
 
 
 def _get_db_connection():
@@ -123,7 +123,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
 
 def _start_health_check():
     """Start a lightweight HTTP server for health checks in a daemon thread."""
-    port = int(os.environ.get("HEALTH_CHECK_PORT", "8081"))
+    port = int(os.environ.get("HEALTH_CHECK_PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), _HealthHandler)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()

@@ -155,7 +155,12 @@ def run():
                 skipped += 1
                 continue
 
-            if is_duplicate(result):
+            try:
+                is_dup = is_duplicate(result)
+            except Exception as e:
+                logger.error("Dedup DB error for %s, skipping to be safe: %s", url, e)
+                continue
+            if is_dup:
                 logger.info("Duplicate conference, skipping: %s", url)
                 skipped += 1
                 continue

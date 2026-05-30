@@ -51,7 +51,7 @@ def is_duplicate(conference_data):
         return exists
     except Exception as e:
         logger.error("Deduplication check error: %s", e)
-        return False
+        raise
     finally:
         if conn is not None:
             try:
