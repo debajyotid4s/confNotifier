@@ -10,16 +10,17 @@ from bs4 import BeautifulSoup
 
 from scraper.browser import BrowserManager, load_page
 
+# Note: time.sleep is no longer needed with single DeepSeek call, but kept for compatibility
+
 logger = logging.getLogger(__name__)
 
-OPENROUTER_BASE = "https://openrouter.ai/api/v1"
-MODELS = [
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "google/gemma-4-26b-a4b-it:free",
-    "deepseek/deepseek-v4-flash:free",
-]
 MAX_TEXT_CHARS = 8000
-TIMEOUT_SEC = 60
+
+# Initialize DeepSeek client at module level
+client = OpenAI(
+    api_key=os.getenv("DeepSeek_API_Token"),
+    base_url="https://api.deepseek.com/v1"
+)
 
 SYSTEM_PROMPT = (
     "You are a precise conference data extractor for Bangladesh.\n"
@@ -84,25 +85,19 @@ def _fetch_page_text(url):
     return text[:MAX_TEXT_CHARS]
 
 
-def _call_llm(text, url, model):
-    """Send page text to an OpenRouter model and return the parsed JSON response.
+def _call_deepseek(text, url):
+    """Send page text to DeepSeek API and return the parsed JSON response.
 
     Args:
         text: The page text content.
         url: The source URL (included in the prompt).
-        model: The OpenRouter model name.
 
     Returns:
         Parsed JSON dict, or None on failure.
     """
-    client = OpenAI(
-        base_url=OPENROUTER_BASE,
-        api_key=os.environ["OPENROUTER_API_KEY"],
-        timeout=TIMEOUT_SEC,
-    )
     try:
         resp = client.chat.completions.create(
-            model=model,
+            model="deepseek-chat",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {
@@ -110,33 +105,30 @@ def _call_llm(text, url, model):
                     "content": f"URL: {url}\n\nPage text:\n{text}",
                 },
             ],
-            temperature=0.1,
+            temperature=0.0,
             max_tokens=1000,
         )
     except Exception as e:
-        logger.warning("OpenRouter call failed for model %s: %s", model, e)
+        logger.error("DeepSeek API call failed: %s", e)
         return None
 
     raw = resp.choices[0].message.content
     if not raw:
-        logger.warning("Empty response from model %s", model)
+        logger.warning("Empty response from DeepSeek")
         return None
 
     cleaned = _strip_markdown_fence(raw)
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError as e:
-        logger.warning("JSON parse failed for model %s: %s", model, e)
+        logger.warning("JSON parse failed: %s", e)
         return None
 
     return data
 
 
 def extract(url):
-    """Extract conference details from a candidate URL using LLM.
-
-    Tries each model in the configured order until one succeeds.
-    Returns the parsed JSON data, or None if all models fail.
+    """Extract conference details from a candidate URL using DeepSeek API.
 
     Args:
         url: The candidate conference URL.
@@ -153,13 +145,11 @@ def extract(url):
         logger.warning("Could not fetch page text for %s", url)
         return None
 
-    for model in MODELS:
-        logger.info("Trying model %s for %s", model, url)
-        data = _call_llm(text, url, model)
-        if data is not None:
-            logger.info("Model %s succeeded for %s", model, url)
-            return data
-        time.sleep(1)
+    logger.info("Extracting data from %s via DeepSeek", url)
+    data = _call_deepseek(text, url)
+    if data is not None:
+        logger.info("DeepSeek extraction succeeded for %s", url)
+        return data
 
-    logger.warning("All models failed for %s", url)
+    logger.warning("DeepSeek extraction failed for %s", url)
     return None

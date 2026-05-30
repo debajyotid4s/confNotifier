@@ -30,3 +30,10 @@ venv.bak/
 selenium.log
 geckodriver.log
 chromedriver.log
+
+# Testing / diagnostic files
+classify_failures.py
+corrected_classifications.json
+diagnose_failures.py
+diagnostic_results.json
+test_homepage_fix.py
