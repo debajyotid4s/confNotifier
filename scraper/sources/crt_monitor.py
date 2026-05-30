@@ -119,15 +119,14 @@ def _is_bd_edu(name: str) -> bool:
 
 
 def _fetch_crt(query: str) -> list:
-    """Fetch crt.sh results for a TLD query with exponential backoff.
+    """Fetch crt.sh results for a TLD query with single retry.
 
-    Retries on 502 and timeout errors up to 2 times.
+    Retries on 502, 503, and timeout errors once after 5 seconds.
     Returns list of certificate entries or empty list on failure.
     """
     url = f"https://crt.sh/?q={query}&output=json"
-    delays = [5, 15]
 
-    for attempt, delay in enumerate(delays, 1):
+    for attempt in range(1, 3):  # 2 attempts total: attempt 1 and 1 retry
         try:
             resp = requests.get(
                 url,
@@ -139,12 +138,18 @@ def _fetch_crt(query: str) -> list:
             elif resp.status_code == 404:
                 logger.info("crt.sh 404 for %s (no certs found)", query)
                 return []
-            elif resp.status_code == 502:
-                logger.warning(
-                    "crt.sh 502 for %s (attempt %d/2), retrying in %ds...",
-                    query, attempt, delay,
-                )
-                time.sleep(delay)
+            elif resp.status_code in [502, 503]:
+                if attempt == 1:
+                    logger.warning(
+                        "crt.sh HTTP %d for %s, retrying in 5s...",
+                        resp.status_code, query,
+                    )
+                    time.sleep(5)
+                else:
+                    logger.critical(
+                        "crt.sh %s failed after 1 retry, skipping", query
+                    )
+                    return []
             else:
                 logger.warning(
                     "crt.sh HTTP %d for %s, skipping",
@@ -152,16 +157,22 @@ def _fetch_crt(query: str) -> list:
                 )
                 return []
         except requests.exceptions.Timeout:
-            logger.warning(
-                "crt.sh timeout for %s (attempt %d/2), retrying in %ds...",
-                query, attempt, delay,
-            )
-            time.sleep(delay)
+            if attempt == 1:
+                logger.warning(
+                    "crt.sh timeout for %s, retrying in 5s...",
+                    query,
+                )
+                time.sleep(5)
+            else:
+                logger.critical(
+                    "crt.sh %s failed after 1 retry, skipping", query
+                )
+                return []
         except Exception as e:
             logger.error("crt.sh unexpected error for %s: %s", query, e)
             return []
 
-    logger.critical("crt.sh all 2 attempts failed for %s, skipping", query)
+    logger.critical("crt.sh %s failed after 1 retry, skipping", query)
     return []
 
 

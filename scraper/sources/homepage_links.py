@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 import psycopg2
 import requests
 from bs4 import BeautifulSoup
+import urllib3.exceptions
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,10 @@ def fetch_homepage_fast(url: str):
             return None
         if resp.status_code == 200:
             return BeautifulSoup(resp.text, "lxml")
+        return None
+    except urllib3.exceptions.HeaderParsingError:
+        domain = url.replace("https://", "").replace("http://", "").split("/")[0]
+        logger.warning("%s malformed HTTP headers, skipping", domain)
         return None
     except Exception:
         return None
