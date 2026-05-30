@@ -1,0 +1,20 @@
+name: Network Diagnostics
+on: workflow_dispatch
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test sust.edu reachability
+        run: |
+          echo "=== curl sust.edu ==="
+          curl -v --max-time 15 https://sust.edu 2>&1 || true
+
+          echo "=== curl icerie2027.sust.edu ==="
+          curl -v --max-time 15 https://icerie2027.sust.edu 2>&1 || true
+
+          echo "=== curl crt.sh %.ac.bd ==="
+          curl -v --max-time 30 "https://crt.sh/?q=%25.ac.bd&output=json" 2>&1 | head -50 || true
+
+          echo "=== Runner IP ==="
+          curl -s https://api.ipify.org
