@@ -75,20 +75,35 @@ def _save_conference(conn, data):
         return None
 
 
-def _save_seen_link(conn, url):
-    """Mark a URL as seen so it won't be reprocessed."""
+def _save_seen_link(conn, url, source="extracted"):
+    """Mark a URL as seen with a given source status."""
     try:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO seen_links (url, source) VALUES (%s, 'extractor') "
-            "ON CONFLICT (url) DO UPDATE SET last_seen = NOW()",
-            (url,),
+            "INSERT INTO seen_links (url, source) VALUES (%s, %s) "
+            "ON CONFLICT (url) DO UPDATE SET source = %s, last_seen = NOW()",
+            (url, source, source),
         )
         conn.commit()
         cur.close()
     except psycopg2.Error as e:
         conn.rollback()
         logger.error("Error saving seen link %s: %s", url, e)
+
+
+def _load_unextracted_urls(conn):
+    """Load URLs from seen_links that were marked unextracted due to quota limits."""
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT url FROM seen_links WHERE source = 'unextracted'"
+        )
+        urls = [row[0] for row in cur.fetchall()]
+        cur.close()
+        return urls
+    except psycopg2.Error as e:
+        logger.error("Failed to load unextracted URLs: %s", e)
+        return []
 
 
 def run():
@@ -134,6 +149,13 @@ def run():
         all_candidates = list(
             set(crt_candidates + homepage_candidates + special_candidates)
         )
+
+        # Re-queue URLs from previous runs that were skipped due to quota
+        unextracted_prev = _load_unextracted_urls(conn)
+        if unextracted_prev:
+            all_candidates = list(set(unextracted_prev + all_candidates))
+            logger.info("Re-queued %d unextracted URLs from previous runs", len(unextracted_prev))
+
         logger.info("Phase 4: Processing %d unique candidates", len(all_candidates))
 
         found = len(all_candidates)
@@ -144,12 +166,14 @@ def run():
 
         for url in all_candidates:
             if quota_exhausted:
-                remaining = len(all_candidates) - all_candidates.index(url)
+                # Save all remaining URLs as unextracted for next-day processing
+                remaining_urls = all_candidates[all_candidates.index(url):]
                 logger.warning(
-                    "main: daily quota exhausted — skipping remaining %d candidates. "
-                    "They will be processed in tomorrow's run.",
-                    remaining
+                    "main: daily quota exhausted — marking %d remaining URLs as unextracted",
+                    len(remaining_urls)
                 )
+                for pending_url in remaining_urls:
+                    _save_seen_link(conn, pending_url, source="unextracted")
                 break
 
             logger.info("Extracting data from: %s", url)
@@ -158,6 +182,7 @@ def run():
             except RuntimeError as e:
                 if "Daily quota exhausted" in str(e):
                     quota_exhausted = True
+                    _save_seen_link(conn, url, source="unextracted")
                     logger.warning("main: daily quota exhausted, stopping extraction")
                     continue
                 logger.error("main: unexpected error for %s: %s", url, e)
@@ -167,6 +192,8 @@ def run():
             if result is None:
                 if _rate_limiter.daily_quota_exhausted():
                     quota_exhausted = True
+                    # Save this URL as unextracted too (it was the one that hit the limit)
+                    _save_seen_link(conn, url, source="unextracted")
                 logger.warning("Extraction failed for: %s", url)
                 failed += 1
                 continue
