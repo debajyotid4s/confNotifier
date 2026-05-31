@@ -13,7 +13,16 @@ import urllib3.exceptions
 
 from scraper.browser import BrowserManager, load_page
 
+# Suppress noisy urllib3 connection warnings from malformed server headers
+logging.getLogger("urllib3.connection").setLevel(logging.ERROR)
+
 logger = logging.getLogger(__name__)
+
+# Domains with known broken HTTP headers — always use curl, never requests
+CURL_ONLY_DOMAINS = {
+    "buet.ac.bd",
+    "www.buet.ac.bd",
+}
 
 CONF_PATTERNS = [
     re.compile(r"ic[a-z]+\d{4}"),
@@ -251,7 +260,20 @@ def run():
         known = set()
 
     for domain in domains:
-        soup, loaded_url, strategy = fetch_homepage_with_www_fallback(domain)
+        if domain in CURL_ONLY_DOMAINS:
+            logger.info("homepage_links: %s uses curl-only mode (malformed headers)", domain)
+            url = f"https://www.{domain}"
+            html = _curl_fetch(url)
+            if html:
+                soup = BeautifulSoup(html, "lxml")
+                loaded_url = url
+                strategy = "curl"
+            else:
+                stats["failed"] += 1
+                logger.warning("Could not load %s, skipping", domain)
+                continue
+        else:
+            soup, loaded_url, strategy = fetch_homepage_with_www_fallback(domain)
 
         if soup is None:
             stats["failed"] += 1
