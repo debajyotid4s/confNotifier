@@ -98,8 +98,8 @@ def run():
     each through extraction, deduplication, saving, and notification.
     """
     for var in ["DATABASE_URL", "DeepSeek_API_Token", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID"]:
-        if var not in os.environ:
-            print(f"ERROR: Missing required environment variable: {var}")
+        if var not in os.environ or not os.environ[var].strip():
+            print(f"ERROR: Missing or empty environment variable: {var}")
             sys.exit(1)
     logger.info("=== BD Conference Bot Run Started ===")
     conn = None
