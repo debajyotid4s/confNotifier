@@ -15,7 +15,7 @@ from scraper.browser import BrowserManager, load_page
 logger = logging.getLogger(__name__)
 
 MAX_TEXT_CHARS = 8000
-MODEL = "gemma-2-27b-it"
+MODEL = "gemini-2.5-flash"
 
 
 class GoogleRateLimiter:
@@ -157,8 +157,8 @@ def _fetch_page_text(url):
 
 def extract_conferences(page_text: str, source_url: str) -> dict | None:
     """
-    Send page text to Gemma 2 27B via Google AI Studio.
-    
+    Send page text to Gemini 2.5 Flash via Google AI Studio.
+
     NEVER gives up due to rate limits — waits as long as needed.
     Only gives up if:
     - Daily quota is fully exhausted (1500 requests)
@@ -185,7 +185,7 @@ def extract_conferences(page_text: str, source_url: str) -> dict | None:
 
         try:
             logger.info(
-                "extractor: calling Gemma 2 27B for %s (attempt %d, daily used: %d/%d)",
+                "extractor: calling Gemini 2.5 Flash for %s (attempt %d, daily used: %d/%d)",
                 source_url, attempt, _rate_limiter._daily_count, _rate_limiter.RPD_LIMIT
             )
 
@@ -251,7 +251,7 @@ def extract_conferences(page_text: str, source_url: str) -> dict | None:
 
 
 def extract(url):
-    """Extract conference details from a candidate URL using Google AI Studio.
+    """Extract conference details from a candidate URL using Gemini 2.5 Flash.
 
     Args:
         url: The candidate conference URL.
