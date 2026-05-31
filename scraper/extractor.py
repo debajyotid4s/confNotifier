@@ -3,7 +3,9 @@ import logging
 import os
 import re
 import socket
+import threading
 import time
+from collections import deque
 
 from openai import OpenAI
 from bs4 import BeautifulSoup
@@ -13,49 +15,112 @@ from scraper.browser import BrowserManager, load_page
 logger = logging.getLogger(__name__)
 
 MAX_TEXT_CHARS = 8000
+MODEL = "gemma-2-27b-it"
 
-# Free OpenRouter models with fallback chain
-FREE_MODELS = [
-    "google/gemma-4-31b-it:free",
-    "liquid/lfm-2.5-1.2b-instruct:free",
-    "deepseek/deepseek-v4-flash:free"
-]
 
-# Initialize OpenRouter client on module load
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY", ""),
+class GoogleRateLimiter:
+    """
+    Enforces Google AI Studio free tier limits:
+    - Max 15 requests per 60-second rolling window (RPM)
+    - Max 1500 requests per calendar day (RPD)
+    Thread-safe. Blocks the caller until a slot is available.
+    """
+
+    RPM_LIMIT = 15
+    RPD_LIMIT = 1500
+    WINDOW_SECONDS = 60
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._request_timestamps = deque()
+        self._daily_count = 0
+        self._day_start = time.strftime("%Y-%m-%d")
+
+    def _reset_daily_if_needed(self):
+        today = time.strftime("%Y-%m-%d")
+        if today != self._day_start:
+            self._daily_count = 0
+            self._day_start = today
+
+    def daily_quota_exhausted(self) -> bool:
+        with self._lock:
+            self._reset_daily_if_needed()
+            return self._daily_count >= self.RPD_LIMIT
+
+    def acquire(self):
+        """
+        Block until a request slot is available.
+        Waits for RPM window to clear if at 15 req/min.
+        Raises RuntimeError if daily quota is exhausted.
+        """
+        while True:
+            with self._lock:
+                self._reset_daily_if_needed()
+
+                if self._daily_count >= self.RPD_LIMIT:
+                    raise RuntimeError(
+                        f"Daily quota exhausted: {self._daily_count}/{self.RPD_LIMIT} "
+                        f"requests used today. Remaining candidates will be processed "
+                        f"tomorrow."
+                    )
+
+                now = time.time()
+                cutoff = now - self.WINDOW_SECONDS
+
+                # Remove timestamps outside the rolling window
+                while self._request_timestamps and self._request_timestamps[0] < cutoff:
+                    self._request_timestamps.popleft()
+
+                if len(self._request_timestamps) < self.RPM_LIMIT:
+                    # Slot available — record and proceed
+                    self._request_timestamps.append(now)
+                    self._daily_count += 1
+                    return
+                else:
+                    # At RPM limit — calculate exact wait time
+                    oldest_in_window = self._request_timestamps[0]
+                    wait_seconds = (oldest_in_window + self.WINDOW_SECONDS) - now + 0.5
+
+            # Wait outside the lock
+            logger.info(
+                "Rate limiter: at 15 RPM, waiting %.1fs for slot "
+                "(daily used: %d/%d)",
+                wait_seconds, self._daily_count, self.RPD_LIMIT
+            )
+            time.sleep(max(wait_seconds, 0.5))
+
+
+# Single shared instance used by all extraction calls
+_rate_limiter = GoogleRateLimiter()
+
+# OpenAI client pointed at Google AI Studio
+google_client = OpenAI(
+    api_key=os.environ.get("GOOGLE_AI_KEY", ""),
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
 )
 
-SYSTEM_PROMPT = (
-    "You are a precise conference data extractor for Bangladesh.\n"
-    "Given raw webpage text, extract international conference details.\n"
-    "Return ONLY a valid JSON object. No explanation. No markdown. No backticks.\n"
-    "{\n"
-    '  "is_conference": true or false,\n'
-    '  "title": "Full official conference title",\n'
-    '  "date_start": "YYYY-MM-DD or null",\n'
-    '  "date_end": "YYYY-MM-DD or null",\n'
-    '  "city": "City in Bangladesh or null",\n'
-    '  "country": "Bangladesh",\n'
-    '  "website": "Full conference URL",\n'
-    '  "organizer": "University or organization name or null",\n'
-    '  "category": "One of: Engineering, Electrical, Computing, Civil, Biomedical, Business, Energy, Science, Agriculture, Medical, Textile, Other",\n'
-    '  "confidence": 0.0 to 1.0\n'
-    "}\n"
-    "Rules:\n"
-    "- is_conference = false for seminars, webinars, local events.\n"
-    "- is_conference = true only for multi-day international conferences.\n"
-    "- If held outside Bangladesh, is_conference = false."
-)
+SYSTEM_PROMPT = """You are a precise conference data extractor for Bangladesh.
+Given raw webpage text, extract international conference details.
+Return ONLY a valid JSON object. No explanation. No markdown. No backticks.
 
+{
+  "is_conference": true or false,
+  "title": "Full official conference title",
+  "date_start": "YYYY-MM-DD or null",
+  "date_end": "YYYY-MM-DD or null",
+  "city": "City in Bangladesh or null",
+  "country": "Bangladesh",
+  "website": "Full conference URL",
+  "organizer": "University or organization name or null",
+  "category": "One of: Engineering, Electrical, Computing, Civil, Biomedical, Business, Energy, Science, Agriculture, Medical, Textile, Other",
+  "confidence": 0.0 to 1.0
+}
 
-def _strip_markdown_fence(text):
-    """Remove markdown code fences and optional language tag from LLM output."""
-    text = text.strip()
-    text = re.sub(r"^```(?:json)?\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
-    return text.strip()
+Rules:
+- is_conference = false for seminars, webinars, department pages, local events.
+- is_conference = true only for multi-day international conferences.
+- If held outside Bangladesh, is_conference = false.
+- If page has no conference content, return is_conference = false."""
 
 
 def _is_url_reachable(url: str) -> bool:
@@ -90,51 +155,103 @@ def _fetch_page_text(url):
     return text[:MAX_TEXT_CHARS]
 
 
-def _call_llm(text, url, model):
-    """Send page text to OpenRouter LLM and return the parsed JSON response.
-
-    Args:
-        text: The page text content.
-        url: The source URL (included in the prompt).
-        model: The model to use.
-
-    Returns:
-        Parsed JSON dict, or None on failure.
+def extract_conferences(page_text: str, source_url: str) -> dict | None:
     """
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": f"URL: {url}\n\nPage text:\n{text}",
-                },
-            ],
-            temperature=0.1,
-            max_tokens=1000,
-        )
-    except Exception as e:
-        logger.error("LLM API call failed for model %s: %s", model, e)
+    Send page text to Gemma 2 27B via Google AI Studio.
+    
+    NEVER gives up due to rate limits — waits as long as needed.
+    Only gives up if:
+    - Daily quota is fully exhausted (1500 requests)
+    - API returns a non-rate-limit error after 3 attempts
+    - Page text is empty
+    
+    Returns parsed dict or None.
+    """
+    if not page_text or len(page_text.strip()) < 100:
+        logger.warning("extractor: page text too short for %s, skipping", source_url)
         return None
 
-    raw = resp.choices[0].message.content
-    if not raw:
-        logger.warning("Empty response from model %s", model)
-        return None
+    trimmed = page_text[:8000]
+    max_non_ratelimit_attempts = 3
 
-    cleaned = _strip_markdown_fence(raw)
-    try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        logger.warning("JSON parse failed from model %s: %s", model, e)
-        return None
+    for attempt in range(1, max_non_ratelimit_attempts + 1):
+        # This blocks until a rate limit slot is available
+        # Raises RuntimeError only if daily quota is exhausted
+        try:
+            _rate_limiter.acquire()
+        except RuntimeError as e:
+            logger.error("extractor: %s", e)
+            return None
 
-    return data
+        try:
+            logger.info(
+                "extractor: calling Gemma 2 27B for %s (attempt %d, daily used: %d/%d)",
+                source_url, attempt, _rate_limiter._daily_count, _rate_limiter.RPD_LIMIT
+            )
+
+            response = google_client.chat.completions.create(
+                model=MODEL,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": f"Source URL: {source_url}\n\nPage content:\n{trimmed}"
+                    }
+                ],
+                temperature=0.0,
+                max_tokens=1000,
+            )
+
+            raw = response.choices[0].message.content.strip()
+            raw = re.sub(r"```json|```", "", raw).strip()
+            result = json.loads(raw)
+            logger.info(
+                "extractor: %s → is_conference=%s, confidence=%.2f",
+                source_url,
+                result.get("is_conference"),
+                result.get("confidence", 0.0),
+            )
+            return result
+
+        except json.JSONDecodeError as e:
+            logger.error(
+                "extractor: JSON parse failed for %s (attempt %d): %s",
+                source_url, attempt, e
+            )
+            # JSON errors are model output issues — retry makes sense
+            time.sleep(2)
+            continue
+
+        except Exception as e:
+            err_str = str(e)
+
+            # 429 should not reach here since acquire() handles RPM waiting,
+            # but handle it defensively anyway
+            if "429" in err_str or "rate" in err_str.lower():
+                wait = 65  # wait a full minute then retry
+                logger.warning(
+                    "extractor: unexpected 429 for %s, waiting %ds...",
+                    source_url, wait
+                )
+                time.sleep(wait)
+                continue
+
+            # Any other API error
+            logger.error(
+                "extractor: API error for %s (attempt %d): %s",
+                source_url, attempt, e
+            )
+            if attempt < max_non_ratelimit_attempts:
+                time.sleep(5)
+                continue
+            return None
+
+    logger.warning("extractor: all attempts exhausted for %s", source_url)
+    return None
 
 
 def extract(url):
-    """Extract conference details from a candidate URL using OpenRouter LLM.
+    """Extract conference details from a candidate URL using Google AI Studio.
 
     Args:
         url: The candidate conference URL.
@@ -148,19 +265,8 @@ def extract(url):
 
     text = _fetch_page_text(url)
     if text is None:
-        logger.warning("Could not fetch page text for %s", url)
+        logger.warning("extractor: could not fetch page text for %s", url)
         return None
 
-    logger.info("Extracting data from %s", url)
-    
-    # Try each model in fallback chain
-    for model in FREE_MODELS:
-        logger.info("Trying model: %s", model)
-        data = _call_llm(text, url, model)
-        if data is not None:
-            logger.info("Extraction succeeded with model %s", model)
-            return data
-        time.sleep(1)  # Small delay between model attempts
-
-    logger.warning("All models failed for %s", url)
-    return None
+    logger.info("extractor: extracting from %s", url)
+    return extract_conferences(text, url)

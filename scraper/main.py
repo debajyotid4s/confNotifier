@@ -7,7 +7,7 @@ from datetime import datetime
 import psycopg2
 
 from sources import crt_monitor, homepage_links, special
-from extractor import extract
+from extractor import extract, _rate_limiter
 from deduplicator import is_duplicate
 from notifier import notify
 
@@ -97,7 +97,7 @@ def run():
     Runs all three source detectors, combines candidates, and processes
     each through extraction, deduplication, saving, and notification.
     """
-    for var in ["DATABASE_URL", "OPENROUTER_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID"]:
+    for var in ["DATABASE_URL", "GOOGLE_AI_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID"]:
         if var not in os.environ or not os.environ[var].strip():
             print(f"ERROR: Missing or empty environment variable: {var}")
             sys.exit(1)
@@ -140,11 +140,33 @@ def run():
         new_count = 0
         skipped = 0
         failed = 0
+        quota_exhausted = False
 
         for url in all_candidates:
+            if quota_exhausted:
+                remaining = len(all_candidates) - all_candidates.index(url)
+                logger.warning(
+                    "main: daily quota exhausted — skipping remaining %d candidates. "
+                    "They will be processed in tomorrow's run.",
+                    remaining
+                )
+                break
+
             logger.info("Extracting data from: %s", url)
-            result = extract(url)
+            try:
+                result = extract(url)
+            except RuntimeError as e:
+                if "Daily quota exhausted" in str(e):
+                    quota_exhausted = True
+                    logger.warning("main: daily quota exhausted, stopping extraction")
+                    continue
+                logger.error("main: unexpected error for %s: %s", url, e)
+                failed += 1
+                continue
+
             if result is None:
+                if _rate_limiter.daily_quota_exhausted():
+                    quota_exhausted = True
                 logger.warning("Extraction failed for: %s", url)
                 failed += 1
                 continue
@@ -205,8 +227,10 @@ def run():
                 logger.warning("Could not mark subdomain as extracted: %s", e)
 
         logger.info(
-            "=== Run complete: %d found, %d new, %d skipped, %d failed ===",
+            "=== Run complete: %d found, %d new, %d skipped, %d failed | "
+            "LLM requests today: %d/%d ===",
             found, new_count, skipped, failed,
+            _rate_limiter._daily_count, _rate_limiter.RPD_LIMIT
         )
 
     except Exception as e:
