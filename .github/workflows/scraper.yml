@@ -30,6 +30,6 @@ jobs:
         run: PYTHONPATH=. python scraper/main.py
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DeepSeek_API_Token: ${{ secrets.DeepSeek_API_Token }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}

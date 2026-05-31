@@ -97,7 +97,7 @@ def run():
     Runs all three source detectors, combines candidates, and processes
     each through extraction, deduplication, saving, and notification.
     """
-    for var in ["DATABASE_URL", "DeepSeek_API_Token", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID"]:
+    for var in ["DATABASE_URL", "OPENROUTER_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID"]:
         if var not in os.environ or not os.environ[var].strip():
             print(f"ERROR: Missing or empty environment variable: {var}")
             sys.exit(1)
