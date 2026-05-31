@@ -194,75 +194,82 @@ def _get_db_connection():
 
 
 def run() -> list:
-    """Query crt.sh using broad TLD queries and return new conference-like subdomain URLs.
+    """Query crt.sh and return all candidate URLs for extraction.
 
-    Uses 3 requests total instead of 159 individual domain queries,
-    preventing crt.sh rate limiting and 502 errors.
-
-    Key fixes vs previous version:
-    - _is_bd_edu() now uses exact domain suffix matching (catches sust.edu)
-    - _is_conference_subdomain() blocks known non-conference prefixes early
-    - KEYWORDS trimmed to subdomain-relevant slug patterns only
+    Uses three separate short-lived DB connections to avoid Neon's
+    idle connection timeout during long crt.sh waits.
     """
     candidates = []
-    conn = None
 
+    # ── Phase A: Load known/unextracted subdomains (connection lives ~1s) ──
+    known = set()
     try:
         conn = _get_db_connection()
-        cur = conn.cursor()
-
-        # Load already-known AND already-extracted subdomains
-        # Unextracted ones will be re-returned as candidates
-        cur.execute("SELECT subdomain FROM known_subdomains WHERE extracted = TRUE")
-        known = {row[0] for row in cur.fetchall()}
-
-        # Also return any previously found but unextracted subdomains
-        cur.execute("SELECT subdomain FROM known_subdomains WHERE extracted = FALSE")
-        unextracted = cur.fetchall()
-        for (subdomain,) in unextracted:
-            url = f"https://{subdomain}"
-            candidates.append(url)
-            logger.info("crt_monitor: re-queuing unextracted → %s", url)
-
-        for query in BD_TLD_QUERIES:
-            logger.info("crt_monitor: querying crt.sh for %s ...", query)
-            entries = _fetch_crt(query)
-
-            if not entries:
-                continue
-
-            logger.info(
-                "crt_monitor: %d cert entries returned for %s",
-                len(entries), query,
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT subdomain FROM known_subdomains WHERE extracted = TRUE"
             )
+            known = {row[0] for row in cur.fetchall()}
 
-            seen_in_batch = set()
+            cur.execute(
+                "SELECT subdomain FROM known_subdomains WHERE extracted = FALSE"
+            )
+            for (subdomain,) in cur.fetchall():
+                url = f"https://{subdomain}"
+                candidates.append(url)
+                logger.info("crt_monitor: re-queuing unextracted → %s", url)
+            cur.close()
+        finally:
+            conn.close()   # closed BEFORE crt.sh queries start
+    except Exception as e:
+        logger.error("crt_monitor: failed to load known subdomains: %s", e)
+        # Continue anyway — at minimum we have empty known set
 
-            for entry in entries:
-                name_value = entry.get("name_value", "")
-                for raw_name in name_value.split("\n"):
-                    raw_name = raw_name.strip().lower().lstrip("*.")
+    # ── Phase B: Query crt.sh (no DB connection open) ──
+    new_subdomains = []
+    seen_in_run = set(known)
 
-                    if not raw_name:
-                        continue
+    for query in BD_TLD_QUERIES:
+        logger.info("crt_monitor: querying crt.sh for %s ...", query)
+        entries = _fetch_crt(query)
 
-                    # For broad %.edu query, only keep known BD university domains
-                    if query == "%.edu" and not _is_bd_edu(raw_name):
-                        continue
+        if not entries:
+            continue
 
-                    if not _is_conference_subdomain(raw_name):
-                        continue
+        logger.info(
+            "crt_monitor: %d cert entries returned for %s",
+            len(entries), query,
+        )
 
-                    if raw_name in known or raw_name in seen_in_batch:
-                        continue
+        for entry in entries:
+            name_value = entry.get("name_value", "")
+            for raw_name in name_value.split("\n"):
+                raw_name = raw_name.strip().lower().lstrip("*.")
 
-                    seen_in_batch.add(raw_name)
-                    known.add(raw_name)
+                if not raw_name:
+                    continue
+                if query == "%.edu" and not _is_bd_edu(raw_name):
+                    continue
+                if not _is_conference_subdomain(raw_name):
+                    continue
+                if raw_name in seen_in_run:
+                    continue
 
-                    url = f"https://{raw_name}"
-                    candidates.append(url)
-                    logger.info("crt_monitor: new candidate → %s", url)
+                seen_in_run.add(raw_name)
+                new_subdomains.append((raw_name, query))
+                candidates.append(f"https://{raw_name}")
+                logger.info("crt_monitor: new candidate → https://%s", raw_name)
 
+        time.sleep(5)
+
+    # ── Phase C: Save new subdomains (fresh connection, lives ~1s) ──
+    if new_subdomains:
+        try:
+            conn = _get_db_connection()
+            try:
+                cur = conn.cursor()
+                for subdomain, query in new_subdomains:
                     try:
                         cur.execute(
                             """
@@ -270,32 +277,24 @@ def run() -> list:
                             VALUES (%s, %s)
                             ON CONFLICT (subdomain) DO UPDATE SET last_seen = NOW()
                             """,
-                            (raw_name, query),
+                            (subdomain, query),
                         )
-                        conn.commit()
                     except psycopg2.Error as e:
                         conn.rollback()
                         logger.error(
-                            "DB error saving subdomain %s: %s", raw_name, e,
+                            "crt_monitor: DB error saving %s: %s", subdomain, e
                         )
-
-            # Polite delay between the 3 TLD queries
-            time.sleep(5)
-
-        cur.close()
-
-    except Exception as e:
-        logger.error("crt_monitor.run error: %s", e)
-        raise
-    finally:
-        if conn is not None:
-            try:
+                conn.commit()
+                cur.close()
+            finally:
                 conn.close()
-            except Exception as e:
-                logger.error("Error closing DB connection: %s", e)
+        except Exception as e:
+            logger.error("crt_monitor: failed to save new subdomains: %s", e)
+            # Not fatal — subdomains will be re-discovered next run
 
     logger.info(
-        "crt_monitor: finished — %d new conference-like subdomains found",
-        len(candidates),
+        "crt_monitor: finished — %d new candidates, %d re-queued unextracted",
+        len(new_subdomains),
+        len(candidates) - len(new_subdomains),
     )
     return candidates
