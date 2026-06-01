@@ -1,3 +1,10 @@
 [
-  "https://iccit.org.bd"
+  {
+    "type": "path",
+    "base_url": "https://iccit.org.bd"
+  },
+  {
+    "type": "root_year",
+    "base_url": "https://qpain.org"
+  }
 ]
