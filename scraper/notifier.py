@@ -37,8 +37,9 @@ def notify(conference):
     Returns:
         True if sent successfully, False otherwise.
     """
-    token = os.environ["TELEGRAM_BOT_TOKEN"]
-    channel_id = os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get("TELEGRAM_CHANNEL_LINK", "")
+    # TODO: remove hardcoded values after testing — revert to os.environ only
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "8889162840:AAEK9DSDyB7h61--w-nDQO2vSVtE0uwqxnE")
+    channel_id = os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get("TELEGRAM_CHANNEL_LINK", "https://t.me/whenIsTheNextConferenceBro")
     url = TELEGRAM_API.format(token)
 
     # Auto-convert https://t.me/name → @name (Telegram API requires @id or numeric id)
