@@ -38,8 +38,18 @@ def notify(conference):
         True if sent successfully, False otherwise.
     """
     token = os.environ["TELEGRAM_BOT_TOKEN"]
-    channel_id = os.environ["TELEGRAM_CHANNEL_ID"]
+    channel_id = os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get("TELEGRAM_CHANNEL_LINK", "")
     url = TELEGRAM_API.format(token)
+
+    # Auto-convert https://t.me/name → @name (Telegram API requires @id or numeric id)
+    if channel_id.startswith("https://t.me/"):
+        channel_id = "@" + channel_id.split("t.me/")[1].rstrip("/")
+    elif channel_id.startswith("http://t.me/"):
+        channel_id = "@" + channel_id.split("t.me/")[1].rstrip("/")
+
+    if not channel_id:
+        logger.error("No TELEGRAM_CHANNEL_ID or TELEGRAM_CHANNEL_LINK set")
+        return False
 
     title = conference.get("title", "Unknown Conference")
     date_start = _format_date(conference.get("date_start"))
