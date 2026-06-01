@@ -1,7 +1,9 @@
+import ipaddress
 import json
 import logging
 import os
 import re
+import socket
 import subprocess
 import time
 from urllib.parse import urlparse, urljoin
@@ -17,6 +19,28 @@ from scraper.browser import BrowserManager, load_page
 logging.getLogger("urllib3.connection").setLevel(logging.ERROR)
 
 logger = logging.getLogger(__name__)
+
+
+def _is_safe_url(url: str) -> bool:
+    """Block SSRF: dangerous schemes, private/internal IPs, localhost."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+    if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+        return False
+    try:
+        ip = ipaddress.ip_address(socket.gethostbyname(hostname))
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            return False
+    except (socket.gaierror, ValueError):
+        return False
+    return True
 
 # Domains with known broken HTTP headers — always use curl, never requests
 CURL_ONLY_DOMAINS = {
@@ -68,6 +92,9 @@ def _selenium_fetch(url: str) -> str | None:
     """Fetch page HTML using Selenium with anti-bot measures.
     Handles Cloudflare JS challenge (Category A1) that block requests and curl.
     """
+    if not _is_safe_url(url):
+        logger.warning("SSRF blocked (selenium): %s", url)
+        return None
     try:
         with BrowserManager() as driver:
             if load_page(driver, url, retries=1):
@@ -80,6 +107,9 @@ def _selenium_fetch(url: str) -> str | None:
 def _curl_fetch(url: str, timeout: int = 15) -> str | None:
     """Fetch page HTML using curl subprocess. Handles malformed headers
     that break requests/urllib3 (Category B failures like buet.ac.bd)."""
+    if not _is_safe_url(url):
+        logger.warning("SSRF blocked (curl): %s", url)
+        return None
     try:
         proc = subprocess.run(
             [
@@ -109,6 +139,10 @@ def fetch_homepage_fast(url: str, retries: int = 2):
     Returns (soup, strategy) where strategy is one of:
     "requests", "curl", "selenium", or None if all failed.
     """
+    if not _is_safe_url(url):
+        logger.warning("SSRF blocked: %s", url)
+        return None, None
+
     domain = url.replace("https://", "").replace("http://", "").split("/")[0]
 
     headers = {

@@ -26,6 +26,10 @@ def _probe_url(url, timeout=30):
     Returns:
         True if the page exists and has substantial content.
     """
+    from scraper.sources.homepage_links import _is_safe_url
+    if not _is_safe_url(url):
+        logger.warning("SSRF blocked: %s", url)
+        return False
     try:
         resp = requests.get(
             url,

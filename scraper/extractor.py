@@ -142,6 +142,11 @@ def _fetch_page_text(url):
     Returns:
         Extracted text content (first 8000 chars), or None on failure.
     """
+    from scraper.sources.homepage_links import _is_safe_url
+    if not _is_safe_url(url):
+        logger.warning("SSRF blocked: %s", url)
+        return None
+
     with BrowserManager() as driver:
         if not load_page(driver, url):
             logger.error("Failed to load candidate URL: %s", url)
