@@ -220,6 +220,29 @@ def _notify_pending(notify_fn) -> int:
     conn = None
     notified_count = 0
 
+    # Mark all past conferences as notified (cleanup from before date filter)
+    try:
+        conn = psycopg2.connect(_db_url())
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE conferences SET is_notified = TRUE, notified_at = NOW() "
+            "WHERE is_notified = FALSE AND date_start < CURRENT_DATE"
+        )
+        if cur.rowcount > 0:
+            logger.info("notify_pending: marked %d past conferences as notified", cur.rowcount)
+        conn.commit()
+        cur.close()
+        conn.close()
+        conn = None
+    except Exception as e:
+        logger.error("notify_pending: cleanup error: %s", e)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     try:
         conn = psycopg2.connect(_db_url())
         cur = conn.cursor()
