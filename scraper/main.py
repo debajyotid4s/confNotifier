@@ -147,6 +147,40 @@ def _load_unextracted_urls() -> list:
                 pass
 
 
+def _load_orphaned_urls() -> list:
+    """Load URLs in seen_links that have no matching conference entry.
+
+    These are URLs that were probed successfully but extraction failed
+    (rate limit, LLM error, short page, etc.) in a previous run.
+    They need to be re-processed.
+    """
+    conn = None
+    try:
+        conn = psycopg2.connect(_db_url())
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT sl.url FROM seen_links sl
+            LEFT JOIN conferences c
+              ON sl.url = c.raw_source OR sl.url = c.website
+            WHERE c.id IS NULL
+              AND sl.source != 'unextracted'
+            """
+        )
+        urls = [row[0] for row in cur.fetchall()]
+        cur.close()
+        return urls
+    except Exception as e:
+        logger.error("load_orphaned_urls error: %s", e)
+        return []
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def _mark_notified(website: str) -> None:
     """Open a fresh DB connection, mark conference notified, close immediately."""
     conn = None
@@ -344,6 +378,12 @@ def run():
     if unextracted_prev:
         all_candidates = list(set(unextracted_prev + all_candidates))
         logger.info("Re-queued %d unextracted URLs from previous runs", len(unextracted_prev))
+
+    # Re-queue orphaned URLs (in seen_links but not in conferences — extraction failed previously)
+    orphaned = _load_orphaned_urls()
+    if orphaned:
+        all_candidates = list(set(orphaned + all_candidates))
+        logger.info("Re-queued %d orphaned URLs (seen but never extracted)", len(orphaned))
 
     logger.info("Phase 4: Processing %d unique candidates", len(all_candidates))
 
