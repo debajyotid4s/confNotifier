@@ -169,6 +169,118 @@ def _mark_notified(website: str) -> None:
                 pass
 
 
+def _notify_pending(notify_fn) -> int:
+    """
+    Send Telegram notifications for all conferences where is_notified = FALSE.
+
+    Opens a fresh DB connection per operation to avoid Neon idle timeout.
+    Returns the count of successfully notified conferences.
+
+    This runs at the end of every scraper run and catches:
+    - Conferences saved in a previous run where notification crashed
+    - Conferences saved in the current run's Phase 4 loop
+    - Any backlog that accumulated during debugging/development
+    """
+    conn = None
+    notified_count = 0
+
+    try:
+        conn = psycopg2.connect(_db_url())
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, title, date_start, date_end, city, website,
+                   organizer, category, confidence
+            FROM conferences
+            WHERE is_notified = FALSE
+            ORDER BY created_at ASC
+            """
+        )
+        pending = cur.fetchall()
+        cur.close()
+        conn.close()
+        conn = None
+
+        if not pending:
+            logger.info("notify_pending: no unnotified conferences found")
+            return 0
+
+        logger.info(
+            "notify_pending: found %d conference(s) to notify", len(pending)
+        )
+
+        for row in pending:
+            conf_id = row[0]
+            conf = {
+                "title":      row[1],
+                "date_start": str(row[2]) if row[2] else None,
+                "date_end":   str(row[3]) if row[3] else None,
+                "city":       row[4],
+                "website":    row[5],
+                "organizer":  row[6],
+                "category":   row[7],
+                "confidence": row[8],
+            }
+
+            try:
+                success = notify_fn(conf)
+            except Exception as e:
+                logger.error(
+                    "notify_pending: notify_fn raised for id=%d (%s): %s",
+                    conf_id, conf.get("website"), e
+                )
+                success = False
+
+            if success:
+                conn2 = None
+                try:
+                    conn2 = psycopg2.connect(_db_url())
+                    cur2 = conn2.cursor()
+                    cur2.execute(
+                        """
+                        UPDATE conferences
+                        SET is_notified = TRUE, notified_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (conf_id,)
+                    )
+                    conn2.commit()
+                    cur2.close()
+                    notified_count += 1
+                    logger.info(
+                        "notify_pending: notified id=%d — %s",
+                        conf_id, conf.get("title")
+                    )
+                except Exception as e:
+                    logger.error(
+                        "notify_pending: failed to mark id=%d as notified: %s",
+                        conf_id, e
+                    )
+                finally:
+                    if conn2:
+                        try:
+                            conn2.close()
+                        except Exception:
+                            pass
+            else:
+                logger.warning(
+                    "notify_pending: notify_fn returned False for id=%d (%s), "
+                    "will retry next run",
+                    conf_id, conf.get("website")
+                )
+
+    except Exception as e:
+        logger.error("notify_pending: error fetching pending conferences: %s", e)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return notified_count
+
+
 # ── Main orchestrator ──
 
 
@@ -295,6 +407,12 @@ def run():
         found, new_count, skipped, failed,
         _rate_limiter._daily_count, _rate_limiter.RPD_LIMIT
     )
+
+    # Notify any conferences saved but not yet notified
+    # (includes backlog from previous runs and current run)
+    pending_sent = _notify_pending(notify)
+    if pending_sent > 0:
+        logger.info("notify_pending: sent %d notification(s)", pending_sent)
 
 
 if __name__ == "__main__":
