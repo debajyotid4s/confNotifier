@@ -350,12 +350,17 @@ def run():
     Every DB operation opens and closes its own connection.
     No long-lived connection is held during source scanning or LLM extraction.
     """
-    for var in ["DATABASE_URL", "GOOGLE_AI_KEY"]:
+    for var in ["DATABASE_URL", "GOOGLE_AI_KEY", "TELEGRAM_BOT_TOKEN"]:
         if var not in os.environ or not os.environ[var].strip():
             print(f"ERROR: Missing or empty environment variable: {var}")
-            print(f"  Set it in GitHub repo → Settings → Secrets → Actions")
+            print(f"  Set it in GitHub repo -> Settings -> Secrets -> Actions")
             sys.exit(1)
         logger.info("Env var %s: set (%s...)", var, os.environ[var][:8])
+
+    if not (os.environ.get("TELEGRAM_CHANNEL_ID", "").strip() or
+            os.environ.get("TELEGRAM_CHANNEL_LINK", "").strip()):
+        print("ERROR: Missing environment variable: TELEGRAM_CHANNEL_ID or TELEGRAM_CHANNEL_LINK")
+        sys.exit(1)
 
     # Connectivity test — verify DB is reachable, then close immediately
     try:

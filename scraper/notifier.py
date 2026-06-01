@@ -37,14 +37,15 @@ def notify(conference):
     Returns:
         True if sent successfully, False otherwise.
     """
-    # TODO: remove hardcoded values after testing — revert to os.environ only
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "8889162840:AAEK9DSDyB7h61--w-nDQO2vSVtE0uwqxnE")
-    channel_id = os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get("TELEGRAM_CHANNEL_LINK", "https://t.me/whenIsTheNextConferenceBro")
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    channel_id = os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get("TELEGRAM_CHANNEL_LINK", "")
 
-    if not os.environ.get("TELEGRAM_BOT_TOKEN"):
-        logger.warning("TELEGRAM_BOT_TOKEN not set, using hardcoded fallback")
-    if not os.environ.get("TELEGRAM_CHANNEL_ID") and not os.environ.get("TELEGRAM_CHANNEL_LINK"):
-        logger.warning("TELEGRAM_CHANNEL_ID/TELEGRAM_CHANNEL_LINK not set, using hardcoded fallback")
+    if not token:
+        logger.error("TELEGRAM_BOT_TOKEN not set")
+        return False
+    if not channel_id:
+        logger.error("TELEGRAM_CHANNEL_ID or TELEGRAM_CHANNEL_LINK not set")
+        return False
 
     url = TELEGRAM_API.format(token)
 
