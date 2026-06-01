@@ -94,8 +94,14 @@ class GoogleRateLimiter:
 _rate_limiter = GoogleRateLimiter()
 
 # OpenAI client pointed at Google AI Studio
+_google_key = os.environ.get("GOOGLE_AI_KEY", "")
+if not _google_key:
+    logger.critical("GOOGLE_AI_KEY is not set — LLM extraction will fail")
+else:
+    logger.info("GOOGLE_AI_KEY loaded (%s...)", _google_key[:8])
+
 google_client = OpenAI(
-    api_key=os.environ.get("GOOGLE_AI_KEY", ""),
+    api_key=_google_key or "MISSING",
     base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
 )
 

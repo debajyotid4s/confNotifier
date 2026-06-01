@@ -327,7 +327,9 @@ def run():
     for var in ["DATABASE_URL", "GOOGLE_AI_KEY"]:
         if var not in os.environ or not os.environ[var].strip():
             print(f"ERROR: Missing or empty environment variable: {var}")
+            print(f"  Set it in GitHub repo → Settings → Secrets → Actions")
             sys.exit(1)
+        logger.info("Env var %s: set (%s...)", var, os.environ[var][:8])
 
     # Connectivity test — verify DB is reachable, then close immediately
     try:

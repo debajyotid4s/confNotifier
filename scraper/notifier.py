@@ -40,6 +40,12 @@ def notify(conference):
     # TODO: remove hardcoded values after testing — revert to os.environ only
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "8889162840:AAEK9DSDyB7h61--w-nDQO2vSVtE0uwqxnE")
     channel_id = os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get("TELEGRAM_CHANNEL_LINK", "https://t.me/whenIsTheNextConferenceBro")
+
+    if not os.environ.get("TELEGRAM_BOT_TOKEN"):
+        logger.warning("TELEGRAM_BOT_TOKEN not set, using hardcoded fallback")
+    if not os.environ.get("TELEGRAM_CHANNEL_ID") and not os.environ.get("TELEGRAM_CHANNEL_LINK"):
+        logger.warning("TELEGRAM_CHANNEL_ID/TELEGRAM_CHANNEL_LINK not set, using hardcoded fallback")
+
     url = TELEGRAM_API.format(token)
 
     # Auto-convert https://t.me/name → @name (Telegram API requires @id or numeric id)
