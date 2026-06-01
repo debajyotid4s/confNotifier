@@ -165,6 +165,7 @@ def _load_orphaned_urls() -> list:
               ON sl.url = c.raw_source OR sl.url = c.website
             WHERE c.id IS NULL
               AND sl.source != 'unextracted'
+              AND sl.url NOT LIKE '%%#%%'
             """
         )
         urls = [row[0] for row in cur.fetchall()]

@@ -103,6 +103,7 @@ else:
 google_client = OpenAI(
     api_key=_google_key or "MISSING",
     base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+    max_retries=0,
 )
 
 SYSTEM_PROMPT = """You are a precise conference data extractor for Bangladesh.
