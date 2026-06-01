@@ -229,6 +229,7 @@ def _notify_pending(notify_fn) -> int:
                    organizer, category, confidence
             FROM conferences
             WHERE is_notified = FALSE
+              AND (date_start IS NULL OR date_start >= CURRENT_DATE)
             ORDER BY created_at ASC
             """
         )
