@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+from datetime import datetime
 
 import psycopg2
 
@@ -428,6 +429,19 @@ def run():
             _save_seen_link(url)
             skipped += 1
             continue
+
+        # Skip conferences that have already ended
+        date_start = result.get("date_start")
+        if date_start:
+            try:
+                conf_date = datetime.strptime(date_start, "%Y-%m-%d").date()
+                if conf_date < datetime.now().date():
+                    logger.info("Conference already past (%s), skipping: %s", date_start, url)
+                    _save_seen_link(url)
+                    skipped += 1
+                    continue
+            except (ValueError, TypeError):
+                pass
 
         if _is_duplicate(result.get("website", "")):
             logger.info("Duplicate conference, skipping: %s", url)
