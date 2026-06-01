@@ -285,12 +285,9 @@ def run():
             continue
 
         logger.info("New conference saved: %s", result.get("title"))
-
-        if notify(result):
-            _mark_notified(result.get("website"))   # use website as identifier
-
-        new_count += 1
         _mark_extracted(url)
+        notify(result)
+        new_count += 1
 
     logger.info(
         "=== Run complete: %d found, %d new, %d skipped, %d failed | "
