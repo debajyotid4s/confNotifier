@@ -240,7 +240,7 @@ def extract_conferences(page_text: str, source_url: str) -> dict | None:
             # 429 should not reach here since acquire() handles RPM waiting,
             # but handle it defensively anyway
             if "429" in err_str or "rate" in err_str.lower():
-                wait = 65  # wait a full minute then retry
+                wait = 120
                 logger.warning(
                     "extractor: unexpected 429 for %s, waiting %ds...",
                     source_url, wait
