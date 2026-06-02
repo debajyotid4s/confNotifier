@@ -49,14 +49,24 @@ CURL_ONLY_DOMAINS = {
 }
 
 CONF_PATTERNS = [
+    re.compile(r"ieee[a-z]+\d{4}"),
     re.compile(r"ic[a-z]+\d{4}"),
-    re.compile(r"conf[a-z]+"),
-    re.compile(r"[a-z]+con\."),
-    re.compile(r"[a-z]+icon\."),
+    re.compile(r"[a-z]+con\.\w+"),
+    re.compile(r"[a-z]+icon\.\w+"),
+    re.compile(r"conf[a-z]+\d{4}"),
     re.compile(r"symposium"),
     re.compile(r"iccit"),
-    re.compile(r"ieee"),
 ]
+
+URL_BLOCKLIST = {
+    "https://www.ieee.org",
+    "https://www.ieee.org/",
+    "http://www.ieee.org",
+    "https://site.ieee.org",
+    "http://sites.ieee.org",
+    "http://ieeeruetsb.net",
+    "http://ieeeruetsb.net/wapindex.html",
+}
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
@@ -68,6 +78,8 @@ def _load_domains(path="config/universities.json"):
 
 def _is_conference_link(href, domain):
     if not href:
+        return False
+    if href in URL_BLOCKLIST or href.rstrip("/") in URL_BLOCKLIST:
         return False
     try:
         parsed = urlparse(href)
