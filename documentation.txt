@@ -9,8 +9,8 @@ be held in Bangladesh and notifies subscribers via a Telegram channel. Runs
 entirely on free infrastructure with zero manual intervention.
 
   Detection:   crt.sh cert transparency + university homepage scanning +
-               special source monitoring (ICCIT, etc.)
-  Extraction:  OpenRouter LLM (3-model fallback chain)
+               special source monitoring (ICCIT, QPAIN, etc.)
+  Extraction:  Google AI Studio — Gemini 2.5 Flash (single model, rate-limited)
   Database:    PostgreSQL on Neon (free tier)
   Scheduling:  GitHub Actions (cron every 6 hours)
   Delivery:    Telegram public channel
@@ -23,26 +23,25 @@ bd-conf-bot/
   .github/workflows/scraper.yml   — GitHub Actions cron job (every 6h)
   config/
     universities.json              — Bangladeshi university domains
-    special_sources.json           — ICCIT and other independent confs
+    special_sources.json           — ICCIT, QPAIN, and other independent confs
   db/schema.sql                    — PostgreSQL table definitions
   scraper/
     __init__.py
     browser.py                     — Selenium driver factory with anti-bot
     main.py                        — Orchestrator: sources -> extract -> notify
-    extractor.py                   — OpenRouter LLM extraction (3 models)
+    extractor.py                   — Gemini 2.5 Flash extraction + rate limiter
     deduplicator.py                — Duplicate check against PostgreSQL
     notifier.py                    — Telegram message formatting + send
     sources/
       __init__.py
       crt_monitor.py               — crt.sh cert transparency queries
       homepage_links.py            — Scans uni homepages for outbound conf links
-      special.py                   — Probes ICCIT and similar independent confs
+      special.py                   — Multi-type source handler (path + root_year)
   bot/bot.py                       — Telegram bot (webhook mode for Koyeb)
   requirements.txt
   .gitignore
-  README.md
-  BD_Conference_Bot_Full_Plan.md   — Original plan document
   documentation.txt                — This file
+  BD_Conference_Bot_Full_Plan.md   — Original plan document
 
 
 3. FILE DESCRIPTIONS
@@ -53,13 +52,15 @@ config/universities.json
   - Used by crt_monitor.py and homepage_links.py
 
 config/special_sources.json
-  - JSON array of independent conference base URLs
-  - Currently: ["https://iccit.org.bd"]
+  - Structured JSON array with type-based source definitions
+  - Types: "path" (ICCIT-style /YYYY/home/ probing), "root_year" (QPAIN-style
+    year extraction from page content)
+  - Current sources: ICCIT, QPAIN, BECITHCON, SPICSCON, PEEIACON, ICECE, ICCHE
 
 db/schema.sql
   - 3 tables: known_subdomains, seen_links, conferences
-  - Indexes on website, date_start, subdomain, and url columns
-  - No subscribers table (not needed — delivery is channel-based)
+  - conferences: extracted column tracks LLM extraction status
+  - No subscribers table (delivery is channel-based)
 
 scraper/browser.py
   - Selenium Chrome driver factory with anti-bot measures:
@@ -74,66 +75,64 @@ scraper/browser.py
   - BrowserManager: context manager for safe driver lifecycle
 
 scraper/sources/crt_monitor.py
-  - 3 broad crt.sh queries instead of 159 individual ones:
-    %.ac.bd, %.edu.bd, %.edu
+  - 3 broad crt.sh queries: %.ac.bd, %.edu.bd, %.edu, %.sust.edu
   - Filters results by conference-like subdomain patterns
   - SUBDOMAIN_BLOCKLIST blocks known non-conference prefixes (includes ict.)
   - For %.edu results, filters by exact BD university domain matching
-  - Exponential backoff on 502/timeout (10s, 20s, 40s)
-  - Saves new subdomains to known_subdomains table
+  - 3-phase DB access: load known -> query crt.sh -> save new (no long-held conn)
   - Returns list of https:// URLs
 
 scraper/sources/homepage_links.py
   - Uses requests + BeautifulSoup (no Selenium) to fetch each homepage
-  - fetch_homepage_fast(): requests.get() with 10s timeout, no JS rendering
+  - fetch_homepage_fast(): multi-strategy (requests -> curl -> Selenium fallback)
+  - CURL_ONLY_DOMAINS for sites with broken HTTP headers (buet.ac.bd)
+  - SSRF protection: _is_safe_url() blocks private IPs, localhost, dangerous schemes
   - Extracts outbound <a href> links via BS4
-  - Matches against regex patterns: ic[a-z]+\d{4}, conf[a-z]+, symposium, ieee, etc.
   - Uses _save_link() — fresh DB connection per save, closed immediately
-  - Loads known links once upfront, then closes that connection
   - Returns list of new candidate URLs
 
 scraper/sources/special.py
-  - Probes special source URLs with current year and next year
-  - Tries /YYYY/home/ first, falls back to /YYYY/ if that fails
-  - Checks HTTP 200 + content > 500 chars
-  - Uses long-held DB connection for known links check + save
-  - Returns list of new candidate URLs
+  - Multi-type source handler based on "type" field in special_sources.json
+  - "path" type: probes /YYYY/home/ then /YYYY/ for each year
+  - "root_year" type: fetches base URL, extracts year from <title>/<h1>/text
+  - SSRF protection: _is_safe_url() before any fetch
+  - All DB operations use fresh-per-operation connections
+  - Returns flat list of candidate URL strings
 
 scraper/extractor.py
-  - DNS pre-check (_is_url_reachable()) before launching Selenium for each URL
-    - Skips dead URLs in ~1s instead of ~10s of failed Selenium attempts
-  - LLM extraction pipeline with 3-model fallback:
-    1. meta-llama/llama-3.3-70b-instruct:free
-    2. google/gemma-4-26b-a4b-it:free
-    3. deepseek/deepseek-v4-flash:free
+  - DNS pre-check (_is_url_reachable()) before Selenium
+  - GoogleRateLimiter: 15 RPM, 1500 RPD (rolling window, thread-safe)
+  - Gemini 2.5 Flash via Google AI Studio OpenAI-compatible API
+  - max_retries=0 on OpenAI client (we handle 429s ourselves)
   - Fetches page text via Selenium + BeautifulSoup (first 8000 chars)
-  - Sends to OpenRouter with structured JSON prompt
-  - Strips markdown fences from response
-  - Returns parsed dict or None if all models fail
-  - Spawns new Chrome instance per URL (known performance issue)
+  - Returns parsed dict or None if extraction fails
 
 scraper/deduplicator.py
-  - Checks conferences table for duplicates by:
-    - website URL match (primary)
-    - title ILIKE + date_start match (secondary)
+  - Checks conferences table for duplicates by website URL
   - Opens/closes its own DB connection per call
   - Returns True if duplicate found
 
 scraper/notifier.py
   - Formats conference data into emoji-rich Telegram message
   - Generates PascalCase hashtags from title, category, city
-  - Posts to TELEGRAM_CHANNEL_ID via bot API
+  - Posts to TELEGRAM_CHANNEL_ID or TELEGRAM_CHANNEL_LINK via bot API
+  - Auto-converts https://t.me/name -> @name for API compatibility
   - Returns True/False on success/failure
+  - No hardcoded credentials — requires env vars
 
 scraper/main.py
   - Orchestrator that runs all phases:
     Phase 1: crt_monitor.run()    (isolated try/except)
     Phase 2: homepage_links.run() (isolated try/except)
     Phase 3: special.run()        (isolated try/except)
-    Phase 4: Deduplicate + extract + save + notify loop
-  - Validates all 4 required env vars at startup before doing anything
-  - One phase crashing does not kill the whole run
-  - Holds one DB connection for the extraction/notification phase
+    Phase 4: Extract + deduplicate + save + notify loop
+    Phase 5: _notify_pending() — catch-all for unnotified conferences
+  - Validates required env vars at startup (DATABASE_URL, GOOGLE_AI_KEY,
+    TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID/TELEGRAM_CHANNEL_LINK)
+  - Skips conferences where date_start < today (both in Phase 4 and _notify_pending)
+  - _notify_pending(): cleans up past conferences, retries failed notifications
+  - All DB connections are fresh-per-operation (no long-held connections)
+  - Orphaned URL reprocessing: URLs in seen_links without conference entry
   - Prints summary: X found, Y new, Z skipped, W failed
 
 bot/bot.py
@@ -141,15 +140,15 @@ bot/bot.py
     /start     — welcome message with channel link
     /list      — queries upcoming conferences (LIMIT 10)
     /subscribe — sends channel join link
-  - Health check endpoint (GET /health → "ok") on port 8081 in daemon thread
+  - Health check endpoint (GET /health -> "ok") on port 8081 in daemon thread
   - Runs in webhook mode on port 8080 (Koyeb deployment)
   - Connects to same Neon PostgreSQL
 
 .github/workflows/scraper.yml
   - Trigger: cron "0 */6 * * *" + workflow_dispatch
   - Steps: install Chrome -> setup Python 3.11 -> pip install -> run scraper
-  - Passes 4 secrets: DATABASE_URL, OPENROUTER_API_KEY,
-    TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID
+  - Passes 5 secrets: DATABASE_URL, GOOGLE_AI_KEY, TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHANNEL_ID, TELEGRAM_CHANNEL_LINK
   - Sets PYTHONPATH=. for scraper imports
 
 
@@ -163,22 +162,26 @@ bot/bot.py
        |
        v  Outbound conf link found on a homepage
        |
-  special.py (probes ICCIT /YYYY/home/ and /YYYY/)
+  special.py (probes ICCIT /YYYY/home/, QPAIN year detection, etc.)
        |
        v  New annual edition detected
        |
   All candidates combined, deduplicated by URL set
+       + orphaned URLs from previous failed runs
+       + unextracted URLs from quota exhaustion
        |
        v
-  extractor.py — DNS check → load URL in Selenium → send text to OpenRouter LLM
-       |           (dead URLs skipped in ~1s via DNS, no Selenium waste)
+  extractor.py — DNS check -> Selenium load -> Gemini 2.5 Flash extraction
+       |           (rate-limited: 15 RPM, 1500 RPD)
        v  LLM returns structured JSON or null
        |
-  deduplicator.py — check PostgreSQL for existing match
+  Dedup check -> date filter (skip past conferences) -> save to conferences
        |
-       v  If new → save to conferences table
-       |
+       v
   notifier.py — format + POST to Telegram channel
+       |
+       v
+  _notify_pending() — catch any unnotified conferences (cleanup + retry)
        |
        v  All channel subscribers see notification
 
@@ -194,96 +197,119 @@ bot/bot.py
   May 2026    | scraper/sources/crt_monitor.py   | Replaced CRTSH_URL constant with inline
               |                                  | f-string; removed URL encoding
   May 2026    | scraper/sources/homepage_links.py| Replaced long-held DB connection with
-              | scraper/main.py                  | _save_link() fresh-per-save pattern.
+              | scraper/main.py                  | _save_link() fresh-per-save pattern
               |                                  | Isolated phase failures in main.py
   May 2026    | scraper/sources/special.py       | ICCIT URL pattern: /YYYY/home/ first,
               |                                  | fall back to /YYYY/
   May 2026    | bot/bot.py                       | Added health check (GET /health) on port
               |                                  | 8081 via daemon thread
   May 2026    | scraper/main.py                  | Added env var validation at startup
-  May 2026    | requirements.txt                 | openai==1.30.1 → openai>=1.55.0
-              |                                  | (httpx 0.28.x compatibility fix)
+  May 2026    | requirements.txt                 | openai==1.30.1 -> openai>=1.55.0
   May 2026    | scraper/extractor.py             | Added DNS pre-check (_is_url_reachable)
               |                                  | before Selenium — skips dead URLs
   May 2026    | scraper/sources/crt_monitor.py   | Added "ict." and "www.ict." to
               |                                  | SUBDOMAIN_BLOCKLIST
   May 2026    | scraper/sources/homepage_links.py| Switched from Selenium to requests+BS4
               |                                  | (no JS rendering needed for link scanning)
+  Jun 2026    | requirements.txt                 | Removed webdriver-manager, python-telegram-bot
+  Jun 2026    | scraper/extractor.py             | Switched to Gemini 2.5 Flash via Google AI
+              |                                  | Studio; added GoogleRateLimiter (15 RPM/1500 RPD)
+  Jun 2026    | scraper/sources/special.py       | Rewritten: multi-type handler (path + root_year)
+              |                                  | Fresh DB connections, SSRF protection
+  Jun 2026    | config/special_sources.json      | Structured format with type/base_url
+              |                                  | Added: BECITHCON, SPICSCON, PEEIACON, ICECE, ICCHE
+  Jun 2026    | scraper/main.py                  | Eliminated long-lived DB connection
+              |                                  | Added _notify_pending() for failed notifications
+              |                                  | Added orphaned URL reprocessing
+              |                                  | Skip past conferences (date_start < today)
+              |                                  | Cleanup past conferences on every run
+  Jun 2026    | scraper/sources/homepage_links.py| SSRF protection: _is_safe_url() blocks
+              |                                  | private IPs, localhost, dangerous schemes
+  Jun 2026    | scraper/extractor.py             | Added SSRF protection in _fetch_page_text()
+  Jun 2026    | scraper/sources/special.py       | Added SSRF protection in _probe_url()
+  Jun 2026    | scraper/notifier.py              | Removed hardcoded TG credentials
+              |                                  | Auto-converts channel link to @id format
+  Jun 2026    | .github/workflows/scraper.yml    | Cron: every 6 hours; passes 5 secrets
 
 
-6. STATUS — Implemented vs Plan
---------------------------------------------------------------------------------
-
-  All 16 files from the plan's "Files to Write" section exist.
-
-  Discrepancies from plan:
-  - LLM model order and exact model strings differ from plan
-  - No subscribers table in schema (not needed for channel-based delivery)
-  - Column names differ: source -> raw_source, notified -> is_notified
-  - README.md is outdated (references nonexistent files)
-  - universities.json has more domains than original 98
-
-
-7. KNOWN ISSUES & TECHNICAL DEBT
+6. KNOWN ISSUES & TECHNICAL DEBT
 --------------------------------------------------------------------------------
 
   a) extractor.py spawns a new Chrome instance per candidate URL
      - Inefficient for many candidates; BrowserManager should be reused
 
-  b) special.py uses long-held DB connection
-     - Should use same fresh-connection pattern as homepage_links.py
+  b) No shared db utility module
+     - DB connection code (3-retry pattern) duplicated across files
 
-  c) No shared db utility module
-     - DB connection code (3-retry pattern) duplicated across 6 files
+  c) bot.py CHANNEL_LINK not configurable via env var
+     - Changing channel requires code deploy
 
-  d) bot.py hardcodes CHANNEL_LINK
-     - Not configurable via env var — changing channel requires code deploy
+  d) Health check on separate port (8081) not probed by Koyeb by default
+     - HEALTH_CHECK_PORT must be set to match PORT
 
-  e) Health check on separate port (8081) not probed by Koyeb by default
-     - Koyeb's default health check hits port 8080; HEALTH_CHECK_PORT must be
-       set to match PORT (8080), or Koyeb health check configured separately
+  e) Gemini 2.5 Flash 15 RPM limit is tight
+     - 3 candidates/min with 3 retry attempts each can exhaust quota quickly
+     - max_retries=0 helps but rate limiter still needs tuning
 
-  f) deduplicator.py returns False on DB error
-     - If DB connection drops during dedup check, the conference is treated as
-       "not duplicate" and may be saved/notified a second time
+  f) Special sources with unpredictable URL patterns cannot be auto-detected
+     - RAAICON uses date-based paths that change yearly
 
 
-8. INFRASTRUCTURE & SETUP
+7. INFRASTRUCTURE & SETUP
 --------------------------------------------------------------------------------
 
   GitHub Secrets (required):
     DATABASE_URL          — Neon PostgreSQL connection string
-    OPENROUTER_API_KEY    — From openrouter.ai (free account)
+    GOOGLE_AI_KEY         — From aistudio.google.com (free tier)
     TELEGRAM_BOT_TOKEN    — From @BotFather
-    TELEGRAM_CHANNEL_ID   — Channel ID (e.g. @BDConferences)
+    TELEGRAM_CHANNEL_ID   — Channel ID (e.g. @BDConferences) OR
+    TELEGRAM_CHANNEL_LINK — Channel link (e.g. https://t.me/BDConferences)
 
   One-time setup:
     1. Create GitHub repo and push code
     2. Sign up at neon.tech -> create project -> get DATABASE_URL
     3. Run db/schema.sql on Neon to create tables
-    4. Sign up at openrouter.ai -> get API key
+    4. Sign up at aistudio.google.com -> get GOOGLE_AI_KEY
     5. Create bot via @BotFather -> get TELEGRAM_BOT_TOKEN
     6. Create public Telegram channel -> add bot as admin
-    7. Add 4 secrets to GitHub repo (Settings -> Secrets -> Actions)
+    7. Add 4+ secrets to GitHub repo (Settings -> Secrets -> Actions)
     8. Deploy bot/bot.py on Koyeb with same env vars
     9. Trigger first run manually via GitHub Actions -> workflow_dispatch
    10. Confirm first run completes without errors in Actions log
 
 
-9. LLM MODELS (OpenRouter, all free)
+8. LLM CONFIGURATION (Google AI Studio — Gemini 2.5 Flash)
 --------------------------------------------------------------------------------
-  Priority order:
-    1. meta-llama/llama-3.3-70b-instruct:free
-    2. google/gemma-4-26b-a4b-it:free
-    3. deepseek/deepseek-v4-flash:free
+  Model: gemini-2.5-flash (via Google AI Studio OpenAI-compatible API)
+  Rate limits:
+    - 15 requests/minute (rolling window)
+    - 1500 requests/day (resets at midnight Pacific)
+    - 1M tokens/minute
+  Fallback: single model, no fallback chain
+  Rate limiter: GoogleRateLimiter class (thread-safe, blocks until slot available)
+  OpenAI client: max_retries=0 (we handle 429s ourselves)
 
-  Fallback: if model N fails or returns invalid JSON, try N+1.
-  If all 3 fail -> URL is logged and skipped (caught on next run).
 
-
-10. GITHUB ACTIONS SCHEDULE
+9. GITHUB ACTIONS SCHEDULE
 --------------------------------------------------------------------------------
   .github/workflows/scraper.yml
   - Cron: "0 */6 * * *" (every 6 hours)
   - Also supports manual trigger via workflow_dispatch
   - Estimated usage: ~360 min/month (18% of free quota)
+
+
+10. ENVIRONMENT VARIABLES
+--------------------------------------------------------------------------------
+  Required:
+    DATABASE_URL          — Neon PostgreSQL connection string
+    GOOGLE_AI_KEY         — Google AI Studio API key
+    TELEGRAM_BOT_TOKEN    — Bot token from @BotFather
+
+  Required (at least one):
+    TELEGRAM_CHANNEL_ID   — Channel ID (e.g. @BDConferences)
+    TELEGRAM_CHANNEL_LINK — Channel link (e.g. https://t.me/BDConferences)
+
+  Optional:
+    HEALTH_CHECK_PORT     — Port for health check (default: 8081)
+    PORT                  — Webhook port for bot (default: 8080)
+    WEBHOOK_URL           — Webhook URL for Koyeb
