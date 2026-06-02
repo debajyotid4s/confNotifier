@@ -93,18 +93,29 @@ class GoogleRateLimiter:
 # Single shared instance used by all extraction calls
 _rate_limiter = GoogleRateLimiter()
 
-# OpenAI client pointed at Google AI Studio
-_google_key = os.environ.get("GOOGLE_AI_KEY", "")
-if not _google_key:
-    logger.critical("GOOGLE_AI_KEY is not set — LLM extraction will fail")
-else:
-    logger.info("GOOGLE_AI_KEY loaded (%s...)", _google_key[:8])
+# ── API key rotation — load all available keys ──
 
-google_client = OpenAI(
-    api_key=_google_key or "MISSING",
-    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-    max_retries=0,
-)
+_gemini_base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+_api_keys = []
+
+for _var in ["GOOGLE_AI_KEY", "GOOGLE_AI_KEY_2", "GOOGLE_AI_KEY_3"]:
+    _val = os.environ.get(_var, "").strip()
+    if _val:
+        _api_keys.append(_val)
+        logger.info("Loaded API key from %s (%s...)", _var, _val[:8])
+
+if not _api_keys:
+    logger.critical("No GOOGLE_AI_KEY* env vars set — LLM extraction will fail")
+
+# Each key gets its own client + rate limiter
+_clients = [
+    {"client": OpenAI(api_key=k, base_url=_gemini_base_url, max_retries=0),
+     "limiter": GoogleRateLimiter(),
+     "key_hint": k[:8]}
+    for k in _api_keys
+]
+
+_current_key_idx = 0
 
 SYSTEM_PROMPT = """You are a precise conference data extractor for Bangladesh.
 Given raw webpage text, extract international conference details.
@@ -171,95 +182,117 @@ def extract_conferences(page_text: str, source_url: str) -> dict | None:
     """
     Send page text to Gemini 2.5 Flash via Google AI Studio.
 
-    NEVER gives up due to rate limits — waits as long as needed.
+    Uses API key rotation — if one key hits 429, tries the next key.
     Only gives up if:
-    - Daily quota is fully exhausted (1500 requests)
-    - API returns a non-rate-limit error after 3 attempts
+    - All keys' daily quotas are exhausted
+    - API returns a non-rate-limit error after 3 attempts per key
     - Page text is empty
     
     Returns parsed dict or None.
     """
+    global _current_key_idx
+
     if not page_text or len(page_text.strip()) < 100:
         logger.warning("extractor: page text too short for %s, skipping", source_url)
         return None
 
+    if not _clients:
+        logger.error("extractor: no API keys available")
+        return None
+
     trimmed = page_text[:8000]
-    max_non_ratelimit_attempts = 3
+    max_attempts_per_key = 3
+    total_keys = len(_clients)
 
-    for attempt in range(1, max_non_ratelimit_attempts + 1):
-        # This blocks until a rate limit slot is available
-        # Raises RuntimeError only if daily quota is exhausted
-        try:
-            _rate_limiter.acquire()
-        except RuntimeError as e:
-            logger.error("extractor: %s", e)
-            return None
+    # Try each key, starting from current
+    for key_offset in range(total_keys):
+        key_idx = (_current_key_idx + key_offset) % total_keys
+        entry = _clients[key_idx]
+        client = entry["client"]
+        limiter = entry["limiter"]
+        key_hint = entry["key_hint"]
 
-        try:
-            logger.info(
-                "extractor: calling Gemini 2.5 Flash for %s (attempt %d, daily used: %d/%d)",
-                source_url, attempt, _rate_limiter._daily_count, _rate_limiter.RPD_LIMIT
-            )
+        for attempt in range(1, max_attempts_per_key + 1):
+            # Check if this key's daily quota is exhausted — skip to next key
+            if limiter.daily_quota_exhausted():
+                logger.info("extractor: key %s daily quota exhausted, trying next key", key_hint)
+                break
 
-            response = google_client.chat.completions.create(
-                model=MODEL,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": f"Source URL: {source_url}\n\nPage content:\n{trimmed}"
-                    }
-                ],
-                temperature=0.0,
-                max_tokens=1500,
-            )
+            try:
+                limiter.acquire()
+            except RuntimeError:
+                break  # daily quota exhausted — try next key
 
-            raw = response.choices[0].message.content.strip()
-            raw = re.sub(r"```json|```", "", raw).strip()
-            result = json.loads(raw)
-            logger.info(
-                "extractor: %s → is_conference=%s, confidence=%.2f",
-                source_url,
-                result.get("is_conference"),
-                result.get("confidence", 0.0),
-            )
-            return result
-
-        except json.JSONDecodeError as e:
-            logger.error(
-                "extractor: JSON parse failed for %s (attempt %d): %s",
-                source_url, attempt, e
-            )
-            # JSON errors are model output issues — retry makes sense
-            time.sleep(2)
-            continue
-
-        except Exception as e:
-            err_str = str(e)
-
-            # 429 should not reach here since acquire() handles RPM waiting,
-            # but handle it defensively anyway
-            if "429" in err_str or "rate" in err_str.lower():
-                wait = 120
-                logger.warning(
-                    "extractor: unexpected 429 for %s, waiting %ds...",
-                    source_url, wait
+            try:
+                logger.info(
+                    "extractor: calling Gemini (key=%s) for %s (attempt %d, daily: %d/%d)",
+                    key_hint, source_url, attempt,
+                    limiter._daily_count, limiter.RPD_LIMIT
                 )
-                time.sleep(wait)
+
+                response = client.chat.completions.create(
+                    model=MODEL,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {
+                            "role": "user",
+                            "content": f"Source URL: {source_url}\n\nPage content:\n{trimmed}"
+                        }
+                    ],
+                    temperature=0.0,
+                    max_tokens=1500,
+                )
+
+                raw = response.choices[0].message.content.strip()
+                raw = re.sub(r"```json|```", "", raw).strip()
+                result = json.loads(raw)
+                logger.info(
+                    "extractor: %s → is_conference=%s, confidence=%.2f",
+                    source_url,
+                    result.get("is_conference"),
+                    result.get("confidence", 0.0),
+                )
+                _current_key_idx = key_idx  # remember last working key
+                return result
+
+            except json.JSONDecodeError as e:
+                logger.error(
+                    "extractor: JSON parse failed for %s (attempt %d): %s",
+                    source_url, attempt, e
+                )
+                time.sleep(2)
                 continue
 
-            # Any other API error
-            logger.error(
-                "extractor: API error for %s (attempt %d): %s",
-                source_url, attempt, e
-            )
-            if attempt < max_non_ratelimit_attempts:
-                time.sleep(5)
-                continue
-            return None
+            except Exception as e:
+                err_str = str(e)
 
-    logger.warning("extractor: all attempts exhausted for %s", source_url)
+                if "429" in err_str or "rate" in err_str.lower():
+                    logger.warning(
+                        "extractor: 429 on key %s for %s, rotating to next key",
+                        key_hint, source_url
+                    )
+                    break  # break inner loop → try next key
+
+                logger.error(
+                    "extractor: API error for %s (attempt %d): %s",
+                    source_url, attempt, e
+                )
+                if attempt < max_attempts_per_key:
+                    time.sleep(5)
+                    continue
+
+    logger.warning("extractor: all keys exhausted for %s", source_url)
     return None
+
+
+def daily_quota_exhausted() -> bool:
+    """Check if ALL keys have exhausted their daily quota."""
+    return all(c["limiter"].daily_quota_exhausted() for c in _clients)
+
+
+def total_requests_today() -> int:
+    """Sum of daily request counts across all keys."""
+    return sum(c["limiter"]._daily_count for c in _clients)
 
 
 def extract(url):

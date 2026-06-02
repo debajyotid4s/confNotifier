@@ -8,7 +8,7 @@ import psycopg2
 import requests
 
 from sources import crt_monitor, homepage_links, special
-from extractor import extract, _rate_limiter
+from extractor import extract, daily_quota_exhausted, total_requests_today
 from notifier import notify
 
 logging.basicConfig(
@@ -465,7 +465,7 @@ def run():
             continue
 
         if result is None:
-            if _rate_limiter.daily_quota_exhausted():
+            if daily_quota_exhausted():
                 quota_exhausted = True
                 _save_seen_link(url, source="unextracted")
             logger.warning("Extraction failed for: %s", url)
@@ -536,9 +536,9 @@ def run():
 
     logger.info(
         "=== Run complete: %d found, %d new, %d skipped, %d failed | "
-        "LLM requests today: %d/%d ===",
+        "LLM requests today: %d ===",
         found, new_count, skipped, failed,
-        _rate_limiter._daily_count, _rate_limiter.RPD_LIMIT
+        total_requests_today()
     )
 
     # Notify any conferences saved but not yet notified
