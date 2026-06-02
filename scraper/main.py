@@ -1,9 +1,11 @@
 import logging
 import os
 import sys
+import time
 from datetime import datetime
 
 import psycopg2
+import requests
 
 from sources import crt_monitor, homepage_links, special
 from extractor import extract, _rate_limiter
@@ -322,6 +324,7 @@ def _notify_pending(notify_fn) -> int:
                             conn2.close()
                         except Exception:
                             pass
+                time.sleep(2)  # avoid burst spam
             else:
                 logger.warning(
                     "notify_pending: notify_fn returned False for id=%d (%s), "
@@ -370,6 +373,22 @@ def run():
     except Exception as e:
         logger.critical("Cannot connect to PostgreSQL: %s", e)
         sys.exit(1)
+
+    # Verify bot can access the Telegram channel
+    try:
+        token = os.environ["TELEGRAM_BOT_TOKEN"]
+        channel = os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get("TELEGRAM_CHANNEL_LINK", "")
+        resp = requests.get(
+            f"https://api.telegram.org/bot{token}/getChat",
+            params={"chat_id": channel},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            logger.info("Telegram channel access verified")
+        else:
+            logger.warning("Telegram channel check failed (%d): %s", resp.status_code, resp.text)
+    except Exception as e:
+        logger.warning("Telegram channel check error: %s", e)
 
     logger.info("=== BD Conference Bot Run Started ===")
 
@@ -459,6 +478,16 @@ def run():
             skipped += 1
             continue
 
+        # Skip low-confidence extractions
+        MIN_CONFIDENCE = 0.75
+        if result.get("confidence", 0) < MIN_CONFIDENCE:
+            logger.warning(
+                "Low confidence %.2f for %s, skipping",
+                result.get("confidence"), url
+            )
+            skipped += 1
+            continue
+
         # Skip conferences that have already ended
         date_start = result.get("date_start")
         if date_start:
@@ -485,6 +514,24 @@ def run():
         logger.info("New conference saved: %s", result.get("title"))
         _mark_extracted(url)
         notify(result)
+
+        # Retry mark_notified up to 3 times to prevent duplicates
+        for attempt in range(3):
+            try:
+                conn = psycopg2.connect(_db_url())
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE conferences SET is_notified=TRUE, notified_at=NOW() WHERE website=%s",
+                    (result.get("website"),),
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
+                break
+            except Exception as e:
+                logger.error("Failed to mark notified (attempt %d): %s", attempt + 1, e)
+                time.sleep(2)
+
         new_count += 1
 
     logger.info(

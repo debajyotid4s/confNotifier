@@ -105,7 +105,7 @@ def _handle_path(source):
         url = None
         for candidate in [f"{base_url}/{y}/home/", f"{base_url}/{y}/"]:
             if _is_seen(candidate):
-                continue
+                break  # already known — don't also try the fallback
             if _probe_url(candidate):
                 url = candidate
                 break

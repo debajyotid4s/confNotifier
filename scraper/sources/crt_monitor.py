@@ -256,6 +256,11 @@ def run() -> list:
                 if raw_name in seen_in_run:
                     continue
 
+                # Skip www variant if bare domain already seen (or vice versa)
+                bare = raw_name.replace("www.", "", 1)
+                if bare in seen_in_run or f"www.{bare}" in seen_in_run:
+                    continue
+
                 seen_in_run.add(raw_name)
                 new_subdomains.append((raw_name, query))
                 candidates.append(f"https://{raw_name}")

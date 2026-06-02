@@ -23,10 +23,18 @@ def _get_db_connection():
     raise RuntimeError("Could not connect to database after 3 attempts")
 
 
+def _normalise_url(url: str) -> str:
+    """Strip www., trailing slash, lowercase."""
+    url = url.lower().strip()
+    url = url.replace("://www.", "://")
+    url = url.rstrip("/")
+    return url
+
+
 def is_duplicate(conference_data):
     """Check if a conference already exists in the database.
 
-    Matches on website URL (primary) or title + date_start (secondary).
+    Matches on website URL (raw + normalised) or title + date_start.
 
     Args:
         conference_data: Dict with keys 'website', 'title', 'date_start'.
@@ -34,14 +42,22 @@ def is_duplicate(conference_data):
     Returns:
         True if the conference already exists, False otherwise.
     """
+    website = conference_data.get("website", "")
+    normalised = _normalise_url(website)
     conn = None
     try:
         conn = _get_db_connection()
         cur = conn.cursor()
         cur.execute(
-            "SELECT id FROM conferences WHERE website = %s OR (title ILIKE %s AND date_start = %s)",
+            """
+            SELECT id FROM conferences
+            WHERE website = %s
+               OR website = %s
+               OR (title ILIKE %s AND date_start = %s)
+            """,
             (
-                conference_data.get("website", ""),
+                website,
+                normalised,
                 conference_data.get("title", ""),
                 conference_data.get("date_start"),
             ),
