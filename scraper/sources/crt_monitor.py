@@ -1,9 +1,10 @@
 import logging
-import os
 import time
 
 import psycopg2
 import requests
+
+from db import get_connection, save_seen_link
 
 logger = logging.getLogger(__name__)
 
@@ -179,20 +180,6 @@ def _fetch_crt(query: str) -> list:
     return []
 
 
-def _get_db_connection():
-    """Create and return a new database connection with retry logic."""
-    dsn = os.environ["DATABASE_URL"]
-    for attempt in range(3):
-        try:
-            conn = psycopg2.connect(dsn)
-            return conn
-        except psycopg2.Error as e:
-            logger.error("DB connection attempt %d/3 failed: %s", attempt + 1, e)
-            if attempt < 2:
-                time.sleep(5)
-    raise RuntimeError("Could not connect to database after 3 attempts")
-
-
 def run() -> list:
     """Query crt.sh and return all candidate URLs for extraction.
 
@@ -201,24 +188,17 @@ def run() -> list:
     """
     candidates = []
 
-    # ── Phase A: Load known/unextracted subdomains (connection lives ~1s) ──
+    # ── Phase A: Load already-seen subdomains (connection lives ~1s) ──
     known = set()
     try:
-        conn = _get_db_connection()
+        conn = get_connection()
         try:
             cur = conn.cursor()
             cur.execute(
-                "SELECT subdomain FROM known_subdomains WHERE extracted = TRUE"
+                "SELECT url FROM seen_links WHERE url LIKE 'https://%%' "
+                "AND status IN ('pending', 'not_conference', 'low_confidence', 'extracted')"
             )
-            known = {row[0] for row in cur.fetchall()}
-
-            cur.execute(
-                "SELECT subdomain FROM known_subdomains WHERE extracted = FALSE"
-            )
-            for (subdomain,) in cur.fetchall():
-                url = f"https://{subdomain}"
-                candidates.append(url)
-                logger.info("crt_monitor: re-queuing unextracted → %s", url)
+            known = {row[0].replace("https://", "") for row in cur.fetchall()}
             cur.close()
         finally:
             conn.close()   # closed BEFORE crt.sh queries start
@@ -271,7 +251,7 @@ def run() -> list:
     # ── Phase C: Save new subdomains (fresh connection, lives ~1s) ──
     if new_subdomains:
         try:
-            conn = _get_db_connection()
+            conn = get_connection()
             try:
                 cur = conn.cursor()
                 for subdomain, query in new_subdomains:
