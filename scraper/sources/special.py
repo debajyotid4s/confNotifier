@@ -1,14 +1,13 @@
 import json
 import logging
-import os
 import re
 import time
 from datetime import datetime
 
-import psycopg2
 import requests
 from bs4 import BeautifulSoup
 
+from db import get_connection, save_seen_link
 from scraper.sources.homepage_links import _is_safe_url
 
 logger = logging.getLogger(__name__)
@@ -21,23 +20,10 @@ def _load_sources(path="config/special_sources.json"):
         return json.load(f)
 
 
-def _get_db_connection():
-    dsn = os.environ["DATABASE_URL"]
-    for attempt in range(3):
-        try:
-            conn = psycopg2.connect(dsn)
-            return conn
-        except psycopg2.Error as e:
-            logger.error("DB connection attempt %d/3 failed: %s", attempt + 1, e)
-            if attempt < 2:
-                time.sleep(5)
-    raise RuntimeError("Could not connect to database after 3 attempts")
-
-
 def _is_seen(url):
     conn = None
     try:
-        conn = _get_db_connection()
+        conn = get_connection()
         cur = conn.cursor()
         cur.execute("SELECT 1 FROM seen_links WHERE url = %s", (url,))
         exists = cur.fetchone() is not None
@@ -46,28 +32,6 @@ def _is_seen(url):
     except Exception as e:
         logger.error("_is_seen error: %s", e)
         return False
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
-def _save_seen(url):
-    conn = None
-    try:
-        conn = _get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO seen_links (url, source) VALUES (%s, 'special') "
-            "ON CONFLICT (url) DO UPDATE SET last_seen = NOW()",
-            (url,),
-        )
-        conn.commit()
-        cur.close()
-    except Exception as e:
-        logger.error("_save_seen error for %s: %s", url, e)
     finally:
         if conn:
             try:
@@ -111,7 +75,7 @@ def _handle_path(source):
                 break
         if url is None:
             continue
-        _save_seen(url)
+        save_seen_link(url, source="special")
         candidates.append(url)
         logger.info("special/path: new URL found: %s", url)
 
@@ -174,7 +138,7 @@ def _handle_root_year(source):
     if _is_seen(dedup_key):
         return []
 
-    _save_seen(dedup_key)
+    save_seen_link(dedup_key, source="special")
     candidates.append(base_url)
     logger.info("special/root_year: new edition detected — %s (%d)", base_url, found_year)
 

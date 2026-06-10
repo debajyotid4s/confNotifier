@@ -11,9 +11,16 @@ CREATE TABLE IF NOT EXISTS seen_links (
     id SERIAL PRIMARY KEY,
     url TEXT NOT NULL UNIQUE,
     source TEXT NOT NULL DEFAULT 'unknown',
+    status TEXT NOT NULL DEFAULT 'pending',
     first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Status lifecycle:
+--   pending        → newly discovered, awaiting extraction
+--   not_conference → LLM determined it's not a conference (DONE, never re-check)
+--   low_confidence → below 0.75 threshold (DONE, never re-check)
+--   extracted      → conference saved to DB and notified (DONE for this edition)
 
 CREATE TABLE IF NOT EXISTS conferences (
     id SERIAL PRIMARY KEY,
@@ -37,3 +44,4 @@ CREATE INDEX IF NOT EXISTS idx_conferences_website ON conferences (website);
 CREATE INDEX IF NOT EXISTS idx_conferences_date_start ON conferences (date_start);
 CREATE INDEX IF NOT EXISTS idx_known_subdomains_subdomain ON known_subdomains (subdomain);
 CREATE INDEX IF NOT EXISTS idx_seen_links_url ON seen_links (url);
+CREATE INDEX IF NOT EXISTS idx_seen_links_status ON seen_links (status);

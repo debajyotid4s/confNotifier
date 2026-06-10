@@ -7,6 +7,7 @@ from datetime import datetime
 import psycopg2
 import requests
 
+from db import get_connection, save_seen_link
 from sources import crt_monitor, homepage_links, special
 from extractor import extract, daily_quota_exhausted, total_requests_today
 from notifier import notify
@@ -22,15 +23,11 @@ logger = logging.getLogger(__name__)
 # ── DB helpers — each opens, uses, and closes its own connection in <1s ──
 
 
-def _db_url():
-    return os.environ["DATABASE_URL"]
-
-
 def _save_conference(conf: dict) -> bool:
     """Open a fresh DB connection, save conference, close immediately."""
     conn = None
     try:
-        conn = psycopg2.connect(_db_url())
+        conn = get_connection()
         cur = conn.cursor()
         cur.execute(
             """
@@ -61,33 +58,11 @@ def _save_conference(conf: dict) -> bool:
                 pass
 
 
-def _mark_extracted(subdomain: str) -> None:
-    """Open a fresh DB connection, mark subdomain extracted, close immediately."""
-    conn = None
-    try:
-        conn = psycopg2.connect(_db_url())
-        cur = conn.cursor()
-        cur.execute(
-            "UPDATE known_subdomains SET extracted = TRUE WHERE subdomain = %s",
-            (subdomain.replace("https://", "").replace("http://", ""),)
-        )
-        conn.commit()
-        cur.close()
-    except Exception as e:
-        logger.error("mark_extracted error: %s", e)
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
 def _is_duplicate(website: str) -> bool:
     """Open a fresh DB connection, check duplicate, close immediately."""
     conn = None
     try:
-        conn = psycopg2.connect(_db_url())
+        conn = get_connection()
         cur = conn.cursor()
         cur.execute(
             "SELECT id FROM conferences WHERE website = %s", (website,)
@@ -106,21 +81,20 @@ def _is_duplicate(website: str) -> bool:
                 pass
 
 
-def _save_seen_link(url: str, source: str = "extracted") -> None:
-    """Open a fresh DB connection, save link, close immediately."""
+def _mark_url_status(url: str, status: str) -> None:
+    """Update only the status of an already-seen URL."""
     conn = None
     try:
-        conn = psycopg2.connect(_db_url())
+        conn = get_connection()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO seen_links (url, source) VALUES (%s, %s) "
-            "ON CONFLICT (url) DO UPDATE SET source = %s, last_seen = NOW()",
-            (url, source, source),
+            "UPDATE seen_links SET status = %s, last_seen = NOW() WHERE url = %s",
+            (status, url),
         )
         conn.commit()
         cur.close()
     except Exception as e:
-        logger.error("save_seen_link error for %s: %s", url, e)
+        logger.error("mark_url_status error for %s: %s", url, e)
     finally:
         if conn:
             try:
@@ -129,57 +103,29 @@ def _save_seen_link(url: str, source: str = "extracted") -> None:
                 pass
 
 
-def _load_unextracted_urls() -> list:
-    """Open a fresh DB connection, load unextracted URLs, close immediately."""
-    conn = None
-    try:
-        conn = psycopg2.connect(_db_url())
-        cur = conn.cursor()
-        cur.execute("SELECT url FROM seen_links WHERE source = 'unextracted'")
-        urls = [row[0] for row in cur.fetchall()]
-        cur.close()
-        return urls
-    except Exception as e:
-        logger.error("load_unextracted_urls error: %s", e)
-        return []
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
+def _is_url_processed(url: str) -> bool:
+    """Check if a URL is already in a terminal state (never re-check).
 
-
-def _load_orphaned_urls() -> list:
-    """Load URLs in seen_links that have no matching conference entry.
-
-    These are URLs that were probed successfully but extraction failed
-    (rate limit, LLM error, short page, etc.) in a previous run.
-    They need to be re-processed.
-
-    Excludes URLs already evaluated: 'extracted' (confirmed non-conference),
-    'low_confidence' (below threshold), 'not_conference' (explicit skip).
+    Returns True if the URL has been fully evaluated:
+    - not_conference: LLM said no
+    - low_confidence: below threshold
+    - extracted: conference saved and notified
     """
     conn = None
     try:
-        conn = psycopg2.connect(_db_url())
+        conn = get_connection()
         cur = conn.cursor()
         cur.execute(
-            """
-            SELECT sl.url FROM seen_links sl
-            LEFT JOIN conferences c
-              ON sl.url = c.raw_source OR sl.url = c.website
-            WHERE c.id IS NULL
-              AND sl.source NOT IN ('unextracted', 'extracted', 'low_confidence', 'not_conference')
-              AND sl.url NOT LIKE '%%#%%'
-            """
+            "SELECT status FROM seen_links WHERE url = %s", (url,)
         )
-        urls = [row[0] for row in cur.fetchall()]
+        row = cur.fetchone()
         cur.close()
-        return urls
+        if row is None:
+            return False  # new URL, not yet seen
+        return row[0] in ("not_conference", "low_confidence", "extracted")
     except Exception as e:
-        logger.error("load_orphaned_urls error: %s", e)
-        return []
+        logger.error("is_url_processed error for %s: %s", url, e)
+        return False  # on error, let it be processed (safer)
     finally:
         if conn:
             try:
@@ -188,20 +134,26 @@ def _load_orphaned_urls() -> list:
                 pass
 
 
-def _mark_notified(website: str) -> None:
-    """Open a fresh DB connection, mark conference notified, close immediately."""
+def _load_pending_urls() -> list:
+    """Load all URLs in seen_links that still need processing.
+
+    Returns URLs with status = 'pending' (discovered but not yet extracted).
+    URLs in terminal states (not_conference, low_confidence, extracted)
+    are never returned — they are done forever.
+    """
     conn = None
     try:
-        conn = psycopg2.connect(_db_url())
+        conn = get_connection()
         cur = conn.cursor()
         cur.execute(
-            "UPDATE conferences SET is_notified = TRUE, notified_at = NOW() WHERE website = %s",
-            (website,),
+            "SELECT url FROM seen_links WHERE status = 'pending'"
         )
-        conn.commit()
+        urls = [row[0] for row in cur.fetchall()]
         cur.close()
+        return urls
     except Exception as e:
-        logger.error("mark_notified error: %s", e)
+        logger.error("load_pending_urls error: %s", e)
+        return []
     finally:
         if conn:
             try:
@@ -227,7 +179,7 @@ def _notify_pending(notify_fn) -> int:
 
     # Mark all past conferences as notified (cleanup from before date filter)
     try:
-        conn = psycopg2.connect(_db_url())
+        conn = get_connection()
         cur = conn.cursor()
         cur.execute(
             "UPDATE conferences SET is_notified = TRUE, notified_at = NOW() "
@@ -249,7 +201,7 @@ def _notify_pending(notify_fn) -> int:
                 pass
 
     try:
-        conn = psycopg2.connect(_db_url())
+        conn = get_connection()
         cur = conn.cursor()
         cur.execute(
             """
@@ -299,7 +251,7 @@ def _notify_pending(notify_fn) -> int:
             if success:
                 conn2 = None
                 try:
-                    conn2 = psycopg2.connect(_db_url())
+                    conn2 = get_connection()
                     cur2 = conn2.cursor()
                     cur2.execute(
                         """
@@ -370,7 +322,7 @@ def run():
 
     # Connectivity test — verify DB is reachable, then close immediately
     try:
-        conn = psycopg2.connect(_db_url())
+        conn = get_connection()
         conn.close()
         logger.info("Connected to PostgreSQL")
     except Exception as e:
@@ -423,17 +375,11 @@ def run():
         set(crt_candidates + homepage_candidates + special_candidates)
     )
 
-    # Re-queue URLs from previous runs that were skipped due to quota
-    unextracted_prev = _load_unextracted_urls()
-    if unextracted_prev:
-        all_candidates = list(set(unextracted_prev + all_candidates))
-        logger.info("Re-queued %d unextracted URLs from previous runs", len(unextracted_prev))
-
-    # Re-queue orphaned URLs (in seen_links but not in conferences — extraction failed previously)
-    orphaned = _load_orphaned_urls()
-    if orphaned:
-        all_candidates = list(set(orphaned + all_candidates))
-        logger.info("Re-queued %d orphaned URLs (seen but never extracted)", len(orphaned))
+    # Re-queue pending URLs from previous runs (status='pending', not yet extracted)
+    pending_prev = _load_pending_urls()
+    if pending_prev:
+        all_candidates = list(set(pending_prev + all_candidates))
+        logger.info("Re-queued %d pending URLs from previous runs", len(pending_prev))
 
     logger.info("Phase 4: Processing %d unique candidates", len(all_candidates))
 
@@ -444,14 +390,19 @@ def run():
     quota_exhausted = False
 
     for url in all_candidates:
+        # DFS: skip URLs already in terminal state (never re-check)
+        if _is_url_processed(url):
+            logger.debug("Already processed, skipping: %s", url)
+            skipped += 1
+            continue
+
         if quota_exhausted:
-            remaining_urls = all_candidates[all_candidates.index(url):]
+            # Quota exhausted — remaining URLs stay pending, auto-retried next run
+            remaining = all_candidates[all_candidates.index(url):]
             logger.warning(
-                "main: daily quota exhausted — marking %d remaining URLs as unextracted",
-                len(remaining_urls)
+                "Daily quota exhausted — %d URLs remain pending for next run",
+                len(remaining)
             )
-            for pending_url in remaining_urls:
-                _save_seen_link(pending_url, source="unextracted")
             break
 
         logger.info("Extracting data from: %s", url)
@@ -460,11 +411,10 @@ def run():
         except RuntimeError as e:
             if "Daily quota exhausted" in str(e):
                 quota_exhausted = True
-                _save_seen_link(url, source="unextracted")
-                logger.warning("main: daily quota exhausted, stopping extraction")
+                logger.warning("Daily quota exhausted, stopping extraction")
                 time.sleep(5)
                 continue
-            logger.error("main: unexpected error for %s: %s", url, e)
+            logger.error("Unexpected error for %s: %s", url, e)
             failed += 1
             time.sleep(5)
             continue
@@ -472,15 +422,14 @@ def run():
         if result is None:
             if daily_quota_exhausted():
                 quota_exhausted = True
-                _save_seen_link(url, source="unextracted")
             logger.warning("Extraction failed for: %s", url)
             failed += 1
             time.sleep(5)
             continue
 
         if not result.get("is_conference", False):
-            logger.info("Not a conference, skipping: %s", url)
-            _save_seen_link(url)
+            logger.info("Not a conference, marking done: %s", url)
+            _mark_url_status(url, "not_conference")
             skipped += 1
             time.sleep(5)
             continue
@@ -489,11 +438,10 @@ def run():
         MIN_CONFIDENCE = 0.75
         if result.get("confidence", 0) < MIN_CONFIDENCE:
             logger.warning(
-                "Low confidence %.2f for %s, skipping",
+                "Low confidence %.2f for %s, marking done",
                 result.get("confidence"), url
             )
-            _save_seen_link(url, source="low_confidence")
-            _mark_extracted(url)
+            _mark_url_status(url, "low_confidence")
             skipped += 1
             time.sleep(5)
             continue
@@ -504,8 +452,8 @@ def run():
             try:
                 conf_date = datetime.strptime(date_start, "%Y-%m-%d").date()
                 if conf_date < datetime.now().date():
-                    logger.info("Conference already past (%s), skipping: %s", date_start, url)
-                    _save_seen_link(url)
+                    logger.info("Conference already past (%s), marking done: %s", date_start, url)
+                    _mark_url_status(url, "not_conference")
                     skipped += 1
                     time.sleep(5)
                     continue
@@ -513,7 +461,8 @@ def run():
                 pass
 
         if _is_duplicate(result.get("website", "")):
-            logger.info("Duplicate conference, skipping: %s", url)
+            logger.info("Duplicate conference, marking done: %s", url)
+            _mark_url_status(url, "extracted")
             skipped += 1
             time.sleep(5)
             continue
@@ -525,13 +474,13 @@ def run():
             continue
 
         logger.info("New conference saved: %s", result.get("title"))
-        _mark_extracted(url)
+        _mark_url_status(url, "extracted")
         notify(result)
 
         # Retry mark_notified up to 3 times to prevent duplicates
         for attempt in range(3):
             try:
-                conn = psycopg2.connect(_db_url())
+                conn = get_connection()
                 cur = conn.cursor()
                 cur.execute(
                     "UPDATE conferences SET is_notified=TRUE, notified_at=NOW() WHERE website=%s",

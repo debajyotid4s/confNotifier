@@ -12,14 +12,12 @@
 
 ## Architecture Overview
 
-The system has two independent subsystems sharing one PostgreSQL database:
-
-### Subsystem A — Scraper (runs on GitHub Actions, every 6 hours)
+The system is a single scraper pipeline running on GitHub Actions every 6 hours:
 
 ```
 Discovery (3 sources)
   1. crt_monitor.py   → crt.sh cert transparency queries
-  2. homepage_links.py → scan 98 uni homepages (requests + BS4)
+  2. homepage_links.py → scan university homepages (requests + BS4)
   3. special.py       → probe ICCIT/QPAIN/etc yearly URLs
           ↓
 Extraction (extractor.py)
@@ -29,17 +27,7 @@ Extraction (extractor.py)
           ↓
 Post-Processing (main.py)
   Dedup check → confidence filter (≥0.75) → date filter
-  → save to conferences table → notify via Telegram API
-```
-
-### Subsystem B — Bot (self-hosted, always-on)
-
-```
-Telegram bot (python-telegram-bot, webhook mode)
-  /start     → welcome message
-  /list      → upcoming conferences (DB query, LIMIT 10)
-  /subscribe → channel join link
-Health check: GET /health → "ok" on port 8080
+  → save to conferences table → notify via Telegram channel API
 ```
 
 ---
@@ -239,26 +227,6 @@ Health check: GET /health → "ok" on port 8080
 
 ---
 
-### bot/bot.py (159 lines)
-
-**Role:** Telegram bot with 3 commands, running in webhook mode.
-
-| Command | Behavior |
-|---|---|
-| `/start` | Welcome message with channel link |
-| `/list` | Queries upcoming conferences (date_start >= TODAY, LIMIT 10) |
-| `/subscribe` | Sends channel join link |
-
-**Health check:** `GET /health` → `"ok"` on port 8080 (configurable via `HEALTH_CHECK_PORT`).
-
-**Webhook:** Runs on port 8080 (`PORT` env var). Uses `app.run_webhook()`. Deployed on any self-hosted VPS or free compute platform.
-
-**DB pattern:** `_get_db_connection()` — 3-retry pattern.
-
-**CHANNEL_LINK:** Configurable via env var, defaults to `https://t.me/BDConferences`.
-
----
-
 ### config/universities.json
 
 72 Bangladeshi university domains (du.ac.bd, sust.edu, buet.ac.bd, cuet.ac.bd, etc.)
@@ -393,20 +361,12 @@ Phase 5: _notify_pending()
 
 1. **extractor.py spawns a new Chrome instance per candidate URL** — Inefficient for many candidates; BrowserManager should be reused.
 
-2. **No shared DB utility module** — DB connection code (3-retry pattern) duplicated across files: main.py, crt_monitor.py, homepage_links.py, special.py, deduplicator.py, bot.py.
+2. **No shared DB utility module** — DB connection code (3-retry pattern) duplicated across files: main.py, crt_monitor.py, homepage_links.py, special.py, deduplicator.py.
 
-3. **bot.py CHANNEL_LINK not configurable via env var for code changes** — Changing channel requires code deploy.
+3. **Gemini 2.5 Flash 15 RPM limit is tight** — 3 candidates/min with 3 retry attempts each can exhaust quota quickly.
 
-4. **Health check on separate port (8080) not probed by default** — HEALTH_CHECK_PORT must be set to match PORT.
+4. **test.py contains hardcoded API key** — Security concern; should be removed from repo.
 
-5. **Gemini 2.5 Flash 15 RPM limit is tight** — 3 candidates/min with 3 retry attempts each can exhaust quota quickly.
+5. **deduplicator.py exists but main.py uses its own `_is_duplicate()` instead** — Dead code.
 
-6. **test.py contains hardcoded API key** — Security concern; should be removed from repo.
-
-7. **deduplicator.py exists but main.py uses its own `_is_duplicate()` instead** — Dead code.
-
-8. **Original plan mentioned 3-model fallback (Gemma/Llama/DeepSeek)** — Current code uses only Gemini 2.5 Flash.
-
-9. **Original plan had subscribers table** — Current schema doesn't include it (channel-based delivery).
-
-10. **Special sources with unpredictable URL patterns cannot be auto-detected** — RAAICON uses date-based paths that change yearly.
+6. **Special sources with unpredictable URL patterns cannot be auto-detected** — RAAICON uses date-based paths that change yearly.

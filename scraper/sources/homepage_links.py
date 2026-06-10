@@ -1,18 +1,17 @@
 import ipaddress
 import json
 import logging
-import os
 import re
 import socket
 import subprocess
 import time
 from urllib.parse import urlparse, urljoin
 
-import psycopg2
 import requests
 from bs4 import BeautifulSoup
 import urllib3.exceptions
 
+from db import get_connection, save_seen_link
 from scraper.browser import BrowserManager, load_page
 
 # Suppress noisy urllib3 connection warnings from malformed server headers
@@ -270,21 +269,6 @@ def fetch_homepage_with_www_fallback(domain: str):
     return None, url_www, None
 
 
-def _save_link(url: str, source: str) -> None:
-    try:
-        conn = psycopg2.connect(os.environ["DATABASE_URL"])
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO seen_links (url, source) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-            (url, source),
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
-    except Exception as e:
-        logger.error("DB error saving link %s: %s", url, e)
-
-
 def run():
     """Scan all university homepages for outbound conference links.
 
@@ -295,7 +279,7 @@ def run():
     stats = {"ok": 0, "tls_fix": 0, "dns_fix": 0, "curl_fix": 0, "selenium_fix": 0, "failed": 0}
 
     try:
-        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        conn = get_connection()
         cur = conn.cursor()
         cur.execute("SELECT url FROM seen_links WHERE source = 'homepage'")
         known = {row[0] for row in cur.fetchall()}
@@ -353,7 +337,7 @@ def run():
                 continue
             candidates.append(full_url)
             known.add(full_url)
-            _save_link(full_url, "homepage")
+            save_seen_link(full_url, source="homepage")
 
     logger.info(
         "homepage_links: found %d new conference-like links "
