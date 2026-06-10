@@ -285,7 +285,6 @@ def run() -> list:
                             (subdomain, query),
                         )
                     except psycopg2.Error as e:
-                        conn.rollback()
                         logger.error(
                             "crt_monitor: DB error saving %s: %s", subdomain, e
                         )

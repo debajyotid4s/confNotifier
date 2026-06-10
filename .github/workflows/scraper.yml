@@ -14,10 +14,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Chrome
+      - name: Install matching ChromeDriver
         run: |
-          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-          sudo apt install -y ./google-chrome-stable_current_amd64.deb
+          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+' | head -1)
+          pip install chromedriver-binary-auto
 
       - uses: actions/setup-python@v5
         with:

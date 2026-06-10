@@ -156,6 +156,9 @@ def _load_orphaned_urls() -> list:
     These are URLs that were probed successfully but extraction failed
     (rate limit, LLM error, short page, etc.) in a previous run.
     They need to be re-processed.
+
+    Excludes URLs already evaluated: 'extracted' (confirmed non-conference),
+    'low_confidence' (below threshold), 'not_conference' (explicit skip).
     """
     conn = None
     try:
@@ -167,7 +170,7 @@ def _load_orphaned_urls() -> list:
             LEFT JOIN conferences c
               ON sl.url = c.raw_source OR sl.url = c.website
             WHERE c.id IS NULL
-              AND sl.source != 'unextracted'
+              AND sl.source NOT IN ('unextracted', 'extracted', 'low_confidence', 'not_conference')
               AND sl.url NOT LIKE '%%#%%'
             """
         )
@@ -459,9 +462,11 @@ def run():
                 quota_exhausted = True
                 _save_seen_link(url, source="unextracted")
                 logger.warning("main: daily quota exhausted, stopping extraction")
+                time.sleep(5)
                 continue
             logger.error("main: unexpected error for %s: %s", url, e)
             failed += 1
+            time.sleep(5)
             continue
 
         if result is None:
@@ -470,12 +475,14 @@ def run():
                 _save_seen_link(url, source="unextracted")
             logger.warning("Extraction failed for: %s", url)
             failed += 1
+            time.sleep(5)
             continue
 
         if not result.get("is_conference", False):
             logger.info("Not a conference, skipping: %s", url)
             _save_seen_link(url)
             skipped += 1
+            time.sleep(5)
             continue
 
         # Skip low-confidence extractions
@@ -485,7 +492,10 @@ def run():
                 "Low confidence %.2f for %s, skipping",
                 result.get("confidence"), url
             )
+            _save_seen_link(url, source="low_confidence")
+            _mark_extracted(url)
             skipped += 1
+            time.sleep(5)
             continue
 
         # Skip conferences that have already ended
@@ -497,6 +507,7 @@ def run():
                     logger.info("Conference already past (%s), skipping: %s", date_start, url)
                     _save_seen_link(url)
                     skipped += 1
+                    time.sleep(5)
                     continue
             except (ValueError, TypeError):
                 pass
@@ -504,11 +515,13 @@ def run():
         if _is_duplicate(result.get("website", "")):
             logger.info("Duplicate conference, skipping: %s", url)
             skipped += 1
+            time.sleep(5)
             continue
 
         result["raw_source"] = url
         if not _save_conference(result):
             failed += 1
+            time.sleep(5)
             continue
 
         logger.info("New conference saved: %s", result.get("title"))
@@ -533,6 +546,7 @@ def run():
                 time.sleep(2)
 
         new_count += 1
+        time.sleep(5)
 
     logger.info(
         "=== Run complete: %d found, %d new, %d skipped, %d failed | "
