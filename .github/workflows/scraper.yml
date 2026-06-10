@@ -31,6 +31,8 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GOOGLE_AI_KEY: ${{ secrets.GOOGLE_AI_KEY }}
+          GOOGLE_AI_KEY_2: ${{ secrets.GOOGLE_AI_KEY_2 }}
+          GOOGLE_AI_KEY_3: ${{ secrets.GOOGLE_AI_KEY_3 }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
           TELEGRAM_CHANNEL_LINK: ${{ secrets.TELEGRAM_CHANNEL_LINK }}
