@@ -415,6 +415,7 @@ def run():
                 time.sleep(5)
                 continue
             logger.error("Unexpected error for %s: %s", url, e)
+            _mark_url_status(url, "failed")
             failed += 1
             time.sleep(5)
             continue
@@ -423,6 +424,7 @@ def run():
             if daily_quota_exhausted():
                 quota_exhausted = True
             logger.warning("Extraction failed for: %s", url)
+            _mark_url_status(url, "failed")
             failed += 1
             time.sleep(5)
             continue
@@ -469,6 +471,7 @@ def run():
 
         result["raw_source"] = url
         if not _save_conference(result):
+            _mark_url_status(url, "failed")
             failed += 1
             time.sleep(5)
             continue
