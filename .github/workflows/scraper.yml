@@ -14,11 +14,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install matching ChromeDriver
-        run: |
-          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+' | head -1)
-          pip install chromedriver-binary-auto
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
