@@ -266,9 +266,10 @@ def extract_conferences(page_text: str, source_url: str) -> dict | None:
             except Exception as e:
                 err_str = str(e)
 
-                if "429" in err_str or "rate" in err_str.lower():
+                if "429" in err_str or "rate" in err_str.lower() or "503" in err_str or "UNAVAILABLE" in err_str:
                     logger.warning(
-                        "extractor: 429 on key %s for %s, rotating to next key",
+                        "extractor: transient error (%s) on key %s for %s, rotating to next key",
+                        "429" if "429" in err_str else "503",
                         key_hint, source_url
                     )
                     break  # break inner loop → try next key
