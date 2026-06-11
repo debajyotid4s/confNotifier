@@ -38,3 +38,6 @@ diagnose_failures.py
 diagnostic_results.json
 test_homepage_fix.py
 test.py
+
+# Local documentation
+PROJECT_STATE.md
