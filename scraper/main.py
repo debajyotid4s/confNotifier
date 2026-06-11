@@ -103,6 +103,30 @@ def _mark_url_status(url: str, status: str) -> None:
                 pass
 
 
+def _load_known_websites() -> set:
+    """Load all conference website URLs already saved in the DB.
+
+    Used to skip extraction for URLs that would produce duplicates.
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT website FROM conferences")
+        websites = {row[0] for row in cur.fetchall() if row[0]}
+        cur.close()
+        return websites
+    except Exception as e:
+        logger.error("load_known_websites error: %s", e)
+        return set()
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def _is_url_processed(url: str) -> bool:
     """Check if a URL is already in a terminal state (never re-check).
 
@@ -383,6 +407,10 @@ def run():
 
     logger.info("Phase 4: Processing %d unique candidates", len(all_candidates))
 
+    known_websites = _load_known_websites()
+    if known_websites:
+        logger.info("Loaded %d known conference websites for dedup", len(known_websites))
+
     found = len(all_candidates)
     new_count = 0
     skipped = 0
@@ -462,7 +490,7 @@ def run():
             except (ValueError, TypeError):
                 pass
 
-        if _is_duplicate(result.get("website", "")):
+        if result.get("website", "") in known_websites:
             logger.info("Duplicate conference, marking done: %s", url)
             _mark_url_status(url, "extracted")
             skipped += 1
