@@ -2,7 +2,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import psycopg2
 import requests
@@ -33,15 +33,19 @@ def _save_conference(conf: dict) -> bool:
             """
             INSERT INTO conferences
                 (title, date_start, date_end, city, country, website,
-                 organizer, category, confidence, raw_source, is_notified)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            ON CONFLICT (website) DO NOTHING
+                 organizer, category, confidence, submission_deadline,
+                 raw_source, is_notified)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (website) DO UPDATE SET
+                submission_deadline = COALESCE(EXCLUDED.submission_deadline, conferences.submission_deadline),
+                updated_at = NOW()
             """,
             (
                 conf.get("title"), conf.get("date_start"), conf.get("date_end"),
                 conf.get("city"), "Bangladesh", conf.get("website"),
                 conf.get("organizer"), conf.get("category"),
-                conf.get("confidence"), conf.get("raw_source"), False,
+                conf.get("confidence"), conf.get("submission_deadline"),
+                conf.get("raw_source"), False,
             )
         )
         conn.commit()
@@ -146,7 +150,7 @@ def _is_url_processed(url: str) -> bool:
         cur.close()
         if row is None:
             return False  # new URL, not yet seen
-        return row[0] in ("not_conference", "low_confidence", "extracted")
+        return row[0] in ("not_conference", "low_confidence", "extracted", "failed")
     except Exception as e:
         logger.error("is_url_processed error for %s: %s", url, e)
         return False  # on error, let it be processed (safer)
@@ -371,6 +375,9 @@ def run():
 
     logger.info("=== BD Conference Bot Run Started ===")
 
+    # Detect 06:00 UTC run (12:00 PM BST) — daily deadline reminder fires here
+    is_morning_run = datetime.now(timezone.utc).hour == 6
+
     # Phase 1
     try:
         crt_candidates = crt_monitor.run()
@@ -540,6 +547,13 @@ def run():
     pending_sent = _notify_pending(notify)
     if pending_sent > 0:
         logger.info("notify_pending: sent %d notification(s)", pending_sent)
+
+    # Daily deadline reminder — only on 06:00 UTC run
+    if is_morning_run:
+        from notifier import send_deadline_reminder
+        reminder_sent = send_deadline_reminder()
+        if reminder_sent:
+            logger.info("Daily deadline reminder sent")
 
 
 if __name__ == "__main__":

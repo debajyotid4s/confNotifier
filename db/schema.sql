@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS conferences (
     organizer TEXT,
     category TEXT,
     confidence REAL NOT NULL DEFAULT 0.0,
+    submission_deadline DATE,
     raw_source TEXT,
     is_notified BOOLEAN NOT NULL DEFAULT FALSE,
     notified_at TIMESTAMPTZ,
