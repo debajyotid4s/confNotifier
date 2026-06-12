@@ -10,6 +10,7 @@ from collections import deque
 from openai import OpenAI
 from bs4 import BeautifulSoup
 
+from db import save_seen_link
 from scraper.browser import BrowserManager, load_page
 
 logger = logging.getLogger(__name__)
@@ -126,6 +127,7 @@ Return ONLY a valid JSON object. No explanation. No markdown. No backticks.
   "title": "Full official conference title",
   "date_start": "YYYY-MM-DD or null",
   "date_end": "YYYY-MM-DD or null",
+  "submission_deadline": "YYYY-MM-DD or null",
   "city": "City in Bangladesh or null",
   "country": "Bangladesh",
   "website": "Full conference URL",
@@ -138,7 +140,11 @@ Rules:
 - is_conference = false for seminars, webinars, department pages, local events.
 - is_conference = true only for multi-day international conferences.
 - If held outside Bangladesh, is_conference = false.
-- If page has no conference content, return is_conference = false."""
+- If page has no conference content, return is_conference = false.
+- submission_deadline: the paper/submission due date. Look for phrases like
+  "submission deadline", "paper due", "last date of submission",
+  "camera-ready deadline", "full paper due", "abstract submission".
+  If not found, return null."""
 
 
 def _is_url_reachable(url: str) -> bool:
@@ -307,11 +313,18 @@ def extract(url):
     """
     if not _is_url_reachable(url):
         logger.warning("extractor: DNS resolution failed for %s, skipping", url)
+        save_seen_link(url, source="extractor", status="failed")
         return None
 
     text = _fetch_page_text(url)
     if text is None:
         logger.warning("extractor: could not fetch page text for %s", url)
+        save_seen_link(url, source="extractor", status="failed")
+        return None
+
+    if len(text.strip()) < 100:
+        logger.warning("extractor: page text too short for %s, skipping", url)
+        save_seen_link(url, source="extractor", status="failed")
         return None
 
     logger.info("extractor: extracting from %s", url)
