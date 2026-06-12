@@ -66,6 +66,8 @@ SUBDOMAIN_BLOCKLIST = [
     "icpcbd",
     "ict.",             # blocks ict.mbstu.ac.bd, ict.nu.ac.bd
     "www.ict.",         # blocks www.ict.mbstu.ac.bd
+    "ieeecomsoc",       # IEEE COMSOC branch page, not a conference
+    "ieee-comsoc",      # IEEE COMSOC branch page, not a conference
 ]
 
 # Exact Bangladesh university domains that use plain .edu TLD
