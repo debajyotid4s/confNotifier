@@ -1,0 +1,28 @@
+name: Daily Deadline Reminder
+
+on:
+  schedule:
+    - cron: "0 4 * * *"   # 04:00 UTC = 10:00 AM Bangladesh
+  workflow_dispatch:
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install minimal dependencies
+        run: pip install psycopg2-binary==2.9.9 requests==2.32.3
+
+      - name: Send daily reminders
+        run: PYTHONPATH=. python scraper/send_reminders.py
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          TELEGRAM_CHANNEL_LINK: ${{ secrets.TELEGRAM_CHANNEL_LINK }}

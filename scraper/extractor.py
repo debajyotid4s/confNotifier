@@ -91,9 +91,6 @@ class GoogleRateLimiter:
             time.sleep(max(wait_seconds, 0.5))
 
 
-# Single shared instance used by all extraction calls
-_rate_limiter = GoogleRateLimiter()
-
 # ── API key rotation — load all available keys ──
 
 _gemini_base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
@@ -128,6 +125,9 @@ Return ONLY a valid JSON object. No explanation. No markdown. No backticks.
   "date_start": "YYYY-MM-DD or null",
   "date_end": "YYYY-MM-DD or null",
   "submission_deadline": "YYYY-MM-DD or null",
+  "submission_deadline_label": "short label for what this date represents (e.g. 'Extended Abstract Submission', 'Paper Submission') or null",
+  "submission_deadline_2": "YYYY-MM-DD or null",
+  "submission_deadline_2_label": "short label for the second date (e.g. 'Full Paper Submission', 'Registration Deadline') or null",
   "city": "City in Bangladesh or null",
   "country": "Bangladesh",
   "website": "Full conference URL",
@@ -141,10 +141,19 @@ Rules:
 - is_conference = true only for multi-day international conferences.
 - If held outside Bangladesh, is_conference = false.
 - If page has no conference content, return is_conference = false.
-- submission_deadline: the paper/submission due date. Look for phrases like
-  "submission deadline", "paper due", "last date of submission",
-  "camera-ready deadline", "full paper due", "abstract submission".
-  If not found, return null."""
+- submission_deadline: the earliest/primary paper or abstract submission due date.
+  Look for phrases like "submission deadline", "paper due", "last date of submission",
+  "abstract submission", "full paper due".
+  If not found, return null.
+- submission_deadline_label: a short descriptive label for what the first deadline
+  represents (e.g. "Extended Abstract Submission", "Paper Submission").
+  If submission_deadline is null, this should also be null.
+- submission_deadline_2: a SECOND distinct deadline if the page mentions one
+  (e.g. full paper deadline after extended abstract, or camera-ready deadline,
+  or registration deadline). Must be a different date from submission_deadline.
+  If not found, return null.
+- submission_deadline_2_label: a short descriptive label for the second deadline.
+  If submission_deadline_2 is null, this should also be null."""
 
 
 def _is_url_reachable(url: str) -> bool:

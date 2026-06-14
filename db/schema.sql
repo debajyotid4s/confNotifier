@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS conferences (
     category TEXT,
     confidence REAL NOT NULL DEFAULT 0.0,
     submission_deadline DATE,
+    submission_deadline_label TEXT,
+    submission_deadline_2 DATE,
+    submission_deadline_2_label TEXT,
     raw_source TEXT,
     is_notified BOOLEAN NOT NULL DEFAULT FALSE,
     notified_at TIMESTAMPTZ,
@@ -46,3 +49,8 @@ CREATE INDEX IF NOT EXISTS idx_conferences_date_start ON conferences (date_start
 CREATE INDEX IF NOT EXISTS idx_known_subdomains_subdomain ON known_subdomains (subdomain);
 CREATE INDEX IF NOT EXISTS idx_seen_links_url ON seen_links (url);
 CREATE INDEX IF NOT EXISTS idx_seen_links_status ON seen_links (status);
+
+CREATE TABLE IF NOT EXISTS daily_tasks (
+    task_name TEXT PRIMARY KEY,
+    last_run_date DATE
+);
