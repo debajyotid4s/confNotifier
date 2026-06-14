@@ -77,7 +77,7 @@ def send_deadline_reminders() -> None:
                 label = label1 or "Submission Deadline"
                 entries.append((dl1, (
                     f"📌 {title}\n"
-                    f"   {label}: {dl1.strftime('%B %d, %Y')} (in {days_left} day{'s' if days_left != 1 else ''})\n"
+                    f"   {label}: {dl1.strftime('%B %d, %Y')} \\(in {days_left} day{'s' if days_left != 1 else ''}\\)\n"
                     f"   🔗 {website}"
                 )))
             if _within_30_days(dl2):
@@ -85,7 +85,7 @@ def send_deadline_reminders() -> None:
                 label = label2 or "Deadline"
                 entries.append((dl2, (
                     f"📌 {title}\n"
-                    f"   {label}: {dl2.strftime('%B %d, %Y')} (in {days_left} day{'s' if days_left != 1 else ''})\n"
+                    f"   {label}: {dl2.strftime('%B %d, %Y')} \\(in {days_left} day{'s' if days_left != 1 else ''}\\)\n"
                     f"   🔗 {website}"
                 )))
 
