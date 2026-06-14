@@ -1,8 +1,7 @@
 """
 Standalone daily deadline reminder sender.
 Runs independently of the main scraper — no Selenium, no crt.sh, no LLM.
-Checks the daily_tasks table to ensure it sends at most once per UTC day,
-then queries upcoming submission deadlines and posts a grouped Telegram
+Queries upcoming submission deadlines and posts a grouped Telegram
 message to the channel.
 """
 
@@ -22,8 +21,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("send_reminders")
 
-TASK_NAME = "deadline_reminders"
-
 
 def _get_db_connection():
     dsn = os.environ["DATABASE_URL"]
@@ -35,82 +32,6 @@ def _get_db_connection():
             if attempt < 2:
                 time.sleep(5)
     raise RuntimeError("Could not connect to database after 3 attempts")
-
-
-def _ensure_table() -> None:
-    """Create daily_tasks table if it doesn't exist (idempotent)."""
-    conn = None
-    try:
-        conn = _get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS daily_tasks (
-                task_name TEXT PRIMARY KEY,
-                last_run_date DATE
-            )
-            """
-        )
-        conn.commit()
-        cur.close()
-    except Exception as e:
-        logger.error("_ensure_table error: %s", e)
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
-def _was_task_run_today() -> bool:
-    conn = None
-    try:
-        conn = _get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT last_run_date FROM daily_tasks WHERE task_name = %s",
-            (TASK_NAME,)
-        )
-        row = cur.fetchone()
-        cur.close()
-        if row is None:
-            return False
-        return row[0] == date.today()
-    except Exception as e:
-        logger.error("_was_task_run_today error: %s", e)
-        return True  # fail safe: skip rather than spam
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
-def _mark_task_run_today() -> None:
-    conn = None
-    try:
-        conn = _get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO daily_tasks (task_name, last_run_date)
-            VALUES (%s, %s)
-            ON CONFLICT (task_name) DO UPDATE SET last_run_date = %s
-            """,
-            (TASK_NAME, date.today(), date.today())
-        )
-        conn.commit()
-        cur.close()
-    except Exception as e:
-        logger.error("_mark_task_run_today error: %s", e)
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
 
 def _within_30_days(d) -> bool:
@@ -143,21 +64,14 @@ def send_deadline_reminders() -> None:
             """
         )
         rows = cur.fetchall()
-        logging.info("DEBUG: query returned %d rows", len(rows))
-        for row in rows:
-            logging.info("DEBUG: row=%s", row)
         cur.close()
         conn.close()
         conn = None
 
         today = date.today()
-        logging.info("DEBUG: today=%s", today)
         entries = []
 
         for title, website, dl1, label1, dl2, label2 in rows:
-            logging.info("DEBUG: title=%s, dl1=%s (%s), dl2=%s (%s), within30_dl1=%s, within30_dl2=%s",
-                         title, dl1, type(dl1).__name__, dl2, type(dl2).__name__,
-                         _within_30_days(dl1), _within_30_days(dl2))
             if _within_30_days(dl1):
                 days_left = (dl1 - today).days
                 label = label1 or "Submission Deadline"
@@ -174,7 +88,6 @@ def send_deadline_reminders() -> None:
                     f"   {label}: {dl2.strftime('%B %d, %Y')} (in {days_left} day{'s' if days_left != 1 else ''})\n"
                     f"   🔗 {website}"
                 )))
-        logging.info("DEBUG: %d entries after filtering", len(entries))
 
         if not entries:
             logger.info("no upcoming deadlines, skipping")
@@ -234,14 +147,7 @@ def main():
         logger.critical("Missing TELEGRAM_CHANNEL_ID or TELEGRAM_CHANNEL_LINK")
         sys.exit(1)
 
-    _ensure_table()
-
-    if _was_task_run_today():
-        logger.info("already sent today, skipping")
-        return
-
     send_deadline_reminders()
-    _mark_task_run_today()
     logger.info("=== Daily Reminder Run Complete ===")
 
 
