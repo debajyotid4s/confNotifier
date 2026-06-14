@@ -2,7 +2,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, date, timezone
+from datetime import datetime
 
 import psycopg2
 import requests
@@ -34,10 +34,14 @@ def _save_conference(conf: dict) -> bool:
             INSERT INTO conferences
                 (title, date_start, date_end, city, country, website,
                  organizer, category, confidence, submission_deadline,
-                 raw_source, is_notified)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                 submission_deadline_label, submission_deadline_2,
+                 submission_deadline_2_label, raw_source, is_notified)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (website) DO UPDATE SET
                 submission_deadline = COALESCE(EXCLUDED.submission_deadline, conferences.submission_deadline),
+                submission_deadline_label = COALESCE(EXCLUDED.submission_deadline_label, conferences.submission_deadline_label),
+                submission_deadline_2 = COALESCE(EXCLUDED.submission_deadline_2, conferences.submission_deadline_2),
+                submission_deadline_2_label = COALESCE(EXCLUDED.submission_deadline_2_label, conferences.submission_deadline_2_label),
                 updated_at = NOW()
             """,
             (
@@ -45,7 +49,8 @@ def _save_conference(conf: dict) -> bool:
                 conf.get("city"), "Bangladesh", conf.get("website"),
                 conf.get("organizer"), conf.get("category"),
                 conf.get("confidence"), conf.get("submission_deadline"),
-                conf.get("raw_source"), False,
+                conf.get("submission_deadline_label"), conf.get("submission_deadline_2"),
+                conf.get("submission_deadline_2_label"), conf.get("raw_source"), False,
             )
         )
         conn.commit()
@@ -54,29 +59,6 @@ def _save_conference(conf: dict) -> bool:
     except Exception as e:
         logger.error("save_conference error: %s", e)
         return False
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
-def _is_duplicate(website: str) -> bool:
-    """Open a fresh DB connection, check duplicate, close immediately."""
-    conn = None
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT id FROM conferences WHERE website = %s", (website,)
-        )
-        exists = cur.fetchone() is not None
-        cur.close()
-        return exists
-    except Exception as e:
-        logger.error("is_duplicate error: %s", e)
-        return False   # assume not duplicate on error — safer to attempt save
     finally:
         if conn:
             try:
@@ -327,84 +309,6 @@ def _notify_pending(notify_fn) -> int:
     return notified_count
 
 
-def _send_deadline_reminders() -> None:
-    """
-    Query conferences with submission_deadline in the next 30 days
-    and send one grouped Telegram message. Silent if no deadlines found.
-    """
-    conn = None
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT title, submission_deadline, website
-            FROM conferences
-            WHERE submission_deadline IS NOT NULL
-              AND submission_deadline >= CURRENT_DATE
-              AND submission_deadline <= CURRENT_DATE + INTERVAL '30 days'
-            ORDER BY submission_deadline ASC
-            """,
-        )
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        conn = None
-
-        if not rows:
-            logger.info("deadline_reminders: no upcoming deadlines, skipping")
-            return
-
-        today = date.today()
-        lines = []
-        for title, deadline, website in rows:
-            days_left = (deadline - today).days
-            lines.append(
-                f"📌 {title}\n"
-                f"   Deadline: {deadline.strftime('%B %d, %Y')} (in {days_left} day{'s' if days_left != 1 else ''})\n"
-                f"   🔗 {website}"
-            )
-
-        body = "\n\n".join(lines)
-        message = (
-            "📚 *Paper Submission Deadline Reminder*\n\n"
-            "My Dear Research Enthusiasts,\n\n"
-            "Here are the upcoming paper submission deadlines:\n\n"
-            f"{body}\n\n"
-            "Don't miss out\\! Plan your submissions accordingly\\.\n\n"
-            "\\#Bangladesh2026 \\#CallForPapers"
-        )
-
-        token = os.environ["TELEGRAM_BOT_TOKEN"]
-        channel = os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get("TELEGRAM_CHANNEL_LINK", "")
-        if channel.startswith("https://t.me/"):
-            channel = "@" + channel.split("https://t.me/")[1]
-
-        resp = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={
-                "chat_id": channel,
-                "text": message,
-                "parse_mode": "MarkdownV2",
-                "disable_web_page_preview": True,
-            },
-            timeout=15,
-        )
-        if resp.status_code == 200:
-            logger.info("deadline_reminders: sent reminder for %d deadline(s)", len(rows))
-        else:
-            logger.error("deadline_reminders: Telegram send failed (%d): %s", resp.status_code, resp.text)
-
-    except Exception as e:
-        logger.error("deadline_reminders: error: %s", e)
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
 # ── Main orchestrator ──
 
 
@@ -622,11 +526,6 @@ def run():
     pending_sent = _notify_pending(notify)
     if pending_sent > 0:
         logger.info("notify_pending: sent %d notification(s)", pending_sent)
-
-    # Phase 6: daily deadline reminders (10 PM Bangladesh = 16:00 UTC)
-    now = datetime.utcnow()
-    if now.hour == 16:
-        _send_deadline_reminders()
 
 
 if __name__ == "__main__":
