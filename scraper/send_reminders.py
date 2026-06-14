@@ -11,8 +11,16 @@ import sys
 import time
 from datetime import date
 
+import re
+
 import psycopg2
 import requests
+
+_MDV2_SPECIAL = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
+
+
+def _escape_md(text: str) -> str:
+    return _MDV2_SPECIAL.sub(r"\\\1", text)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -76,17 +84,17 @@ def send_deadline_reminders() -> None:
                 days_left = (dl1 - today).days
                 label = label1 or "Submission Deadline"
                 entries.append((dl1, (
-                    f"📌 {title}\n"
-                    f"   {label}: {dl1.strftime('%B %d, %Y')} \\(in {days_left} day{'s' if days_left != 1 else ''}\\)\n"
-                    f"   🔗 {website}"
+                    f"📌 {_escape_md(title)}\n"
+                    f"   {_escape_md(label)}: {_escape_md(dl1.strftime('%B %d, %Y'))} \\(in {days_left} day{'s' if days_left != 1 else ''}\\)\n"
+                    f"   🔗 {_escape_md(website)}"
                 )))
             if _within_30_days(dl2):
                 days_left = (dl2 - today).days
                 label = label2 or "Deadline"
                 entries.append((dl2, (
-                    f"📌 {title}\n"
-                    f"   {label}: {dl2.strftime('%B %d, %Y')} \\(in {days_left} day{'s' if days_left != 1 else ''}\\)\n"
-                    f"   🔗 {website}"
+                    f"📌 {_escape_md(title)}\n"
+                    f"   {_escape_md(label)}: {_escape_md(dl2.strftime('%B %d, %Y'))} \\(in {days_left} day{'s' if days_left != 1 else ''}\\)\n"
+                    f"   🔗 {_escape_md(website)}"
                 )))
 
         if not entries:
