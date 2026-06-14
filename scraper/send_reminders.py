@@ -37,6 +37,32 @@ def _get_db_connection():
     raise RuntimeError("Could not connect to database after 3 attempts")
 
 
+def _ensure_table() -> None:
+    """Create daily_tasks table if it doesn't exist (idempotent)."""
+    conn = None
+    try:
+        conn = _get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS daily_tasks (
+                task_name TEXT PRIMARY KEY,
+                last_run_date DATE
+            )
+            """
+        )
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        logger.error("_ensure_table error: %s", e)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def _was_task_run_today() -> bool:
     conn = None
     try:
@@ -199,6 +225,8 @@ def main():
     if not (os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get("TELEGRAM_CHANNEL_LINK")):
         logger.critical("Missing TELEGRAM_CHANNEL_ID or TELEGRAM_CHANNEL_LINK")
         sys.exit(1)
+
+    _ensure_table()
 
     if _was_task_run_today():
         logger.info("already sent today, skipping")
