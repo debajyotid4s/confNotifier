@@ -76,41 +76,40 @@ def send_deadline_reminders() -> None:
         conn.close()
         conn = None
 
-        today = date.today()
         entries = []
 
         for title, website, dl1, label1, dl2, label2 in rows:
             if _within_30_days(dl1):
-                days_left = (dl1 - today).days
-                label = label1 or "Submission Deadline"
-                entries.append((dl1, (
-                    f"📌 {_escape_md(title)}\n"
-                    f"   {_escape_md(label)}: {_escape_md(dl1.strftime('%B %d, %Y'))} \\(in {days_left} day{'s' if days_left != 1 else ''}\\)\n"
-                    f"   🔗 {_escape_md(website)}"
-                )))
+                entries.append((dl1, website, title))
             if _within_30_days(dl2):
-                days_left = (dl2 - today).days
-                label = label2 or "Deadline"
-                entries.append((dl2, (
-                    f"📌 {_escape_md(title)}\n"
-                    f"   {_escape_md(label)}: {_escape_md(dl2.strftime('%B %d, %Y'))} \\(in {days_left} day{'s' if days_left != 1 else ''}\\)\n"
-                    f"   🔗 {_escape_md(website)}"
-                )))
+                entries.append((dl2, website, title))
 
         if not entries:
             logger.info("no upcoming deadlines, skipping")
             return
 
         entries.sort(key=lambda x: x[0])
-        lines = [line for _, line in entries]
-        body = "\n\n".join(lines)
+
+        deadlines = []
+        links = []
+        seen_websites = set()
+        for dl, website, title in entries:
+            month_day = dl.strftime("%b %d")
+            deadlines.append(f"⏰ {_escape_md(month_day)} — {_escape_md(title)} \\({dl.strftime('%Y')}\\)")
+            domain = website.replace("https://", "").replace("http://", "").rstrip("/")
+            if domain not in seen_websites:
+                seen_websites.add(domain)
+                links.append(f"• {_escape_md(domain)}")
+
+        deadline_block = "\n".join(deadlines)
+        link_block = "\n".join(links)
 
         message = (
-            "📚 *Paper Submission Deadline Reminder*\n\n"
-            "My Dear Research Enthusiasts,\n\n"
-            "Here are the upcoming paper submission deadlines:\n\n"
-            f"{body}\n\n"
-            "Don't miss out\\! Plan your submissions accordingly\\.\n\n"
+            "📚 *Upcoming Deadlines*\n"
+            "━━━━━━━━━━━━━━━━━━━\n\n"
+            f"{deadline_block}\n\n"
+            "🔗 *Links:*\n"
+            f"{link_block}\n\n"
             "\\#Bangladesh2026 \\#CallForPapers"
         )
 
