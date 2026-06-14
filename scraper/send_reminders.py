@@ -143,14 +143,21 @@ def send_deadline_reminders() -> None:
             """
         )
         rows = cur.fetchall()
+        logging.info("DEBUG: query returned %d rows", len(rows))
+        for row in rows:
+            logging.info("DEBUG: row=%s", row)
         cur.close()
         conn.close()
         conn = None
 
         today = date.today()
+        logging.info("DEBUG: today=%s", today)
         entries = []
 
         for title, website, dl1, label1, dl2, label2 in rows:
+            logging.info("DEBUG: title=%s, dl1=%s (%s), dl2=%s (%s), within30_dl1=%s, within30_dl2=%s",
+                         title, dl1, type(dl1).__name__, dl2, type(dl2).__name__,
+                         _within_30_days(dl1), _within_30_days(dl2))
             if _within_30_days(dl1):
                 days_left = (dl1 - today).days
                 label = label1 or "Submission Deadline"
@@ -167,6 +174,7 @@ def send_deadline_reminders() -> None:
                     f"   {label}: {dl2.strftime('%B %d, %Y')} (in {days_left} day{'s' if days_left != 1 else ''})\n"
                     f"   🔗 {website}"
                 )))
+        logging.info("DEBUG: %d entries after filtering", len(entries))
 
         if not entries:
             logger.info("no upcoming deadlines, skipping")
