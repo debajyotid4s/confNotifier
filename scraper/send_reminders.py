@@ -1,8 +1,8 @@
 """
 Standalone daily deadline reminder sender.
 Runs independently of the main scraper — no Selenium, no crt.sh, no LLM.
-Queries upcoming submission deadlines and posts a grouped Telegram
-message to the channel.
+Queries upcoming submission deadlines and posts a premium progress-bar
+style Telegram message to the channel.
 """
 
 import logging
@@ -29,6 +29,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("send_reminders")
 
+MAX_DAYS = 30
+BAR_LEN = 20
+
 
 def _get_db_connection():
     dsn = os.environ["DATABASE_URL"]
@@ -47,6 +50,25 @@ def _within_30_days(d) -> bool:
         return False
     delta = (d - date.today()).days
     return 0 <= delta <= 30
+
+
+def _loaded_pct(days_left: int) -> int:
+    pct = round(100 - (days_left / MAX_DAYS) * 100)
+    return max(0, min(100, pct))
+
+
+def _progress_bar(pct: int) -> str:
+    filled = round(pct / 100 * BAR_LEN)
+    empty = BAR_LEN - filled
+    return f"\\[{('█' * filled) + ('░' * empty)}\\]"
+
+
+def _urgency_emoji(days_left: int) -> str:
+    if days_left <= 7:
+        return "🔥"
+    if days_left <= 20:
+        return "⏳"
+    return "✅"
 
 
 def send_deadline_reminders() -> None:
@@ -88,27 +110,37 @@ def send_deadline_reminders() -> None:
             logger.info("no upcoming deadlines, skipping")
             return
 
-        entries.sort(key=lambda x: x[0])
+        entries.sort(key=lambda x: (x[0], x[2]))
 
-        deadlines = []
+        deadline_lines = []
         links = []
         seen_websites = set()
+
         for dl, website, title in entries:
+            days_left = (dl - date.today()).days
+            pct = _loaded_pct(days_left)
+            bar = _progress_bar(pct)
+            emoji = _urgency_emoji(days_left)
             month_day = dl.strftime("%b %d")
-            deadlines.append(f"⏰ {_escape_md(month_day)} — {_escape_md(title)} \\({dl.strftime('%Y')}\\)")
+
+            deadline_lines.append(
+                f"{emoji} {_escape_md(month_day)} — {_escape_md(title)}\n"
+                f"{bar} *{pct}%* Loaded"
+            )
+
             domain = website.replace("https://", "").replace("http://", "").rstrip("/")
             if domain not in seen_websites:
                 seen_websites.add(domain)
                 links.append(f"• {_escape_md(domain)}")
 
-        deadline_block = "\n".join(deadlines)
+        deadline_block = "\n\n".join(deadline_lines)
         link_block = "\n".join(links)
 
         message = (
             "📚 *Upcoming Deadlines*\n"
             "━━━━━━━━━━━━━━━━━━━\n\n"
             f"{deadline_block}\n\n"
-            "🔗 *Links:*\n"
+            "🔗 *Official Links:*\n"
             f"{link_block}\n\n"
             "\\#Bangladesh2026 \\#CallForPapers"
         )
