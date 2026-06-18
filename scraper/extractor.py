@@ -8,10 +8,9 @@ import time
 from collections import deque
 
 from openai import OpenAI
-from bs4 import BeautifulSoup
 
 from db import save_seen_link
-from scraper.browser import BrowserManager, load_page
+from scraper.browser import PlaywrightManager
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +156,7 @@ Rules:
 
 
 def _is_url_reachable(url: str) -> bool:
-    """Quick DNS check before launching Selenium — avoids wasting time on dead sites."""
+    """Quick DNS check before launching browser — avoids wasting time on dead sites."""
     try:
         hostname = url.replace("https://", "").replace("http://", "").split("/")[0]
         socket.getaddrinfo(hostname, 443, proto=socket.IPPROTO_TCP)
@@ -166,11 +165,12 @@ def _is_url_reachable(url: str) -> bool:
         return False
 
 
-def _fetch_page_text(url):
-    """Load a URL with Selenium and extract the visible text content.
+def _fetch_page_text(url, playwright: PlaywrightManager):
+    """Load a URL with Playwright and extract the visible text content.
 
     Args:
         url: The URL to fetch.
+        playwright: Active PlaywrightManager instance (single browser for entire run).
 
     Returns:
         Extracted text content (first 8000 chars), or None on failure.
@@ -180,17 +180,11 @@ def _fetch_page_text(url):
         logger.warning("SSRF blocked: %s", url)
         return None
 
-    with BrowserManager() as driver:
-        if not load_page(driver, url):
-            logger.error("Failed to load candidate URL: %s", url)
-            return None
-        html = driver.page_source
-    soup = BeautifulSoup(html, "lxml")
-    for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
-        tag.decompose()
-    text = soup.get_text(separator=" ", strip=True)
-    text = re.sub(r"\s+", " ", text)
-    return text[:MAX_TEXT_CHARS]
+    text = playwright.fetch_page_text(url)
+    if text is None:
+        logger.error("Failed to load candidate URL: %s", url)
+        return None
+    return text
 
 
 def extract_conferences(page_text: str, source_url: str) -> dict | None:
@@ -311,11 +305,12 @@ def total_requests_today() -> int:
     return sum(c["limiter"]._daily_count for c in _clients)
 
 
-def extract(url):
+def extract(url, playwright: PlaywrightManager):
     """Extract conference details from a candidate URL using Gemini 2.5 Flash.
 
     Args:
         url: The candidate conference URL.
+        playwright: Active PlaywrightManager instance.
 
     Returns:
         Dict with conference data if found, or None.
@@ -325,7 +320,7 @@ def extract(url):
         save_seen_link(url, source="extractor", status="failed")
         return None
 
-    text = _fetch_page_text(url)
+    text = _fetch_page_text(url, playwright)
     if text is None:
         logger.warning("extractor: could not fetch page text for %s", url)
         save_seen_link(url, source="extractor", status="failed")

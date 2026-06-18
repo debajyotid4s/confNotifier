@@ -18,7 +18,7 @@ Zero-cost automated system detecting newly announced international conferences a
 1. **Phase 1**: Certificate Transparency scanning (`sources/crt_monitor.py`)
 2. **Phase 2**: Homepage link scraping (`sources/homepage_links.py`)
 3. **Phase 3**: Recurring conference probing (`sources/special.py`)
-4. **Phase 4**: Selenium page fetching (`browser.py`) + LLM extraction (`extractor.py`)
+4. **Phase 4**: Playwright page fetching (`browser.py`) + LLM extraction (`extractor.py`)
 5. **Phase 5**: DB upsert + Telegram notification (`notifier.py`, `db.py`)
 
 ### Standalone Scripts
@@ -78,6 +78,8 @@ Zero-cost automated system detecting newly announced international conferences a
 - **Daily dedup for reminders**: `daily_tasks` table prevents duplicate sends per UTC day
 - **MarkdownV2 escaping**: All dynamic text escaped via `_escape_md()` regex helper
 - **Standalone reminder script**: No imports from main pipeline; minimal deps for fast GHA startup
+- **Single Playwright browser per run**: `PlaywrightManager` singleton launches one Chromium instance, reuses it for all URLs. Auto-restarts on crash. Stealth plugin bypasses Cloudflare.
+- **Graceful degradation**: If Playwright fails to launch, crt_monitor (Phase 1) still runs. Browser-dependent phases (2-4) are skipped.
 
 ## Recent Changes (this session)
 - Created `send_reminders.py` — standalone daily deadline reminder sender
@@ -86,6 +88,13 @@ Zero-cost automated system detecting newly announced international conferences a
 - Added `submission_deadline`, `submission_deadline_2`, `submission_deadline_label`, `submission_deadline_2_label` columns
 - Designed compact card-style Telegram message format for deadline reminders
 - Added `_escape_md()` helper for MarkdownV2-safe dynamic content
+- **Replaced Selenium with Playwright + stealth** (`browser.py` full rewrite)
+  - `PlaywrightManager` singleton: one Chromium per run, thread-safe, crash recovery
+  - `playwright-stealth` plugin for Cloudflare/Anti-bot bypass
+  - `networkidle` wait eliminates arbitrary `time.sleep()` delays
+  - `homepage_links.py` Cloudflare fallback now uses Playwright instead of Selenium
+  - GHA workflow: Playwright browser cache (~300MB, fast cold-start)
+  - `extractor.py` and `homepage_links.py` receive shared `PlaywrightManager` instance
 
 ## Running Locally
 ```bash
