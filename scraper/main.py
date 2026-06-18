@@ -11,6 +11,7 @@ from db import get_connection, save_seen_link
 from sources import crt_monitor, homepage_links, special
 from extractor import extract, daily_quota_exhausted, total_requests_today
 from notifier import notify
+from browser import PlaywrightManager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -357,7 +358,7 @@ def run():
 
     logger.info("=== BD Conference Bot Run Started ===")
 
-    # Phase 1
+    # Phase 1 — crt_monitor needs no browser
     try:
         crt_candidates = crt_monitor.run()
         logger.info("crt_monitor returned %d candidates", len(crt_candidates))
@@ -365,167 +366,178 @@ def run():
         logger.error("crt_monitor failed: %s", e)
         crt_candidates = []
 
-    # Phase 2
+    homepage_candidates = []
+    special_candidates = []
+    playwright = None
+
     try:
-        homepage_candidates = homepage_links.run()
-        logger.info("homepage_links returned %d candidates", len(homepage_candidates))
-    except Exception as e:
-        logger.error("homepage_links failed: %s", e)
-        homepage_candidates = []
+        with PlaywrightManager() as playwright:
 
-    # Phase 3
-    try:
-        special_candidates = special.run()
-        logger.info("special returned %d candidates", len(special_candidates))
-    except Exception as e:
-        logger.error("special failed: %s", e)
-        special_candidates = []
-
-    all_candidates = list(
-        set(crt_candidates + homepage_candidates + special_candidates)
-    )
-
-    # Re-queue pending URLs from previous runs (status='pending', not yet extracted)
-    pending_prev = _load_pending_urls()
-    if pending_prev:
-        all_candidates = list(set(pending_prev + all_candidates))
-        logger.info("Re-queued %d pending URLs from previous runs", len(pending_prev))
-
-    logger.info("Phase 4: Processing %d unique candidates", len(all_candidates))
-
-    known_websites = _load_known_websites()
-    if known_websites:
-        logger.info("Loaded %d known conference websites for dedup", len(known_websites))
-
-    found = len(all_candidates)
-    new_count = 0
-    skipped = 0
-    failed = 0
-    quota_exhausted = False
-
-    for url in all_candidates:
-        # DFS: skip URLs already in terminal state (never re-check)
-        if _is_url_processed(url):
-            logger.debug("Already processed, skipping: %s", url)
-            skipped += 1
-            continue
-
-        if quota_exhausted:
-            # Quota exhausted — remaining URLs stay pending, auto-retried next run
-            remaining = all_candidates[all_candidates.index(url):]
-            logger.warning(
-                "Daily quota exhausted — %d URLs remain pending for next run",
-                len(remaining)
-            )
-            break
-
-        logger.info("Extracting data from: %s", url)
-        try:
-            result = extract(url)
-        except RuntimeError as e:
-            if "Daily quota exhausted" in str(e):
-                quota_exhausted = True
-                logger.warning("Daily quota exhausted, stopping extraction")
-                time.sleep(5)
-                continue
-            logger.error("Unexpected error for %s: %s", url, e)
-            _mark_url_status(url, "failed")
-            failed += 1
-            time.sleep(5)
-            continue
-
-        if result is None:
-            if daily_quota_exhausted():
-                quota_exhausted = True
-            logger.warning("Extraction failed for: %s", url)
-            _mark_url_status(url, "failed")
-            failed += 1
-            time.sleep(5)
-            continue
-
-        if not result.get("is_conference", False):
-            logger.info("Not a conference, marking done: %s", url)
-            _mark_url_status(url, "not_conference")
-            skipped += 1
-            time.sleep(5)
-            continue
-
-        # Skip low-confidence extractions
-        MIN_CONFIDENCE = 0.75
-        if result.get("confidence", 0) < MIN_CONFIDENCE:
-            logger.warning(
-                "Low confidence %.2f for %s, marking done",
-                result.get("confidence"), url
-            )
-            _mark_url_status(url, "low_confidence")
-            skipped += 1
-            time.sleep(5)
-            continue
-
-        # Skip conferences that have already ended
-        date_start = result.get("date_start")
-        if date_start:
+            # Phase 2
             try:
-                conf_date = datetime.strptime(date_start, "%Y-%m-%d").date()
-                if conf_date < datetime.now().date():
-                    logger.info("Conference already past (%s), marking done: %s", date_start, url)
+                homepage_candidates = homepage_links.run(playwright=playwright)
+                logger.info("homepage_links returned %d candidates", len(homepage_candidates))
+            except Exception as e:
+                logger.error("homepage_links failed: %s", e)
+                homepage_candidates = []
+
+            # Phase 3
+            try:
+                special_candidates = special.run()
+                logger.info("special returned %d candidates", len(special_candidates))
+            except Exception as e:
+                logger.error("special failed: %s", e)
+                special_candidates = []
+
+            all_candidates = list(
+                set(crt_candidates + homepage_candidates + special_candidates)
+            )
+
+            # Re-queue pending URLs from previous runs (status='pending', not yet extracted)
+            pending_prev = _load_pending_urls()
+            if pending_prev:
+                all_candidates = list(set(pending_prev + all_candidates))
+                logger.info("Re-queued %d pending URLs from previous runs", len(pending_prev))
+
+            logger.info("Phase 4: Processing %d unique candidates", len(all_candidates))
+
+            known_websites = _load_known_websites()
+            if known_websites:
+                logger.info("Loaded %d known conference websites for dedup", len(known_websites))
+
+            found = len(all_candidates)
+            new_count = 0
+            skipped = 0
+            failed = 0
+            quota_exhausted = False
+
+            for url in all_candidates:
+                # DFS: skip URLs already in terminal state (never re-check)
+                if _is_url_processed(url):
+                    logger.debug("Already processed, skipping: %s", url)
+                    skipped += 1
+                    continue
+
+                if quota_exhausted:
+                    # Quota exhausted — remaining URLs stay pending, auto-retried next run
+                    remaining = all_candidates[all_candidates.index(url):]
+                    logger.warning(
+                        "Daily quota exhausted — %d URLs remain pending for next run",
+                        len(remaining)
+                    )
+                    break
+
+                logger.info("Extracting data from: %s", url)
+                try:
+                    result = extract(url, playwright)
+                except RuntimeError as e:
+                    if "Daily quota exhausted" in str(e):
+                        quota_exhausted = True
+                        logger.warning("Daily quota exhausted, stopping extraction")
+                        time.sleep(5)
+                        continue
+                    logger.error("Unexpected error for %s: %s", url, e)
+                    _mark_url_status(url, "failed")
+                    failed += 1
+                    time.sleep(5)
+                    continue
+
+                if result is None:
+                    if daily_quota_exhausted():
+                        quota_exhausted = True
+                    logger.warning("Extraction failed for: %s", url)
+                    _mark_url_status(url, "failed")
+                    failed += 1
+                    time.sleep(5)
+                    continue
+
+                if not result.get("is_conference", False):
+                    logger.info("Not a conference, marking done: %s", url)
                     _mark_url_status(url, "not_conference")
                     skipped += 1
                     time.sleep(5)
                     continue
-            except (ValueError, TypeError):
-                pass
 
-        if result.get("website", "") in known_websites:
-            logger.info("Duplicate conference, marking done: %s", url)
-            _mark_url_status(url, "extracted")
-            skipped += 1
-            time.sleep(5)
-            continue
+                # Skip low-confidence extractions
+                MIN_CONFIDENCE = 0.75
+                if result.get("confidence", 0) < MIN_CONFIDENCE:
+                    logger.warning(
+                        "Low confidence %.2f for %s, marking done",
+                        result.get("confidence"), url
+                    )
+                    _mark_url_status(url, "low_confidence")
+                    skipped += 1
+                    time.sleep(5)
+                    continue
 
-        result["raw_source"] = url
-        if not _save_conference(result):
-            _mark_url_status(url, "failed")
-            failed += 1
-            time.sleep(5)
-            continue
+                # Skip conferences that have already ended
+                date_start = result.get("date_start")
+                if date_start:
+                    try:
+                        conf_date = datetime.strptime(date_start, "%Y-%m-%d").date()
+                        if conf_date < datetime.now().date():
+                            logger.info("Conference already past (%s), marking done: %s", date_start, url)
+                            _mark_url_status(url, "not_conference")
+                            skipped += 1
+                            time.sleep(5)
+                            continue
+                    except (ValueError, TypeError):
+                        pass
 
-        logger.info("New conference saved: %s", result.get("title"))
-        _mark_url_status(url, "extracted")
-        notify(result)
+                if result.get("website", "") in known_websites:
+                    logger.info("Duplicate conference, marking done: %s", url)
+                    _mark_url_status(url, "extracted")
+                    skipped += 1
+                    time.sleep(5)
+                    continue
 
-        # Retry mark_notified up to 3 times to prevent duplicates
-        for attempt in range(3):
-            try:
-                conn = get_connection()
-                cur = conn.cursor()
-                cur.execute(
-                    "UPDATE conferences SET is_notified=TRUE, notified_at=NOW() WHERE website=%s",
-                    (result.get("website"),),
-                )
-                conn.commit()
-                cur.close()
-                conn.close()
-                break
-            except Exception as e:
-                logger.error("Failed to mark notified (attempt %d): %s", attempt + 1, e)
-                time.sleep(2)
+                result["raw_source"] = url
+                if not _save_conference(result):
+                    _mark_url_status(url, "failed")
+                    failed += 1
+                    time.sleep(5)
+                    continue
 
-        new_count += 1
-        time.sleep(5)
+                logger.info("New conference saved: %s", result.get("title"))
+                _mark_url_status(url, "extracted")
+                notify(result)
 
-    logger.info(
-        "=== Run complete: %d found, %d new, %d skipped, %d failed | "
-        "LLM requests today: %d ===",
-        found, new_count, skipped, failed,
-        total_requests_today()
-    )
+                # Retry mark_notified up to 3 times to prevent duplicates
+                for attempt in range(3):
+                    try:
+                        conn = get_connection()
+                        cur = conn.cursor()
+                        cur.execute(
+                            "UPDATE conferences SET is_notified=TRUE, notified_at=NOW() WHERE website=%s",
+                            (result.get("website"),),
+                        )
+                        conn.commit()
+                        cur.close()
+                        conn.close()
+                        break
+                    except Exception as e:
+                        logger.error("Failed to mark notified (attempt %d): %s", attempt + 1, e)
+                        time.sleep(2)
 
-    # Notify any conferences saved but not yet notified
-    # (includes backlog from previous runs and current run)
-    pending_sent = _notify_pending(notify)
-    if pending_sent > 0:
-        logger.info("notify_pending: sent %d notification(s)", pending_sent)
+                new_count += 1
+                time.sleep(5)
+
+            logger.info(
+                "=== Run complete: %d found, %d new, %d skipped, %d failed | "
+                "LLM requests today: %d ===",
+                found, new_count, skipped, failed,
+                total_requests_today()
+            )
+
+            # Notify any conferences saved but not yet notified
+            # (includes backlog from previous runs and current run)
+            pending_sent = _notify_pending(notify)
+            if pending_sent > 0:
+                logger.info("notify_pending: sent %d notification(s)", pending_sent)
+
+    except Exception as e:
+        logger.critical("PlaywrightManager failed to launch — skipping browser-dependent phases: %s", e)
+        logger.info("=== Run complete (partial — no browser): crt_monitor candidates only ===")
 
 
 if __name__ == "__main__":

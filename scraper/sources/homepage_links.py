@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 import urllib3.exceptions
 
 from db import get_connection, save_seen_link
-from scraper.browser import BrowserManager, load_page
+from scraper.browser import PlaywrightManager
 
 # Suppress noisy urllib3 connection warnings from malformed server headers
 logging.getLogger("urllib3.connection").setLevel(logging.ERROR)
@@ -99,19 +99,17 @@ def _build_url(base, href):
     return urljoin(base, href)
 
 
-def _selenium_fetch(url: str) -> str | None:
-    """Fetch page HTML using Selenium with anti-bot measures.
+def _playwright_fetch(url: str, playwright: PlaywrightManager) -> str | None:
+    """Fetch page HTML using Playwright with stealth.
     Handles Cloudflare JS challenge (Category A1) that block requests and curl.
     """
     if not _is_safe_url(url):
-        logger.warning("SSRF blocked (selenium): %s", url)
+        logger.warning("SSRF blocked (playwright): %s", url)
         return None
     try:
-        with BrowserManager() as driver:
-            if load_page(driver, url, retries=1):
-                return driver.page_source
+        return playwright.fetch_page_html(url)
     except Exception as e:
-        logger.warning("Selenium fetch failed for %s: %s", url, e)
+        logger.warning("Playwright fetch failed for %s: %s", url, e)
     return None
 
 
@@ -144,11 +142,11 @@ def _curl_fetch(url: str, timeout: int = 15) -> str | None:
         return None
 
 
-def fetch_homepage_fast(url: str, retries: int = 2):
+def fetch_homepage_fast(url: str, retries: int = 2, playwright: PlaywrightManager = None):
     """Fetch a homepage with multiple fallback strategies.
 
     Returns (soup, strategy) where strategy is one of:
-    "requests", "curl", "selenium", or None if all failed.
+    "requests", "curl", "playwright", or None if all failed.
     """
     if not _is_safe_url(url):
         logger.warning("SSRF blocked: %s", url)
@@ -168,33 +166,33 @@ def fetch_homepage_fast(url: str, retries: int = 2):
         try:
             resp = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
 
-            # Cloudflare hard block (JS challenge) — try Selenium immediately
+            # Cloudflare hard block (JS challenge) — try Playwright immediately
             if resp.status_code == 403 and "cf-mitigated" in resp.headers:
-                logger.info("%s blocked by Cloudflare JS challenge, trying Selenium", domain)
-                html = _selenium_fetch(url)
+                logger.info("%s blocked by Cloudflare JS challenge, trying Playwright", domain)
+                html = _playwright_fetch(url, playwright) if playwright else None
                 if html:
-                    return BeautifulSoup(html, "lxml"), "selenium"
+                    return BeautifulSoup(html, "lxml"), "playwright"
                 return None, None
 
-            # Cloudflare soft block (CDN rate limit) — retry, then Selenium
+            # Cloudflare soft block (CDN rate limit) — retry, then Playwright
             if resp.status_code == 403 and "cloudflare" in resp.headers.get("server", "").lower():
                 logger.info("%s Cloudflare 403 (attempt %d/%d), will retry", domain, attempt + 1, retries + 1)
                 last_error = "Cloudflare 403"
                 if attempt < retries:
                     time.sleep(3 * (attempt + 1))
                     continue
-                logger.info("%s Cloudflare soft block retries exhausted, trying Selenium", domain)
-                html = _selenium_fetch(url)
+                logger.info("%s Cloudflare soft block retries exhausted, trying Playwright", domain)
+                html = _playwright_fetch(url, playwright) if playwright else None
                 if html:
-                    return BeautifulSoup(html, "lxml"), "selenium"
+                    return BeautifulSoup(html, "lxml"), "playwright"
                 return None, None
 
             if resp.status_code == 200:
                 if "Just a moment" in resp.text[:500]:
-                    logger.warning("%s blocked by Cloudflare challenge page, trying Selenium", domain)
-                    html = _selenium_fetch(url)
+                    logger.warning("%s blocked by Cloudflare challenge page, trying Playwright", domain)
+                    html = _playwright_fetch(url, playwright) if playwright else None
                     if html:
-                        return BeautifulSoup(html, "lxml"), "selenium"
+                        return BeautifulSoup(html, "lxml"), "playwright"
                     return None, None
                 return BeautifulSoup(resp.text, "lxml"), "requests"
 
@@ -235,26 +233,26 @@ def fetch_homepage_fast(url: str, retries: int = 2):
             html = _curl_fetch(url)
             if html:
                 return BeautifulSoup(html, "lxml"), "curl"
-            # Last resort: try Selenium before giving up
-            logger.info("%s all HTTP retries failed, trying Selenium as last resort", domain)
-            html = _selenium_fetch(url)
+            # Last resort: try Playwright before giving up
+            logger.info("%s all HTTP retries failed, trying Playwright as last resort", domain)
+            html = _playwright_fetch(url, playwright) if playwright else None
             if html:
-                return BeautifulSoup(html, "lxml"), "selenium"
+                return BeautifulSoup(html, "lxml"), "playwright"
             logger.warning("Could not load %s (last error: %s), skipping", domain, last_error)
             return None, None
 
     return None, None
 
 
-def fetch_homepage_with_www_fallback(domain: str):
+def fetch_homepage_with_www_fallback(domain: str, playwright: PlaywrightManager = None):
     """Try www.{domain} first, then fall back to {domain} bare.
 
     Returns (soup, loaded_url, strategy) where strategy is one of:
-    "requests", "curl", "selenium", or None if all failed.
+    "requests", "curl", "playwright", or None if all failed.
     """
     # Try www first
     url_www = f"https://www.{domain}"
-    soup, strategy = fetch_homepage_fast(url_www)
+    soup, strategy = fetch_homepage_fast(url_www, playwright=playwright)
     if soup is not None:
         return soup, url_www, strategy
 
@@ -262,21 +260,21 @@ def fetch_homepage_with_www_fallback(domain: str):
     url_bare = f"https://{domain}"
     if url_bare != url_www:
         logger.info("%s: www failed, trying bare domain %s", domain, url_bare)
-        soup, strategy = fetch_homepage_fast(url_bare)
+        soup, strategy = fetch_homepage_fast(url_bare, playwright=playwright)
         if soup is not None:
             return soup, url_bare, strategy
 
     return None, url_www, None
 
 
-def run():
+def run(playwright: PlaywrightManager = None):
     """Scan all university homepages for outbound conference links.
 
     Returns a list of newly discovered candidate URLs.
     """
     domains = _load_domains()
     candidates = []
-    stats = {"ok": 0, "tls_fix": 0, "dns_fix": 0, "curl_fix": 0, "selenium_fix": 0, "failed": 0}
+    stats = {"ok": 0, "tls_fix": 0, "dns_fix": 0, "curl_fix": 0, "playwright_fix": 0, "failed": 0}
 
     try:
         conn = get_connection()
@@ -303,16 +301,16 @@ def run():
                 logger.warning("Could not load %s, skipping", domain)
                 continue
         else:
-            soup, loaded_url, strategy = fetch_homepage_with_www_fallback(domain)
+            soup, loaded_url, strategy = fetch_homepage_with_www_fallback(domain, playwright=playwright)
 
         if soup is None:
             stats["failed"] += 1
             logger.warning("Could not load %s, skipping", domain)
             continue
 
-        if strategy == "selenium":
-            stats["selenium_fix"] += 1
-            logger.info("%s: Selenium fix — loaded via %s", domain, loaded_url)
+        if strategy == "playwright":
+            stats["playwright_fix"] += 1
+            logger.info("%s: Playwright fix — loaded via %s", domain, loaded_url)
         elif loaded_url != f"https://www.{domain}":
             if domain in ("cvasu.ac.bd", "daffodilvarsity.edu.bd", "bdu.ac.bd"):
                 stats["tls_fix"] += 1
@@ -341,9 +339,9 @@ def run():
 
     logger.info(
         "homepage_links: found %d new conference-like links "
-        "(ok=%d, tls_fix=%d, dns_fix=%d, curl_fix=%d, selenium_fix=%d, failed=%d)",
+        "(ok=%d, tls_fix=%d, dns_fix=%d, curl_fix=%d, playwright_fix=%d, failed=%d)",
         len(candidates),
         stats["ok"], stats["tls_fix"],
-        stats["dns_fix"], stats["curl_fix"], stats["selenium_fix"], stats["failed"],
+        stats["dns_fix"], stats["curl_fix"], stats["playwright_fix"], stats["failed"],
     )
     return candidates
