@@ -4,7 +4,7 @@ import time
 import threading
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
-from playwright_stealth import stealth_sync
+from playwright_stealth import Stealth
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +64,8 @@ class PlaywrightManager:
                 viewport={"width": 1920, "height": 1080},
                 locale="en-US",
             )
+            Stealth().apply_stealth_sync(self._context)
             self._page = self._context.new_page()
-            stealth_sync(self._page)
             logger.info("PlaywrightManager: Chromium launched with stealth")
             return self
         except Exception as e:
