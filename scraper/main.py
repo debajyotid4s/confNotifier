@@ -8,7 +8,7 @@ import psycopg2
 import requests
 
 from db import get_connection, save_seen_link
-from sources import crt_monitor, homepage_links, special
+from sources import crt_monitor, homepage_links, special, subdomain_probe
 from extractor import extract, daily_quota_exhausted, total_requests_today
 from notifier import notify
 from browser import PlaywrightManager
@@ -366,6 +366,14 @@ def run():
         logger.error("crt_monitor failed: %s", e)
         crt_candidates = []
 
+    # Phase 1b — proactive DNS subdomain probe (no browser)
+    try:
+        probe_candidates = subdomain_probe.run()
+        logger.info("subdomain_probe returned %d candidates", len(probe_candidates))
+    except Exception as e:
+        logger.error("subdomain_probe failed: %s", e)
+        probe_candidates = []
+
     homepage_candidates = []
     special_candidates = []
     playwright = None
@@ -390,7 +398,7 @@ def run():
                 special_candidates = []
 
             all_candidates = list(
-                set(crt_candidates + homepage_candidates + special_candidates)
+                set(crt_candidates + probe_candidates + homepage_candidates + special_candidates)
             )
 
             # Re-queue pending URLs from previous runs (status='pending', not yet extracted)
