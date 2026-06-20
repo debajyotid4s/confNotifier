@@ -156,7 +156,7 @@ class PlaywrightManager:
             except Exception:
                 break
 
-    def fetch_page_text(self, url: str, timeout: int = 15000) -> str | None:
+    def fetch_page_text(self, url: str, timeout: int = 30000) -> str | None:
         """Load a URL and return visible text (first 8000 chars).
 
         Uses networkidle for automatic wait — no arbitrary sleep needed.
@@ -171,7 +171,7 @@ class PlaywrightManager:
         with self._page_lock:
             for attempt in range(2):
                 try:
-                    self._page.goto(url, wait_until="networkidle", timeout=timeout)
+                    self._page.goto(url, timeout=30000, wait_until="domcontentloaded")
                     self._human_like_scroll()
                     text = self._page.evaluate("document.body.innerText")
                     if not text or len(text.strip()) < 50:
@@ -193,7 +193,7 @@ class PlaywrightManager:
                     return None
         return None
 
-    def fetch_page_html(self, url: str, timeout: int = 15000) -> str | None:
+    def fetch_page_html(self, url: str, timeout: int = 30000) -> str | None:
         """Load a URL and return full HTML source.
 
         Used by homepage_links.py for regex-based link scanning.
@@ -207,7 +207,7 @@ class PlaywrightManager:
         with self._page_lock:
             for attempt in range(2):
                 try:
-                    self._page.goto(url, wait_until="networkidle", timeout=timeout)
+                    self._page.goto(url, timeout=30000, wait_until="domcontentloaded")
                     self._human_like_scroll()
                     html = self._page.content()
                     if not html or len(html.strip()) < 50:
