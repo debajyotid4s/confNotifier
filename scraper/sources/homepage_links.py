@@ -45,6 +45,7 @@ def _is_safe_url(url: str) -> bool:
 CURL_ONLY_DOMAINS = {
     "buet.ac.bd",
     "www.buet.ac.bd",
+    "sust.edu",
 }
 
 CONF_PATTERNS = [

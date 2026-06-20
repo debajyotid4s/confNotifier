@@ -1,8 +1,10 @@
 import json
 import logging
 import re
+import socket
 import time
 from datetime import datetime
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -145,11 +147,78 @@ def _handle_root_year(source):
     return candidates
 
 
+def _resolves(url: str) -> bool:
+    """Return True if the hostname resolves via DNS."""
+    try:
+        hostname = urlparse(url).hostname
+        socket.getaddrinfo(hostname, None)
+        return True
+    except socket.gaierror:
+        return False
+
+
+def _already_seen(url: str, conn) -> bool:
+    """Return True if url exists in seen_links with any status."""
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM seen_links WHERE url = %s", (url,))
+    exists = cur.fetchone() is not None
+    cur.close()
+    return exists
+
+
+def _handle_subdomain_probe(source):
+    base_domain = source.get("base_domain", "")
+    known_prefixes = source.get("known_prefixes", [])
+    probe_years = source.get("probe_years", [])
+    candidates = []
+
+    conn = None
+    try:
+        conn = get_connection()
+        for prefix in known_prefixes:
+            urls = []
+            for year in probe_years:
+                urls.append(f"https://{prefix}{year}.{base_domain}")
+            urls.append(f"https://{prefix}.{base_domain}")
+
+            for candidate in urls:
+                if _already_seen(candidate, conn):
+                    logger.info(
+                        "subdomain_probe: %s → already seen, skipping",
+                        candidate
+                    )
+                    continue
+                resolves = _resolves(candidate)
+                logger.info(
+                    "subdomain_probe: checking %s — resolves=%s",
+                    candidate, resolves
+                )
+                if resolves:
+                    candidates.append(candidate)
+                    save_seen_link(candidate, source="special", status="pending")
+                    logger.info(
+                        "subdomain_probe: %s → new candidate", candidate
+                    )
+    except Exception as e:
+        logger.error(
+            "subdomain_probe error for %s: %s", base_domain, e
+        )
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return candidates
+
+
 # ── Dispatcher ──
 
 _HANDLERS = {
     "path": _handle_path,
     "root_year": _handle_root_year,
+    "subdomain_probe": _handle_subdomain_probe,
 }
 
 

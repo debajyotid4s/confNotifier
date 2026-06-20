@@ -26,5 +26,26 @@
   {
     "type": "path",
     "base_url": "https://icche-buet.com"
+  },
+  {
+    "name": "SUST Conference Subdomains",
+    "type": "subdomain_probe",
+    "base_domain": "sust.edu",
+    "known_prefixes": ["icerie", "icps", "icap", "icls", "icce", "icme"],
+    "probe_years": [2026, 2027, 2028]
+  },
+  {
+    "name": "KUET Conference Subdomains",
+    "type": "subdomain_probe",
+    "base_domain": "kuet.ac.bd",
+    "known_prefixes": ["icmiee", "icmere", "iceab"],
+    "probe_years": [2026, 2027, 2028]
+  },
+  {
+    "name": "RUET Conference Subdomains",
+    "type": "subdomain_probe",
+    "base_domain": "ruet.ac.bd",
+    "known_prefixes": ["isee", "iceab", "icaeee"],
+    "probe_years": [2026, 2027, 2028]
   }
 ]
