@@ -217,10 +217,14 @@ def _notify_pending(notify_fn) -> int:
         cur.execute(
             """
             SELECT id, title, date_start, date_end, city, website,
-                   organizer, category, confidence
+                   organizer, category, confidence, submission_deadline
             FROM conferences
             WHERE is_notified = FALSE
               AND (date_start IS NULL OR date_start >= CURRENT_DATE)
+              AND (
+                  submission_deadline IS NULL
+                  OR submission_deadline <= CURRENT_DATE + INTERVAL '30 days'
+              )
             ORDER BY created_at ASC
             """
         )
@@ -248,6 +252,7 @@ def _notify_pending(notify_fn) -> int:
                 "organizer":  row[6],
                 "category":   row[7],
                 "confidence": row[8],
+                "submission_deadline": str(row[9]) if row[9] else None,
             }
 
             try:
@@ -500,24 +505,56 @@ def run():
 
                 logger.info("New conference saved: %s", result.get("title"))
                 _mark_url_status(url, "extracted")
-                notify(result)
 
-                # Retry mark_notified up to 3 times to prevent duplicates
-                for attempt in range(3):
+                # Only notify if submission deadline is within 30 days
+                # (or no deadline extracted — discovery is still valuable)
+                should_notify = True
+                submission_dl = result.get("submission_deadline")
+                if submission_dl:
                     try:
-                        conn = get_connection()
-                        cur = conn.cursor()
-                        cur.execute(
-                            "UPDATE conferences SET is_notified=TRUE, notified_at=NOW() WHERE website=%s",
-                            (result.get("website"),),
-                        )
-                        conn.commit()
-                        cur.close()
-                        conn.close()
-                        break
-                    except Exception as e:
-                        logger.error("Failed to mark notified (attempt %d): %s", attempt + 1, e)
-                        time.sleep(2)
+                        dl_date = datetime.strptime(submission_dl, "%Y-%m-%d").date()
+                        days_until_dl = (dl_date - datetime.now().date()).days
+                        if days_until_dl > 30:
+                            logger.info(
+                                "Submission deadline %s is %d days away — "
+                                "saving but NOT notifying yet: %s",
+                                submission_dl, days_until_dl, result.get("title")
+                            )
+                            should_notify = False
+                        elif days_until_dl < 0:
+                            logger.info(
+                                "Submission deadline %s already past — "
+                                "saving but NOT notifying: %s",
+                                submission_dl, result.get("title")
+                            )
+                            should_notify = False
+                    except (ValueError, TypeError):
+                        pass
+
+                if should_notify:
+                    notify(result)
+                    # Mark as notified
+                    for attempt in range(3):
+                        try:
+                            conn = get_connection()
+                            cur = conn.cursor()
+                            cur.execute(
+                                "UPDATE conferences SET is_notified=TRUE, notified_at=NOW() WHERE website=%s",
+                                (result.get("website"),),
+                            )
+                            conn.commit()
+                            cur.close()
+                            conn.close()
+                            break
+                        except Exception as e:
+                            logger.error("Failed to mark notified (attempt %d): %s", attempt + 1, e)
+                            time.sleep(2)
+                else:
+                    logger.info(
+                        "Conference saved (not yet notified): %s — "
+                        "will notify when deadline is within 30 days",
+                        result.get("title")
+                    )
 
                 new_count += 1
                 time.sleep(5)

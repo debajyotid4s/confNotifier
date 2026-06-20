@@ -143,6 +143,10 @@ Rules:
 - submission_deadline: the earliest/primary paper or abstract submission due date.
   Look for phrases like "submission deadline", "paper due", "last date of submission",
   "abstract submission", "full paper due".
+  ALSO scan the full text for date patterns like "Month DD, YYYY" (e.g. "August 02, 2026")
+  and check if any date near text about "submission", "paper", "deadline" is the deadline.
+  Dates may appear in visual timelines, infographics, or bullet lists — the date and its
+  label might be on separate lines. Match dates to nearby labels by proximity.
   If not found, return null.
 - submission_deadline_label: a short descriptive label for what the first deadline
   represents (e.g. "Extended Abstract Submission", "Paper Submission").
