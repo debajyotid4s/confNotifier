@@ -1,8 +1,10 @@
 import logging
 import os
+import re
 import sys
 import time
 from datetime import datetime
+from urllib.parse import urlparse
 
 import psycopg2
 import requests
@@ -69,14 +71,20 @@ def _save_conference(conf: dict) -> bool:
 
 
 def _mark_url_status(url: str, status: str) -> None:
-    """Update only the status of an already-seen URL."""
+    """Ensure URL exists in seen_links with the given terminal status.
+
+    Uses INSERT ON CONFLICT so it works even if the URL was never
+    previously inserted (e.g. URLs from crt_monitor which saves to
+    known_subdomains, not seen_links).
+    """
     conn = None
     try:
         conn = get_connection()
         cur = conn.cursor()
         cur.execute(
-            "UPDATE seen_links SET status = %s, last_seen = NOW() WHERE url = %s",
-            (status, url),
+            "INSERT INTO seen_links (url, source, status) VALUES (%s, 'phase4', %s) "
+            "ON CONFLICT (url) DO UPDATE SET status = %s, last_seen = NOW()",
+            (url, status, status),
         )
         conn.commit()
         cur.close()
@@ -431,6 +439,29 @@ def run():
                         len(remaining)
                     )
                     break
+
+                # Pre-check 1: skip if conference website already in DB
+                # (catches duplicates before wasting an LLM call)
+                if url in known_websites:
+                    logger.info("Duplicate (URL already known), skipping: %s", url)
+                    _mark_url_status(url, "extracted")
+                    skipped += 1
+                    continue
+
+                # Pre-check 2: skip URLs with past year in hostname
+                # (e.g. icap2025.sust.edu when current year is 2026)
+                hostname = urlparse(url).hostname or ""
+                year_match = re.search(r"(\d{4})", hostname)
+                if year_match:
+                    url_year = int(year_match.group(1))
+                    if url_year < datetime.now().year:
+                        logger.info(
+                            "Subdomain contains past year %d, skipping: %s",
+                            url_year, url,
+                        )
+                        _mark_url_status(url, "not_conference")
+                        skipped += 1
+                        continue
 
                 logger.info("Extracting data from: %s", url)
                 try:

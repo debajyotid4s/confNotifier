@@ -125,10 +125,10 @@ def _fetch_crt(query: str) -> list:
     """Fetch crt.sh results for a TLD query with 3 retries.
 
     Retries on 502, 503, and timeout errors with exponential backoff
-    (10s, 20s, 40s). Returns list of certificate entries or empty list on failure.
+    (5s, 10s, 20s). Returns list of certificate entries or empty list on failure.
     """
     url = f"https://crt.sh/?q={query}&output=json"
-    delays = [10, 20, 40]
+    delays = [5, 10, 20]
 
     for attempt in range(len(delays) + 1):  # 4 attempts total: attempt 0 + 3 retries
         try:

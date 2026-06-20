@@ -48,6 +48,11 @@ CURL_ONLY_DOMAINS = {
     "sust.edu",
 }
 
+# Domains that consistently timeout from GitHub Actions runners — skip entirely
+TIMEOUT_BLOCKLIST = {
+    "northsouth.edu",
+}
+
 CONF_PATTERNS = [
     re.compile(r"ieee[a-z]+\d{4}"),
     re.compile(r"ic[a-z]+\d{4}"),
@@ -289,6 +294,10 @@ def run(playwright: PlaywrightManager = None):
         known = set()
 
     for domain in domains:
+        if domain in TIMEOUT_BLOCKLIST:
+            logger.info("homepage_links: %s in timeout blocklist, skipping", domain)
+            stats["failed"] += 1
+            continue
         if domain in CURL_ONLY_DOMAINS:
             logger.info("homepage_links: %s uses curl-only mode (malformed headers)", domain)
             url = f"https://www.{domain}"
