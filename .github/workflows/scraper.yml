@@ -22,12 +22,16 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Get Playwright version
+        id: pw-version
+        run: echo "version=$(python -c 'import playwright; print(playwright.__version__)')" >> "$GITHUB_OUTPUT"
+
       - name: Cache Playwright browsers
         uses: actions/cache@v4
         id: playwright-cache
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-v1.60
+          key: playwright-${{ runner.os }}-v${{ steps.pw-version.outputs.version }}
 
       - name: Install Playwright browsers
         if: steps.playwright-cache.outputs.cache-hit != 'true'
