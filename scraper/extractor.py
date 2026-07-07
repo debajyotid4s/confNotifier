@@ -148,20 +148,24 @@ Rules:
 - is_conference = true only for multi-day international conferences.
 - If held outside Bangladesh, is_conference = false.
 - If page has no conference content, return is_conference = false.
-- submission_deadline: the earliest/primary paper or abstract submission due date.
+- submission_deadline: the EARLIEST paper/abstract submission due date ONLY.
   Look for phrases like "submission deadline", "paper due", "last date of submission",
-  "abstract submission", "full paper due".
+  "abstract submission", "full paper due", "call for papers deadline".
   ALSO scan the full text for date patterns like "Month DD, YYYY" (e.g. "August 02, 2026")
   and check if any date near text about "submission", "paper", "deadline" is the deadline.
   Dates may appear in visual timelines, infographics, or bullet lists — the date and its
   label might be on separate lines. Match dates to nearby labels by proximity.
+  IMPORTANT: "Camera Ready", "Registration", "Author Registration", "Camera-Ready Submission"
+  are NOT submission deadlines — they are post-acceptance steps. Never use these as submission_deadline.
   If not found, return null.
 - submission_deadline_label: a short descriptive label for what the first deadline
   represents (e.g. "Extended Abstract Submission", "Paper Submission").
   If submission_deadline is null, this should also be null.
-- submission_deadline_2: a SECOND distinct deadline if the page mentions one
-  (e.g. full paper deadline after extended abstract, or camera-ready deadline,
-  or registration deadline). Must be a different date from submission_deadline.
+- submission_deadline_2: a SECOND submission deadline if the page mentions one
+  (e.g. full paper deadline after extended abstract deadline).
+  Must be a different date from submission_deadline.
+  This is for multi-stage submission processes (abstract → full paper).
+  Camera Ready, Registration, and Author Registration deadlines do NOT go here.
   If not found, return null.
 - submission_deadline_2_label: a short descriptive label for the second deadline.
   If submission_deadline_2 is null, this should also be null."""
