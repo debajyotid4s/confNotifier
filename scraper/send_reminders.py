@@ -1,26 +1,18 @@
 """
-Standalone daily deadline reminder sender.
+Stand-alone daily deadline reminder sender.
 Runs independently of the main scraper — no Selenium, no crt.sh, no LLM.
-Queries upcoming submission deadlines and posts a premium progress-bar
-style Telegram message to the channel.
+Queries upcoming submission deadlines and posts an HTML-formatted
+Telegram message to the channel.
 """
 
 import logging
 import os
 import sys
 import time
-from datetime import date
-
-import re
+from datetime import date, datetime, timezone
 
 import psycopg2
 import requests
-
-_MDV2_SPECIAL = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
-
-
-def _escape_md(text: str) -> str:
-    return _MDV2_SPECIAL.sub(r"\\\1", text)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,6 +37,18 @@ def _get_db_connection():
     raise RuntimeError("Could not connect to database after 3 attempts")
 
 
+def _escape_html(text: str) -> str:
+    """Escape HTML special characters."""
+    if not text:
+        return ""
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 def _within_30_days(d) -> bool:
     if d is None:
         return False
@@ -60,7 +64,7 @@ def _loaded_pct(days_left: int) -> int:
 def _progress_bar(pct: int) -> str:
     filled = round(pct / 100 * BAR_LEN)
     empty = BAR_LEN - filled
-    return f"\\[{('█' * filled) + ('░' * empty)}\\]"
+    return f"[{'█' * filled}{'░' * empty}]"
 
 
 def _urgency_emoji(days_left: int) -> str:
@@ -80,7 +84,8 @@ def send_deadline_reminders() -> None:
             """
             SELECT title, website,
                    submission_deadline, submission_deadline_label,
-                   submission_deadline_2, submission_deadline_2_label
+                   submission_deadline_2, submission_deadline_2_label,
+                   submission_deadline_previous, submission_deadline_2_previous
             FROM conferences
             WHERE (
                 (submission_deadline IS NOT NULL
@@ -100,11 +105,13 @@ def send_deadline_reminders() -> None:
 
         entries = []
 
-        for title, website, dl1, label1, dl2, label2 in rows:
+        for title, website, dl1, label1, dl2, label2, dl1_prev, dl2_prev in rows:
             if _within_30_days(dl1):
-                entries.append((dl1, website, title))
+                is_updated = dl1_prev is not None and dl1_prev != dl1
+                entries.append((dl1, website, title, is_updated, dl1_prev if is_updated else None))
             if _within_30_days(dl2):
-                entries.append((dl2, website, title))
+                is_updated = dl2_prev is not None and dl2_prev != dl2
+                entries.append((dl2, website, title, is_updated, dl2_prev if is_updated else None))
 
         if not entries:
             logger.info("no upcoming deadlines, skipping")
@@ -116,33 +123,48 @@ def send_deadline_reminders() -> None:
         links = []
         seen_websites = set()
 
-        for dl, website, title in entries:
+        for dl, website, title, is_updated, prev_dl in entries:
             days_left = (dl - date.today()).days
             pct = _loaded_pct(days_left)
             bar = _progress_bar(pct)
             emoji = _urgency_emoji(days_left)
-            month_day = dl.strftime("%b %d")
+            date_str = dl.strftime("%b %d")
+            short_title = _escape_html(title.split(",")[0].split("(")[0].split(":")[0].strip())
+            link = f"<a href=\"{_escape_html(website)}\">{_escape_html(short_title)}</a>"
 
-            deadline_lines.append(
-                f"{emoji} {_escape_md(month_day)} — {_escape_md(title)}\n"
-                f"{bar} *{pct}%* Loaded"
-            )
+            if is_updated and prev_dl:
+                old_str = prev_dl.strftime("%b %d")
+                deadline_lines.append(
+                    f"{emoji} <s>{old_str}</s> → <b>{date_str}</b> 📝 <i>Updated</i> — {link}\n"
+                    f"<code>{bar} {pct}%</code>"
+                )
+            else:
+                deadline_lines.append(
+                    f"{emoji} <b>{date_str}</b> — {link}\n"
+                    f"<code>{bar} {pct}%</code>"
+                )
 
             domain = website.replace("https://", "").replace("http://", "").rstrip("/")
             if domain not in seen_websites:
                 seen_websites.add(domain)
-                links.append(f"• {_escape_md(domain)}")
+                links.append(f"- {domain}")
 
         deadline_block = "\n\n".join(deadline_lines)
         link_block = "\n".join(links)
 
+        now_utc = datetime.now(timezone.utc).strftime("%H:%M")
+
         message = (
-            "📚 *Upcoming Deadlines*\n"
-            "━━━━━━━━━━━━━━━━━━━\n\n"
+            f"<b>📚 UPCOMING DEADLINES</b>\n"
+            f"<i>Auto-tracked · updates in real time</i>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n\n"
             f"{deadline_block}\n\n"
-            "🔗 *Official Links:*\n"
-            f"{link_block}\n\n"
-            "\\#Bangladesh2026 \\#CallForPapers"
+            f"<blockquote expandable>\n"
+            f"🔗 <b>Official Links</b>\n"
+            f"{link_block}\n"
+            f"</blockquote>\n\n"
+            f"#Bangladesh2026 #CallForPapers\n"
+            f"<i>Last synced: {now_utc} UTC</i>"
         )
 
         token = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -155,7 +177,7 @@ def send_deadline_reminders() -> None:
             json={
                 "chat_id": channel,
                 "text": message,
-                "parse_mode": "MarkdownV2",
+                "parse_mode": "HTML",
                 "disable_web_page_preview": True,
             },
             timeout=15,

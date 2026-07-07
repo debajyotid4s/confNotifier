@@ -3,13 +3,12 @@ import os
 import re
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, date
 from urllib.parse import urlparse
 
-import psycopg2
 import requests
 
-from db import get_connection, save_seen_link
+from db import get_connection
 from sources import crt_monitor, homepage_links, special
 from extractor import extract, daily_quota_exhausted, total_requests_today
 from notifier import notify
@@ -323,6 +322,294 @@ def _notify_pending(notify_fn) -> int:
     return notified_count
 
 
+# ── Deadline re-verification (weekly) ──
+
+
+def _parse_date_safe(date_str):
+    """Parse a YYYY-MM-DD string to date, return None on failure."""
+    if not date_str:
+        return None
+    try:
+        return date.fromisoformat(str(date_str))
+    except (ValueError, TypeError):
+        return None
+
+
+def _mark_verification_done() -> None:
+    """Mark deadline_verification as done today in daily_tasks."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO daily_tasks (task_name, last_run_date)
+            VALUES ('deadline_verification', %s)
+            ON CONFLICT (task_name) DO UPDATE SET last_run_date = %s
+            """,
+            (date.today(), date.today())
+        )
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        logger.error("_mark_verification_done error: %s", e)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _escape_html(text: str) -> str:
+    """Escape HTML special characters."""
+    if not text:
+        return ""
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _send_deadline_change_notification(title, website, changes) -> None:
+    """Send a Telegram notification that a deadline has changed."""
+    lines = []
+    for change in changes:
+        old_str = change["old"].strftime("%b %d") if change["old"] else "Unknown"
+        new_str = change["new"].strftime("%b %d") if change["new"] else "Unknown"
+        lines.append(
+            f"  <s>{old_str}</s> → <b>{new_str}</b> 📝 <i>Updated</i>"
+        )
+
+    updates_block = "\n".join(lines)
+
+    message = (
+        f"📢 <b>Deadline Updated</b>\n\n"
+        f"<b>{_escape_html(title)}</b>\n\n"
+        f"{updates_block}\n\n"
+        f"🔗 <a href=\"{_escape_html(website)}\">{_escape_html(website)}</a>"
+    )
+
+    token = os.environ["TELEGRAM_BOT_TOKEN"]
+    channel = os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get(
+        "TELEGRAM_CHANNEL_LINK", ""
+    )
+    if channel.startswith("https://t.me/"):
+        channel = "@" + channel.split("https://t.me/")[1]
+
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={
+                "chat_id": channel,
+                "text": message,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            logger.info(
+                "deadline_verification: sent change notification for %s", title
+            )
+        else:
+            logger.error(
+                "deadline_verification: Telegram failed (%d): %s",
+                resp.status_code, resp.text
+            )
+    except Exception as e:
+        logger.error(
+            "deadline_verification: notification error for %s: %s", title, e
+        )
+
+
+def _verify_deadlines(playwright) -> None:
+    """
+    Re-extract submission deadlines for all upcoming conferences.
+    Runs once per week. If a deadline changed, updates the DB and
+    sends a Telegram notification about the extension/change.
+    Only processes conferences with date_start > today.
+    Only checks conferences with at least one non-null deadline.
+    """
+    # Once-per-week guard using daily_tasks
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT last_run_date FROM daily_tasks WHERE task_name = %s",
+            ("deadline_verification",)
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        conn = None
+
+        today = date.today()
+        if row and row[0]:
+            days_since = (today - row[0]).days
+            if days_since < 7:
+                logger.info(
+                    "deadline_verification: ran %d day(s) ago, skipping",
+                    days_since
+                )
+                return
+    except Exception as e:
+        logger.error("deadline_verification: guard check error: %s", e)
+        return
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    logger.info("deadline_verification: starting weekly deadline re-check")
+
+    # Load upcoming conferences with at least one deadline set
+    conn = None
+    conferences = []
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, title, website,
+                   submission_deadline, submission_deadline_label,
+                   submission_deadline_2, submission_deadline_2_label
+            FROM conferences
+            WHERE date_start > CURRENT_DATE
+              AND (
+                (submission_deadline IS NOT NULL
+                 AND submission_deadline >= CURRENT_DATE
+                 AND submission_deadline <= CURRENT_DATE + INTERVAL '30 days')
+                OR
+                (submission_deadline_2 IS NOT NULL
+                 AND submission_deadline_2 >= CURRENT_DATE
+                 AND submission_deadline_2 <= CURRENT_DATE + INTERVAL '30 days')
+              )
+            ORDER BY date_start ASC
+            """
+        )
+        conferences = cur.fetchall()
+        cur.close()
+        conn.close()
+        conn = None
+    except Exception as e:
+        logger.error("deadline_verification: failed to load conferences: %s", e)
+        return
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    if not conferences:
+        logger.info("deadline_verification: no upcoming conferences to check")
+        _mark_verification_done()
+        return
+
+    logger.info(
+        "deadline_verification: checking %d conference(s)", len(conferences)
+    )
+
+    for conf_id, title, website, dl1, label1, dl2, label2 in conferences:
+        try:
+            # Re-extract using shared browser instance
+            result = extract(website, playwright)
+            if not result or not result.get("is_conference"):
+                logger.warning(
+                    "deadline_verification: could not re-extract %s", website
+                )
+                continue
+
+            new_dl1 = _parse_date_safe(result.get("submission_deadline"))
+            new_dl2 = _parse_date_safe(result.get("submission_deadline_2"))
+            new_label1 = result.get("submission_deadline_label") or label1
+            new_label2 = result.get("submission_deadline_2_label") or label2
+
+            changes = []
+
+            if new_dl1 and new_dl1 != dl1:
+                changes.append({
+                    "field": "submission_deadline",
+                    "label_field": "submission_deadline_label",
+                    "previous_field": "submission_deadline_previous",
+                    "old": dl1,
+                    "new": new_dl1,
+                    "label": new_label1 or "Submission Deadline",
+                    "new_label": new_label1,
+                })
+
+            if new_dl2 and new_dl2 != dl2:
+                changes.append({
+                    "field": "submission_deadline_2",
+                    "label_field": "submission_deadline_2_label",
+                    "previous_field": "submission_deadline_2_previous",
+                    "old": dl2,
+                    "new": new_dl2,
+                    "label": new_label2 or "Deadline 2",
+                    "new_label": new_label2,
+                })
+
+            if not changes:
+                logger.info(
+                    "deadline_verification: %s — no change", website
+                )
+                continue
+
+            # Update DB for each changed field
+            conn = None
+            try:
+                conn = get_connection()
+                cur = conn.cursor()
+                for change in changes:
+                    cur.execute(
+                        f"""
+                        UPDATE conferences
+                        SET {change['field']} = %s,
+                            {change['label_field']} = %s,
+                            {change['previous_field']} = %s,
+                            deadline_last_verified = NOW()
+                        WHERE id = %s
+                        """,
+                        (change["new"], change["new_label"], change["old"], conf_id)
+                    )
+                conn.commit()
+                cur.close()
+                logger.info(
+                    "deadline_verification: updated %s — %d change(s)",
+                    website, len(changes)
+                )
+            except Exception as e:
+                logger.error(
+                    "deadline_verification: DB update failed for %s: %s",
+                    website, e
+                )
+                continue
+            finally:
+                if conn:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+            # Send Telegram notification for each change
+            _send_deadline_change_notification(title, website, changes)
+
+        except Exception as e:
+            logger.error(
+                "deadline_verification: error processing %s: %s", website, e
+            )
+            continue
+
+    _mark_verification_done()
+    logger.info("deadline_verification: complete")
+
+
 # ── Main orchestrator ──
 
 
@@ -381,7 +668,6 @@ def run():
 
     homepage_candidates = []
     special_candidates = []
-    playwright = None
 
     try:
         with PlaywrightManager() as playwright:
@@ -602,6 +888,12 @@ def run():
             pending_sent = _notify_pending(notify)
             if pending_sent > 0:
                 logger.info("notify_pending: sent %d notification(s)", pending_sent)
+
+            # Phase 6: weekly deadline re-verification
+            try:
+                _verify_deadlines(playwright)
+            except Exception as e:
+                logger.error("deadline_verification: uncaught error: %s", e)
 
     except Exception as e:
         logger.critical("PlaywrightManager failed to launch — skipping browser-dependent phases: %s", e)
