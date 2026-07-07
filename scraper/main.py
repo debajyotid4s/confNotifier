@@ -547,11 +547,11 @@ def _verify_deadlines(playwright) -> None:
             WHERE date_start > CURRENT_DATE
               AND (
                 (submission_deadline IS NOT NULL
-                 AND submission_deadline >= CURRENT_DATE
+                 AND submission_deadline >= CURRENT_DATE - INTERVAL '30 days'
                  AND submission_deadline <= CURRENT_DATE + INTERVAL '30 days')
                 OR
                 (submission_deadline_2 IS NOT NULL
-                 AND submission_deadline_2 >= CURRENT_DATE
+                 AND submission_deadline_2 >= CURRENT_DATE - INTERVAL '30 days'
                  AND submission_deadline_2 <= CURRENT_DATE + INTERVAL '30 days')
               )
             ORDER BY date_start ASC
