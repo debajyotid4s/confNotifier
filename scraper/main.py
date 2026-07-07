@@ -377,11 +377,21 @@ def _send_deadline_change_notification(title, website, changes) -> None:
     """Send a Telegram notification that a deadline has changed."""
     lines = []
     for change in changes:
-        old_str = change["old"].strftime("%b %d") if change["old"] else "Unknown"
+        # Skip if old value is None — this is first-time discovery, not an update
+        if not change["old"]:
+            logger.warning(
+                "deadline_verification: skipping notification for %s — old deadline is None",
+                title
+            )
+            continue
+        old_str = change["old"].strftime("%b %d")
         new_str = change["new"].strftime("%b %d") if change["new"] else "Unknown"
         lines.append(
             f"  <s>{old_str}</s> → <b>{new_str}</b> 📝 <i>Updated</i>"
         )
+
+    if not lines:
+        return
 
     updates_block = "\n".join(lines)
 
@@ -533,7 +543,9 @@ def _verify_deadlines(playwright) -> None:
 
             changes = []
 
-            if new_dl1 and new_dl1 != dl1:
+            # Only notify when BOTH old and new exist and differ.
+            # NULL → date is first-time discovery, NOT an update.
+            if dl1 is not None and new_dl1 and new_dl1 != dl1:
                 changes.append({
                     "field": "submission_deadline",
                     "label_field": "submission_deadline_label",
@@ -543,8 +555,13 @@ def _verify_deadlines(playwright) -> None:
                     "label": new_label1 or "Submission Deadline",
                     "new_label": new_label1,
                 })
+            elif dl1 is None and new_dl1:
+                logger.info(
+                    "deadline_verification: %s — first deadline found: %s (not notifying)",
+                    website, new_dl1
+                )
 
-            if new_dl2 and new_dl2 != dl2:
+            if dl2 is not None and new_dl2 and new_dl2 != dl2:
                 changes.append({
                     "field": "submission_deadline_2",
                     "label_field": "submission_deadline_2_label",
@@ -554,6 +571,11 @@ def _verify_deadlines(playwright) -> None:
                     "label": new_label2 or "Deadline 2",
                     "new_label": new_label2,
                 })
+            elif dl2 is None and new_dl2:
+                logger.info(
+                    "deadline_verification: %s — second deadline found: %s (not notifying)",
+                    website, new_dl2
+                )
 
             if not changes:
                 logger.info(
