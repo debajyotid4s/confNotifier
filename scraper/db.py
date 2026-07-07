@@ -48,6 +48,7 @@ def save_seen_link(url, source="unknown", status="pending"):
             "INSERT INTO seen_links (url, source, status) VALUES (%s, %s, %s) "
             "ON CONFLICT (url) DO UPDATE SET "
             "source = EXCLUDED.source, "
+            "status = EXCLUDED.status, "
             "last_seen = NOW() "
             "WHERE seen_links.status NOT IN %s",
             (url, source, status, TERMINAL_STATUSES),

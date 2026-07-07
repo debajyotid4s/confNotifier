@@ -180,6 +180,74 @@ def _load_pending_urls() -> list:
                 pass
 
 
+def _mark_notified_with_retry(conf_id: int, max_attempts: int = 3) -> bool:
+    """Mark a conference as notified with retry logic to prevent duplicate notifications."""
+    for attempt in range(max_attempts):
+        conn = None
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE conferences SET is_notified = TRUE, notified_at = NOW() WHERE id = %s",
+                (conf_id,)
+            )
+            conn.commit()
+            cur.close()
+            return True
+        except Exception as e:
+            logger.error(
+                "mark_notified attempt %d/%d failed for id=%d: %s",
+                attempt + 1, max_attempts, conf_id, e
+            )
+            time.sleep(2)
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    logger.critical(
+        "mark_notified FAILED all %d attempts for id=%d "
+        "— DUPLICATE NOTIFICATION RISK on next run",
+        max_attempts, conf_id
+    )
+    return False
+
+
+def _mark_notified_with_retry_by_website(website: str, max_attempts: int = 3) -> bool:
+    """Mark a conference as notified by website URL with retry logic."""
+    for attempt in range(max_attempts):
+        conn = None
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE conferences SET is_notified = TRUE, notified_at = NOW() WHERE website = %s",
+                (website,)
+            )
+            conn.commit()
+            cur.close()
+            return True
+        except Exception as e:
+            logger.error(
+                "mark_notified attempt %d/%d failed for %s: %s",
+                attempt + 1, max_attempts, website, e
+            )
+            time.sleep(2)
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    logger.critical(
+        "mark_notified FAILED all %d attempts for %s "
+        "— DUPLICATE NOTIFICATION RISK on next run",
+        max_attempts, website
+    )
+    return False
+
+
 def _notify_pending(notify_fn) -> int:
     """
     Send Telegram notifications for all conferences where is_notified = FALSE.
@@ -224,13 +292,20 @@ def _notify_pending(notify_fn) -> int:
         cur.execute(
             """
             SELECT id, title, date_start, date_end, city, website,
-                   organizer, category, confidence, submission_deadline
+                   organizer, category, confidence,
+                   submission_deadline, submission_deadline_label,
+                   submission_deadline_2, submission_deadline_2_label
             FROM conferences
             WHERE is_notified = FALSE
               AND (date_start IS NULL OR date_start >= CURRENT_DATE)
               AND (
-                  submission_deadline IS NULL
-                  OR submission_deadline <= CURRENT_DATE + INTERVAL '30 days'
+                  (submission_deadline IS NOT NULL
+                   AND submission_deadline >= CURRENT_DATE
+                   AND submission_deadline <= CURRENT_DATE + INTERVAL '30 days')
+                  OR
+                  (submission_deadline_2 IS NOT NULL
+                   AND submission_deadline_2 >= CURRENT_DATE
+                   AND submission_deadline_2 <= CURRENT_DATE + INTERVAL '30 days')
               )
             ORDER BY created_at ASC
             """
@@ -260,6 +335,9 @@ def _notify_pending(notify_fn) -> int:
                 "category":   row[7],
                 "confidence": row[8],
                 "submission_deadline": str(row[9]) if row[9] else None,
+                "submission_deadline_label": row[10],
+                "submission_deadline_2": str(row[11]) if row[11] else None,
+                "submission_deadline_2_label": row[12],
             }
 
             try:
@@ -272,36 +350,12 @@ def _notify_pending(notify_fn) -> int:
                 success = False
 
             if success:
-                conn2 = None
-                try:
-                    conn2 = get_connection()
-                    cur2 = conn2.cursor()
-                    cur2.execute(
-                        """
-                        UPDATE conferences
-                        SET is_notified = TRUE, notified_at = NOW()
-                        WHERE id = %s
-                        """,
-                        (conf_id,)
-                    )
-                    conn2.commit()
-                    cur2.close()
+                if _mark_notified_with_retry(conf_id):
                     notified_count += 1
                     logger.info(
                         "notify_pending: notified id=%d — %s",
                         conf_id, conf.get("title")
                     )
-                except Exception as e:
-                    logger.error(
-                        "notify_pending: failed to mark id=%d as notified: %s",
-                        conf_id, e
-                    )
-                finally:
-                    if conn2:
-                        try:
-                            conn2.close()
-                        except Exception:
-                            pass
                 time.sleep(2)  # avoid burst spam
             else:
                 logger.warning(
@@ -844,7 +898,8 @@ def run():
 
                 result["raw_source"] = url
                 if not _save_conference(result):
-                    _mark_url_status(url, "failed")
+                    # DB write failed — do NOT mark as terminal
+                    # Leave URL as-is so next run retries
                     failed += 1
                     time.sleep(5)
                     continue
@@ -879,22 +934,8 @@ def run():
 
                 if should_notify:
                     notify(result)
-                    # Mark as notified
-                    for attempt in range(3):
-                        try:
-                            conn = get_connection()
-                            cur = conn.cursor()
-                            cur.execute(
-                                "UPDATE conferences SET is_notified=TRUE, notified_at=NOW() WHERE website=%s",
-                                (result.get("website"),),
-                            )
-                            conn.commit()
-                            cur.close()
-                            conn.close()
-                            break
-                        except Exception as e:
-                            logger.error("Failed to mark notified (attempt %d): %s", attempt + 1, e)
-                            time.sleep(2)
+                    # Mark as notified (with retry to prevent duplicates)
+                    _mark_notified_with_retry_by_website(result.get("website"))
                 else:
                     logger.info(
                         "Conference saved (not yet notified): %s — "
