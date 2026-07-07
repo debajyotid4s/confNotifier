@@ -107,7 +107,7 @@ for _var in ["GOOGLE_AI_KEY", "GOOGLE_AI_KEY_2", "GOOGLE_AI_KEY_3"]:
     _val = os.environ.get(_var, "").strip()
     if _val:
         _api_keys.append(_val)
-        logger.info("Loaded API key from %s (%s...)", _var, _val[:8])
+        logger.info("Loaded API key from %s", _var)
 
 if not _api_keys:
     logger.critical("No GOOGLE_AI_KEY* env vars set — LLM extraction will fail")
