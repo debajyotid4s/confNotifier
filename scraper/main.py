@@ -541,70 +541,68 @@ def _verify_deadlines(playwright) -> None:
             new_label1 = result.get("submission_deadline_label") or label1
             new_label2 = result.get("submission_deadline_2_label") or label2
 
-            changes = []
+            # Build list of fields that changed or are newly discovered
+            updates = []
+            notify_changes = []
 
-            # Only notify when BOTH old and new exist and differ.
-            # NULL → date is first-time discovery, NOT an update.
-            if dl1 is not None and new_dl1 and new_dl1 != dl1:
-                changes.append({
-                    "field": "submission_deadline",
-                    "label_field": "submission_deadline_label",
-                    "previous_field": "submission_deadline_previous",
-                    "old": dl1,
-                    "new": new_dl1,
-                    "label": new_label1 or "Submission Deadline",
-                    "new_label": new_label1,
-                })
-            elif dl1 is None and new_dl1:
-                logger.info(
-                    "deadline_verification: %s — first deadline found: %s (not notifying)",
-                    website, new_dl1
-                )
+            # Check submission_deadline
+            if new_dl1 and new_dl1 != dl1:
+                updates.append(("submission_deadline", "submission_deadline_label",
+                                "submission_deadline_previous", new_dl1, new_label1))
+                # Only notify if old value existed (not first discovery)
+                if dl1 is not None:
+                    notify_changes.append({"old": dl1, "new": new_dl1,
+                                           "label": new_label1 or "Submission Deadline"})
+                else:
+                    logger.info(
+                        "deadline_verification: %s — first deadline found: %s",
+                        website, new_dl1
+                    )
 
-            if dl2 is not None and new_dl2 and new_dl2 != dl2:
-                changes.append({
-                    "field": "submission_deadline_2",
-                    "label_field": "submission_deadline_2_label",
-                    "previous_field": "submission_deadline_2_previous",
-                    "old": dl2,
-                    "new": new_dl2,
-                    "label": new_label2 or "Deadline 2",
-                    "new_label": new_label2,
-                })
-            elif dl2 is None and new_dl2:
-                logger.info(
-                    "deadline_verification: %s — second deadline found: %s (not notifying)",
-                    website, new_dl2
-                )
+            # Check submission_deadline_2
+            if new_dl2 and new_dl2 != dl2:
+                updates.append(("submission_deadline_2", "submission_deadline_2_label",
+                                "submission_deadline_2_previous", new_dl2, new_label2))
+                if dl2 is not None:
+                    notify_changes.append({"old": dl2, "new": new_dl2,
+                                           "label": new_label2 or "Deadline 2"})
+                else:
+                    logger.info(
+                        "deadline_verification: %s — second deadline found: %s",
+                        website, new_dl2
+                    )
 
-            if not changes:
+            if not updates:
                 logger.info(
                     "deadline_verification: %s — no change", website
                 )
                 continue
 
-            # Update DB for each changed field
+            # Always save new/changed deadlines to DB
             conn = None
             try:
                 conn = get_connection()
                 cur = conn.cursor()
-                for change in changes:
+                for field, label_field, prev_field, new_val, new_lbl in updates:
                     cur.execute(
                         f"""
                         UPDATE conferences
-                        SET {change['field']} = %s,
-                            {change['label_field']} = %s,
-                            {change['previous_field']} = %s,
+                        SET {field} = %s,
+                            {label_field} = %s,
+                            {prev_field} = CASE
+                                WHEN {field} IS NOT NULL AND {field} != %s THEN {field}
+                                ELSE {prev_field}
+                            END,
                             deadline_last_verified = NOW()
                         WHERE id = %s
                         """,
-                        (change["new"], change["new_label"], change["old"], conf_id)
+                        (new_val, new_lbl, new_val, conf_id)
                     )
                 conn.commit()
                 cur.close()
                 logger.info(
-                    "deadline_verification: updated %s — %d change(s)",
-                    website, len(changes)
+                    "deadline_verification: updated %s — %d field(s) saved",
+                    website, len(updates)
                 )
             except Exception as e:
                 logger.error(
@@ -619,8 +617,9 @@ def _verify_deadlines(playwright) -> None:
                     except Exception:
                         pass
 
-            # Send Telegram notification for each change
-            _send_deadline_change_notification(title, website, changes)
+            # Only send notification if there are actual changes (not first discoveries)
+            if notify_changes:
+                _send_deadline_change_notification(title, website, notify_changes)
 
         except Exception as e:
             logger.error(
