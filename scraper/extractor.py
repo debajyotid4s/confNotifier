@@ -265,7 +265,7 @@ def extract_conferences(page_text: str, source_url: str) -> dict | None:
                         }
                     ],
                     temperature=0.0,
-                    max_tokens=1500,
+                    max_tokens=4096,
                 )
 
                 raw = response.choices[0].message.content.strip()
