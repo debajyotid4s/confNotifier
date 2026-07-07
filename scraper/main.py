@@ -579,11 +579,19 @@ def _verify_deadlines(playwright) -> None:
                 continue
 
             # Always save new/changed deadlines to DB
+            # Whitelist of allowed field names to prevent SQL injection
+            _ALLOWED_FIELDS = {
+                "submission_deadline", "submission_deadline_label", "submission_deadline_previous",
+                "submission_deadline_2", "submission_deadline_2_label", "submission_deadline_2_previous",
+            }
             conn = None
             try:
                 conn = get_connection()
                 cur = conn.cursor()
                 for field, label_field, prev_field, new_val, new_lbl in updates:
+                    if field not in _ALLOWED_FIELDS or label_field not in _ALLOWED_FIELDS or prev_field not in _ALLOWED_FIELDS:
+                        logger.error("deadline_verification: rejected unsafe field names for %s", website)
+                        continue
                     cur.execute(
                         f"""
                         UPDATE conferences
@@ -731,7 +739,7 @@ def run():
             failed = 0
             quota_exhausted = False
 
-            for url in all_candidates:
+            for idx, url in enumerate(all_candidates):
                 # DFS: skip URLs already in terminal state (never re-check)
                 if _is_url_processed(url):
                     logger.debug("Already processed, skipping: %s", url)
@@ -740,7 +748,7 @@ def run():
 
                 if quota_exhausted:
                     # Quota exhausted — remaining URLs stay pending, auto-retried next run
-                    remaining = all_candidates[all_candidates.index(url):]
+                    remaining = all_candidates[idx:]
                     logger.warning(
                         "Daily quota exhausted — %d URLs remain pending for next run",
                         len(remaining)
