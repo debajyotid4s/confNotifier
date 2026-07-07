@@ -20,14 +20,14 @@ MODEL = "gemini-2.5-flash"
 
 class GoogleRateLimiter:
     """
-    Enforces Google AI Studio free tier limits:
-    - Max 15 requests per 60-second rolling window (RPM)
-    - Max 1500 requests per calendar day (RPD)
+    Enforces Google AI Studio free tier limits for Gemini 2.5 Flash:
+    - Max 5 requests per 60-second rolling window (RPM)
+    - Max 20 requests per calendar day (RPD)
     Thread-safe. Blocks the caller until a slot is available.
     """
 
-    RPM_LIMIT = 15
-    RPD_LIMIT = 1500
+    RPM_LIMIT = 5
+    RPD_LIMIT = 20
     WINDOW_SECONDS = 60
 
     def __init__(self):
@@ -50,7 +50,7 @@ class GoogleRateLimiter:
     def acquire(self):
         """
         Block until a request slot is available.
-        Waits for RPM window to clear if at 15 req/min.
+        Waits for RPM window to clear if at limit.
         Raises RuntimeError if daily quota is exhausted.
         """
         while True:
@@ -62,6 +62,14 @@ class GoogleRateLimiter:
                         f"Daily quota exhausted: {self._daily_count}/{self.RPD_LIMIT} "
                         f"requests used today. Remaining candidates will be processed "
                         f"tomorrow."
+                    )
+
+                # Warn when approaching daily limit (80% threshold)
+                if self._daily_count >= int(self.RPD_LIMIT * 0.8) and self._daily_count < self.RPD_LIMIT:
+                    logger.warning(
+                        "Rate limiter: daily quota at %d/%d (%d%%) — approaching limit",
+                        self._daily_count, self.RPD_LIMIT,
+                        int(self._daily_count / self.RPD_LIMIT * 100)
                     )
 
                 now = time.time()
@@ -83,9 +91,9 @@ class GoogleRateLimiter:
 
             # Wait outside the lock
             logger.info(
-                "Rate limiter: at 15 RPM, waiting %.1fs for slot "
+                "Rate limiter: at %d RPM, waiting %.1fs for slot "
                 "(daily used: %d/%d)",
-                wait_seconds, self._daily_count, self.RPD_LIMIT
+                self.RPM_LIMIT, wait_seconds, self._daily_count, self.RPD_LIMIT
             )
             time.sleep(max(wait_seconds, 0.5))
 
