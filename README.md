@@ -1,186 +1,137 @@
 # BD Conference Bot
 
-A web scraper for monitoring conference announcements from Bangladeshi universities and special conferences.
-<img width="300" height="300" alt="bd_conf_bot_architecture" src="https://github.com/user-attachments/assets/21e9ef6c-33b0-494d-8388-4a086334df8d" />
-<svg width="100%" viewBox="0 0 680 680" role="img" style="" xmlns="http://www.w3.org/2000/svg">
-<title style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">BD Conference Bot — full system architecture</title>
-<desc style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">GitHub Actions runs a cron scraper pipeline with three source modules, Gemini AI extraction, deduplication, and Telegram notification. Neon PostgreSQL stores all state. Koyeb hosts the always-on bot serving user commands.</desc>
+A fully automated pipeline that discovers academic conference announcements from Bangladeshi university websites, extracts structured data via Gemini 2.5 Flash, deduplicates against a persistent PostgreSQL state machine, and notifies a Telegram channel — so students and researchers never miss a Call for Papers.
 
-<defs>
-<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-</marker>
-<mask id="imagine-text-gaps-pweovz" maskUnits="userSpaceOnUse"><rect x="0" y="0" width="680" height="680" fill="white"/><rect x="30" y="23" width="173.740234375" height="18" fill="black" rx="2"/><rect x="55.984375" y="58" width="78.3583984375" height="20" fill="black" rx="2"/><rect x="65.3203125" y="71" width="59.359375" height="18" fill="black" rx="2"/><rect x="180.015625" y="58" width="109.96875" height="20" fill="black" rx="2"/><rect x="189.96875" y="71" width="90.0625" height="18" fill="black" rx="2"/><rect x="350.8671875" y="58" width="70.265625" height="20" fill="black" rx="2"/><rect x="330.1015625" y="71" width="111.796875" height="18" fill="black" rx="2"/><rect x="206.8125" y="168" width="80.375" height="20" fill="black" rx="2"/><rect x="130.28125" y="181" width="233.4375" height="18" fill="black" rx="2"/><rect x="195.90625" y="266" width="102.1875" height="20" fill="black" rx="2"/><rect x="155.625" y="279" width="183.404296875" height="18" fill="black" rx="2"/><rect x="182" y="321" width="39.681640625" height="18" fill="black" rx="2"/><rect x="457" y="265" width="75.697265625" height="18" fill="black" rx="2"/><rect x="143.03125" y="360" width="67.9375" height="20" fill="black" rx="2"/><rect x="100.0234375" y="373" width="153.955078125" height="18" fill="black" rx="2"/><rect x="122.5625" y="419" width="107.875" height="20" fill="black" rx="2"/><rect x="108.2890625" y="432" width="137.421875" height="18" fill="black" rx="2"/><rect x="318" y="418" width="79.048828125" height="18" fill="black" rx="2"/><rect x="544.265625" y="135" width="41.46875" height="20" fill="black" rx="2"/><rect x="522.8671875" y="148" width="84.4755859375" height="20" fill="black" rx="2"/><rect x="498" y="183" width="121.609375" height="18" fill="black" rx="2"/><rect x="498" y="201" width="72.25" height="18" fill="black" rx="2"/><rect x="498" y="219" width="80.921875" height="18" fill="black" rx="2"/><rect x="498" y="251" width="103.0546875" height="18" fill="black" rx="2"/><rect x="498" y="269" width="91.37109375" height="18" fill="black" rx="2"/><rect x="498" y="287" width="77.677734375" height="18" fill="black" rx="2"/><rect x="498" y="305" width="66.369140625" height="18" fill="black" rx="2"/><rect x="498" y="323" width="62.046875" height="18" fill="black" rx="2"/><rect x="498" y="341" width="64.04296875" height="18" fill="black" rx="2"/><rect x="498" y="359" width="65.373046875" height="18" fill="black" rx="2"/><rect x="57.7421875" y="523" width="118.515625" height="20" fill="black" rx="2"/><rect x="40.296875" y="536" width="153.40625" height="18" fill="black" rx="2"/><rect x="248" y="511" width="106.71875" height="18" fill="black" rx="2"/><rect x="318.9296875" y="544" width="46.140625" height="20" fill="black" rx="2"/><rect x="277.6484375" y="557" width="129.017578125" height="18" fill="black" rx="2"/><rect x="512" y="503" width="44.046875" height="18" fill="black" rx="2"/><rect x="528" y="521" width="50.03125" height="18" fill="black" rx="2"/><rect x="528" y="539" width="66.03125" height="18" fill="black" rx="2"/><rect x="528" y="557" width="49.359375" height="18" fill="black" rx="2"/><rect x="528" y="575" width="48.3515625" height="18" fill="black" rx="2"/><rect x="528" y="593" width="42.029296875" height="18" fill="black" rx="2"/></mask></defs>
+_Built with Python 3.11, Playwright, Gemini 2.5 Flash, PostgreSQL, and GitHub Actions._
 
-<!-- ── GitHub Actions dashed container ── -->
-<rect x="15" y="15" width="465" height="480" rx="16" fill="none" stroke="var(--color-border-secondary)" stroke-dasharray="6 4" stroke-width="1.5" style="fill:none;stroke:rgba(222, 220, 209, 0.3);color:rgb(255, 255, 255);stroke-width:1.5px;stroke-dasharray:6px, 4px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<text x="34" y="36" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">GitHub Actions  ·  cron 0 */6 * * *</text>
+---
 
-<!-- ── Source: crt_monitor ── -->
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">
-<rect x="35" y="50" width="120" height="52" rx="8" stroke-width="0.5" style="fill:rgb(8, 80, 65);stroke:rgb(93, 202, 165);color:rgb(255, 255, 255);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<text x="95" y="68" text-anchor="middle" dominant-baseline="central" style="fill:rgb(159, 225, 203);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:14px;font-weight:500;text-anchor:middle;dominant-baseline:central">crt_monitor</text>
-<text x="95" y="84" text-anchor="middle" style="fill:rgb(93, 202, 165);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:auto">crt.sh API</text>
-</g>
+## Table of Contents
 
-<!-- ── Source: homepage_links ── -->
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">
-<rect x="161" y="50" width="148" height="52" rx="8" stroke-width="0.5" style="fill:rgb(8, 80, 65);stroke:rgb(93, 202, 165);color:rgb(255, 255, 255);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<text x="235" y="68" text-anchor="middle" dominant-baseline="central" style="fill:rgb(159, 225, 203);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:14px;font-weight:500;text-anchor:middle;dominant-baseline:central">homepage_links</text>
-<text x="235" y="84" text-anchor="middle" style="fill:rgb(93, 202, 165);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:auto">uni homepages</text>
-</g>
+- [The Problem](#the-problem)
+- [How It Works](#how-it-works)
+- [Pipeline Phases](#pipeline-phases)
+  - [1. Discovery](#1-discovery)
+  - [2–3. Filtering, Deduplication & Merge](#23-filtering-deduplication--merge)
+  - [4. Extraction](#4-extraction)
+  - [5. Notification](#5-notification)
+  - [6. Weekly Deadline Verification](#6-weekly-deadline-verification)
+- [The State Machine](#the-state-machine)
+- [Database Schema](#database-schema)
+- [Browser Automation](#browser-automation)
+- [Telegram Notifications](#telegram-notifications)
+- [Deployment](#deployment)
 
-<!-- ── Source: special.py ── -->
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">
-<rect x="315" y="50" width="142" height="52" rx="8" stroke-width="0.5" style="fill:rgb(8, 80, 65);stroke:rgb(93, 202, 165);color:rgb(255, 255, 255);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<text x="386" y="68" text-anchor="middle" dominant-baseline="central" style="fill:rgb(159, 225, 203);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:14px;font-weight:500;text-anchor:middle;dominant-baseline:central">special.py</text>
-<text x="386" y="84" text-anchor="middle" style="fill:rgb(93, 202, 165);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:auto">ICCIT · PEEIACON</text>
-</g>
+---
 
-<!-- ── Converging arrows: sources → extractor ── -->
-<path d="M95,102 L95,135 L150,135 L150,160" fill="none" stroke="var(--color-border-secondary)" stroke-width="1.5" marker-end="url(#arrow)" style="fill:none;stroke:rgba(222, 220, 209, 0.3);color:rgb(255, 255, 255);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<path d="M235,102 L235,135 L247,135 L247,160" fill="none" stroke="var(--color-border-secondary)" stroke-width="1.5" marker-end="url(#arrow)" style="fill:none;stroke:rgba(222, 220, 209, 0.3);color:rgb(255, 255, 255);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<path d="M386,102 L386,135 L350,135 L350,160" fill="none" stroke="var(--color-border-secondary)" stroke-width="1.5" marker-end="url(#arrow)" style="fill:none;stroke:rgba(222, 220, 209, 0.3);color:rgb(255, 255, 255);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+## The Problem
 
-<!-- ── extractor.py ── -->
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">
-<rect x="37" y="160" width="420" height="52" rx="8" stroke-width="0.5" style="fill:rgb(60, 52, 137);stroke:rgb(175, 169, 236);color:rgb(255, 255, 255);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<text x="247" y="178" text-anchor="middle" dominant-baseline="central" style="fill:rgb(206, 203, 246);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:14px;font-weight:500;text-anchor:middle;dominant-baseline:central">extractor.py</text>
-<text x="247" y="194" text-anchor="middle" style="fill:rgb(175, 169, 236);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:auto">Gemini 2.5 Flash  ·  5 RPM  ·  20 req/day</text>
-</g>
+Bangladeshi researchers and students lack a centralized aggregator for academic conference calls for papers. University websites are fragmented across 70+ domains with inconsistent structures. Announcements appear as PDF notices, static HTML pages, or JavaScript-rendered timelines. No existing service tracks Bangladesh-specific academic conferences. The goal is a zero-manual-intervention pipeline that discovers, validates, and tracks conference deadlines end to end.
 
-<!-- ── Arrow: extractor → deduplicator ── -->
-<line x1="247" y1="212" x2="247" y2="262" stroke="var(--color-border-secondary)" stroke-width="1.5" marker-end="url(#arrow)" style="fill:rgb(0, 0, 0);stroke:rgba(222, 220, 209, 0.3);color:rgb(255, 255, 255);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+## How It Works
 
-<!-- ── deduplicator.py ── -->
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">
-<rect x="37" y="262" width="420" height="44" rx="8" stroke-width="0.5" style="fill:rgb(60, 52, 137);stroke:rgb(175, 169, 236);color:rgb(255, 255, 255);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<text x="247" y="276" text-anchor="middle" dominant-baseline="central" style="fill:rgb(206, 203, 246);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:14px;font-weight:500;text-anchor:middle;dominant-baseline:central">deduplicator.py</text>
-<text x="247" y="292" text-anchor="middle" style="fill:rgb(175, 169, 236);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:auto">checks website · title · date_start</text>
-</g>
+Two GitHub Actions workflows drive the system:
 
-<!-- ── Arrow: dedup → notifier ("if new") ── -->
-<path d="M180,306 L180,356" fill="none" stroke="var(--color-border-secondary)" stroke-width="1.5" marker-end="url(#arrow)" style="fill:none;stroke:rgba(222, 220, 209, 0.3);color:rgb(255, 255, 255);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<text x="186" y="334" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">if new</text>
+| Workflow            | Schedule                                       | Duration | Purpose                                                |
+| ------------------- | ---------------------------------------------- | -------- | ------------------------------------------------------ |
+| **Main scraper**    | 5×/day — 00:00, 06:00, 12:00, 16:00, 18:00 UTC | ≤60 min  | Discovers, extracts, and saves new conferences         |
+| **Daily reminders** | Once/day — 04:00 UTC (10:00 AM BD time)        | <5 min   | Sends deadline reminders; no browser or LLM dependency |
 
-<!-- ── Bidirectional: dedup ↔ PostgreSQL ── -->
-<path d="M457,284 L490,284" fill="none" stroke="var(--color-border-secondary)" stroke-width="1.5" marker-end="url(#arrow)" marker-start="url(#arrow)" style="fill:none;stroke:rgba(222, 220, 209, 0.3);color:rgb(255, 255, 255);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<text x="461" y="278" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">save / check</text>
+The main scraper progresses through six phases, from raw URL discovery to Telegram notification, detailed below.
 
-<!-- ── notifier.py ── -->
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">
-<rect x="37" y="356" width="280" height="44" rx="8" stroke-width="0.5" style="fill:rgb(113, 43, 19);stroke:rgb(240, 153, 123);color:rgb(255, 255, 255);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<text x="177" y="370" text-anchor="middle" dominant-baseline="central" style="fill:rgb(245, 196, 179);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:14px;font-weight:500;text-anchor:middle;dominant-baseline:central">notifier.py</text>
-<text x="177" y="386" text-anchor="middle" style="fill:rgb(240, 153, 123);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:auto">format + POST to Telegram</text>
-</g>
+## Pipeline Phases
 
-<!-- ── Arrow: notifier → _notify_pending ── -->
-<line x1="177" y1="400" x2="177" y2="415" stroke="var(--color-border-secondary)" stroke-width="1.5" marker-end="url(#arrow)" style="fill:rgb(0, 0, 0);stroke:rgba(222, 220, 209, 0.3);color:rgb(255, 255, 255);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+### 1. Discovery
 
-<!-- ── _notify_pending ── -->
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">
-<rect x="37" y="415" width="280" height="44" rx="8" stroke-width="0.5" style="fill:rgb(113, 43, 19);stroke:rgb(240, 153, 123);color:rgb(255, 255, 255);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<text x="177" y="429" text-anchor="middle" dominant-baseline="central" style="fill:rgb(245, 196, 179);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:14px;font-weight:500;text-anchor:middle;dominant-baseline:central">_notify_pending</text>
-<text x="177" y="445" text-anchor="middle" style="fill:rgb(240, 153, 123);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:auto">retry unnotified each run</text>
-</g>
+Three independent sources run to gather candidate URLs:
 
-<!-- ── Bidirectional: _notify_pending ↔ PostgreSQL ── -->
-<path d="M317,437 L490,437" fill="none" stroke="var(--color-border-secondary)" stroke-width="1.5" marker-end="url(#arrow)" marker-start="url(#arrow)" style="fill:none;stroke:rgba(222, 220, 209, 0.3);color:rgb(255, 255, 255);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<text x="322" y="431" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">read / update</text>
+- **Certificate transparency logs** — the crt.sh API is queried for `.ac.bd`, `.edu.bd`, `.sust.edu`, and `.edu` wildcard certificates. A keyword matcher filters subdomains for conference-like patterns (`ic*`, `conf*`, `symposium`, `iccit`, `icmiee`) while blocking known non-conference prefixes (`library`, `mail`, `app`, `convocation`). Retries use exponential backoff at 5, 10, and 20 seconds for 502, 503, and timeout errors.
+- **Homepage scraper** — loads 72 Bangladeshi university domains using a multi-strategy fallback chain: `requests` with standard headers first; if the server sends malformed HTTP headers (a known issue with `buet.ac.bd` and `sust.edu`), it falls back to a `curl` subprocess with `-k`; if Cloudflare presents a JS challenge, it escalates to Playwright with stealth mode and human-like scrolling. A separate `www` fallback tries the bare domain if the `www` subdomain fails.
+- **Targeted special sources** — ten entries from `config/special_sources.json`. Six use path probing (`/{year}/home/` and `/{year}/`), one uses root-year detection via regex on page content, and three use DNS-only subdomain probing via `socket.getaddrinfo()` across 2026–2028, with no HTTP requests made.
 
-<!-- ── Arrow: _notify_pending → Telegram (exits container) ── -->
-<path d="M80,459 L80,497 L117,497 L117,515" fill="none" stroke="var(--color-border-secondary)" stroke-width="1.5" marker-end="url(#arrow)" style="fill:none;stroke:rgba(222, 220, 209, 0.3);color:rgb(255, 255, 255);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+### 2–3. Filtering, Deduplication & Merge
 
-<!-- ── Neon PostgreSQL box ── -->
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">
-<rect x="490" y="120" width="150" height="320" rx="8" stroke-width="0.5" style="fill:rgb(12, 68, 124);stroke:rgb(133, 183, 235);color:rgb(255, 255, 255);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<text x="565" y="145" text-anchor="middle" dominant-baseline="central" style="fill:rgb(181, 212, 244);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:14px;font-weight:500;text-anchor:middle;dominant-baseline:central">Neon</text>
-<text x="565" y="163" text-anchor="middle" style="fill:rgb(181, 212, 244);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:14px;font-weight:500;text-anchor:middle;dominant-baseline:auto">PostgreSQL</text>
-</g>
-<line x1="490" y1="178" x2="640" y2="178" stroke="var(--color-border-secondary)" stroke-width="0.5" style="fill:rgb(0, 0, 0);stroke:rgba(222, 220, 209, 0.3);color:rgb(255, 255, 255);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<text x="502" y="196" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">• known_subdomains</text>
-<text x="502" y="214" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">• seen_links</text>
-<text x="502" y="232" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">• conferences</text>
-<line x1="490" y1="246" x2="640" y2="246" stroke="var(--color-border-secondary)" stroke-width="0.5" style="fill:rgb(0, 0, 0);stroke:rgba(222, 220, 209, 0.3);color:rgb(255, 255, 255);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<text x="502" y="264" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">conferences table</text>
-<text x="502" y="282" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">title · date_start</text>
-<text x="502" y="300" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">city · website</text>
-<text x="502" y="318" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">confidence</text>
-<text x="502" y="336" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">is_notified</text>
-<text x="502" y="354" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">notified_at</text>
-<text x="502" y="372" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">created_at</text>
+All candidate URLs pass through a depth-first search filter against the `seen_links` table. URLs already in a terminal state — `extracted`, `not_conference`, `low_confidence`, or `failed` — are skipped immediately and never rechecked. This is the core state machine that prevents wasting LLM calls on dead or irrelevant URLs across runs (see [The State Machine](#the-state-machine)).
 
-<!-- ── Telegram channel ── -->
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">
-<rect x="15" y="515" width="205" height="52" rx="8" stroke-width="0.5" style="fill:rgb(99, 56, 6);stroke:rgb(239, 159, 39);color:rgb(255, 255, 255);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<text x="117" y="533" text-anchor="middle" dominant-baseline="central" style="fill:rgb(250, 199, 117);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:14px;font-weight:500;text-anchor:middle;dominant-baseline:central">Telegram channel</text>
-<text x="117" y="549" text-anchor="middle" style="fill:rgb(239, 159, 39);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:auto">public · subscribers notified</text>
-</g>
+Candidates from all three discovery sources are then merged into a single deduplicated list, and any URLs left pending from previous runs — typically due to API quota exhaustion — are re-queued.
 
-<!-- ── Koyeb dashed container ── -->
-<rect x="235" y="505" width="260" height="130" rx="12" fill="none" stroke="var(--color-border-secondary)" stroke-dasharray="6 4" stroke-width="1.5" style="fill:none;stroke:rgba(222, 220, 209, 0.3);color:rgb(255, 255, 255);stroke-width:1.5px;stroke-dasharray:6px, 4px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<text x="252" y="524" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">Koyeb  ·  always-on</text>
+### 4. Extraction
 
-<!-- ── bot.py ── -->
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">
-<rect x="252" y="534" width="180" height="56" rx="8" stroke-width="0.5" style="fill:rgb(60, 52, 137);stroke:rgb(175, 169, 236);color:rgb(255, 255, 255);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
-<text x="342" y="554" text-anchor="middle" dominant-baseline="central" style="fill:rgb(206, 203, 246);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:14px;font-weight:500;text-anchor:middle;dominant-baseline:central">bot.py</text>
-<text x="342" y="570" text-anchor="middle" style="fill:rgb(175, 169, 236);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:auto">/start · /list · /subscribe</text>
-</g>
+For each candidate URL, two pre-checks run before any LLM call:
 
-<!-- ── Arrow: bot.py → PostgreSQL ── -->
-<path d="M342,534 L342,480 L565,480 L565,440" fill="none" stroke="var(--color-border-secondary)" stroke-width="1.5" marker-end="url(#arrow)" mask="url(#imagine-text-gaps-pweovz)" style="fill:none;stroke:rgba(222, 220, 209, 0.3);color:rgb(255, 255, 255);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+1. Skip if the URL's website already exists in the `conferences` table.
+2. Skip if the hostname contains a past year (e.g. `icap2025.sust.edu` when the current year is 2026).
 
-<!-- ── Legend ── -->
-<text x="516" y="516" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">legend</text>
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"><rect x="516" y="525" width="10" height="10" rx="2" stroke-width="0.5" style="fill:rgb(8, 80, 65);stroke:rgb(93, 202, 165);color:rgb(255, 255, 255);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/></g>
-<text x="532" y="534" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">sources</text>
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"><rect x="516" y="543" width="10" height="10" rx="2" stroke-width="0.5" style="fill:rgb(60, 52, 137);stroke:rgb(175, 169, 236);color:rgb(255, 255, 255);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/></g>
-<text x="532" y="552" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">processing</text>
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"><rect x="516" y="561" width="10" height="10" rx="2" stroke-width="0.5" style="fill:rgb(113, 43, 19);stroke:rgb(240, 153, 123);color:rgb(255, 255, 255);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/></g>
-<text x="532" y="570" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">delivery</text>
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"><rect x="516" y="579" width="10" height="10" rx="2" stroke-width="0.5" style="fill:rgb(12, 68, 124);stroke:rgb(133, 183, 235);color:rgb(255, 255, 255);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/></g>
-<text x="532" y="588" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">storage</text>
-<g style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"><rect x="516" y="597" width="10" height="10" rx="2" stroke-width="0.5" style="fill:rgb(99, 56, 6);stroke:rgb(239, 159, 39);color:rgb(255, 255, 255);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/></g>
-<text x="532" y="606" style="fill:rgb(194, 192, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:12px;font-weight:400;text-anchor:start;dominant-baseline:auto">output</text>
+URLs that pass are loaded via Playwright, and the first 8,000 characters of visible text are sent to **Gemini 2.5 Flash** through the OpenAI-compatible API.
 
-</svg>
+- **Rate limiting** — three API keys rotate round-robin, each with an independent limiter of 5 requests/minute and 20 requests/day. When a key hits its limit, the system rotates to the next; when all are exhausted, remaining URLs stay `pending` and retry on the next cron cycle.
+- **Extraction schema** — the model returns strict JSON: conference title, start/end dates, city, organizer, category, confidence score, and up to two submission deadlines with labels. The prompt explicitly excludes Camera Ready and Registration deadlines, and instructs the model to scan full text for `Month DD, YYYY` patterns that may appear in visual timelines or infographics.
+- **Persistence** — extracted conferences are saved via an `ON CONFLICT` upsert that preserves existing values when re-extraction returns nulls. Results below 0.75 confidence are marked `low_confidence` and never revisited. DB write failures do _not_ mark the URL terminal, so transient Neon connection issues are retried on the next run.
 
+### 5. Notification
 
-## Project Structure
+When a new conference is saved and its submission deadline falls within 30 days, the system immediately posts a formatted message to the Telegram channel and marks it notified, with a three-retry guard against duplicates.
 
-- **scraper/**: Main scraping application
-  - `browser.py`: Web browser automation (Selenium, anti-bot measures)
-  - `main.py`: Entry point and orchestrator
-  - `extractor.py`: LLM-based data extraction (Gemini 2.5 Flash)
-  - `notifier.py`: Telegram channel notification handler
-  - `sources/`: Discovery source handlers
-    - `crt_monitor.py`: Certificate transparency log scanning
-    - `homepage_links.py`: University homepage link scanning
-    - `special.py`: Recurring conference URL probing
-- **config/**: Configuration files
-  - `universities.json`: Bangladeshi university domains
-  - `special_sources.json`: Special conference sources (ICCIT, QPAIN, etc.)
-- **db/**: Database schema
-  - `schema.sql`: PostgreSQL table definitions
-- **.github/workflows/**: CI/CD automation
-  - `scraper.yml`: Scheduled scraping workflow (every 6 hours)
+At the end of every run, a backlog catch-up function queries all unnotified conferences with either deadline within 30 days — catching conferences saved without notification because their deadline was outside the window at discovery time, or where the notification step previously crashed.
 
-## Setup
+### 6. Weekly Deadline Verification
 
-1. Install dependencies:
+A guard in the `daily_tasks` table ensures re-extraction happens at most once every seven days. The system selects upcoming conferences with deadlines in a 60-day window (30 days ago → 30 days ahead) to catch deadline extensions.
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+For each, it re-extracts using the shared Playwright instance and compares old vs. new deadlines:
 
-2. Configure universities and special sources in `config/`
-3. Set environment variables: `DATABASE_URL`, `GOOGLE_AI_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHANNEL_ID`
-4. Run the scraper:
-   ```bash
-   python scraper/main.py
-   ```
+- **Both exist and differ** → database updated, Telegram notification sent showing the change with strikethrough formatting.
+- **Old value was null, new date found** (first-time discovery) → saved silently, no notification.
 
-## License
+---
 
-MIT
+## The State Machine
+
+The `seen_links` table is the backbone of the entire pipeline. Every discovered URL is inserted with status `pending`. Once processed, it transitions to one of four terminal states:
+
+| Status           | Meaning                                                    |
+| ---------------- | ---------------------------------------------------------- |
+| `extracted`      | A conference was found and saved to the database.          |
+| `not_conference` | The LLM determined the page is not an academic conference. |
+| `low_confidence` | Extraction confidence was below the 0.75 threshold.        |
+| `failed`         | The URL was unreachable, timed out, or the page was empty. |
+
+The critical guard lives in `save_seen_link`: its `INSERT ON CONFLICT` statement includes a `WHERE seen_links.status NOT IN (...)` clause that blocks any update to a URL already in a terminal state. Once a URL is marked `not_conference`, it is never resubmitted to the LLM — even if rediscovered by a different source in a later run. Only URLs still `pending` are loaded by `_load_pending_urls` for reprocessing.
+
+## Database Schema
+
+Neon PostgreSQL hosts four tables:
+
+- **`conferences`** — extracted data, unique constraint on website URL. Tracks two submission deadlines with labels, stores previous deadline values for change detection, and records notification status with timestamps.
+- **`known_subdomains`** — crt.sh discoveries with first/last-seen timestamps.
+- **`seen_links`** — the DFS state machine: URL uniqueness and status tracking.
+- **`daily_tasks`** — simple key-value store for the weekly verification guard.
+
+All database connections are short-lived — open, execute, commit, close — to avoid Neon's serverless idle timeout. Connection attempts retry three times with five-second delays.
+
+## Browser Automation
+
+A single Playwright Chromium instance is shared across the entire run through a singleton manager with a threading lock. It launches headless with flags to disable automation detection, the sandbox, and GPU. A random user agent is selected from a pool of three Chrome variants, and the `playwright-stealth` library applies evasions against bot detection.
+
+Page navigation uses `wait_until="domcontentloaded"` with a 30-second timeout, avoiding `networkidle`, which can hang on slow-loading pages. After load, a human-like scroll function injects three to five randomized smooth scroll steps with 300–800ms delays between them. If the browser process becomes unresponsive, the manager detects the crash by evaluating `1 + 1` on the page and automatically restarts.
+
+## Telegram Notifications
+
+Three distinct message types are sent to the channel:
+
+- **New conference alerts** — plain text with emoji formatting: title, date range, city, organizer, category, website URL, and hashtags derived from title, category, city, and country.
+- **Daily reminders** — HTML-formatted, with a collapsible links section. Each entry shows a 20-character progress bar filled proportionally to how much of the 30-day deadline window has elapsed, plus an urgency emoji (🔥 within 7 days, ⏳ within 20 days, ✅ beyond 20 days). When a deadline has been updated, the previous value is shown with strikethrough followed by the new value, so subscribers can spot extensions at a glance.
+- **Deadline change alerts** — triggered by weekly verification, following the same strikethrough pattern: old and new deadline dates plus a link to the conference website.
+
+## Deployment
+
+The main scraper workflow runs on Ubuntu latest with Python 3.11. Playwright browsers are cached, keyed by Playwright version, to avoid redownloading on every run. The daily reminder workflow installs only two dependencies — `psycopg2-binary` and `requests` — and completes in under five minutes.
+
+**Required environment variables** (stored as GitHub Actions secrets):
+
+| Variable                                         | Purpose                                            |
+| ------------------------------------------------ | -------------------------------------------------- |
+| `DATABASE_URL`                                   | Neon PostgreSQL connection string                  |
+| `GOOGLE_AI_KEY` (+ 2 optional alternates)        | Gemini API access, rotated for rate-limit headroom |
+| `TELEGRAM_BOT_TOKEN`                             | Telegram bot auth                                  |
+| `TELEGRAM_CHANNEL_ID` or `TELEGRAM_CHANNEL_LINK` | Target channel                                     |
