@@ -1,8 +1,8 @@
 """
-Stand-alone daily deadline reminder sender.
-Runs independently of the main scraper — no Selenium, no crt.sh, no LLM.
+Stand-alone daily deadline reminder sender + crt.sh discovery.
+Runs independently of the main scraper — no Selenium, no LLM.
 Queries upcoming submission deadlines and posts an HTML-formatted
-Telegram message to the channel.
+Telegram message to the channel. crt_monitor runs first (once daily).
 """
 
 import logging
@@ -13,6 +13,8 @@ from datetime import date, datetime, timezone
 
 import psycopg2
 import requests
+
+from scraper.sources.crt_monitor import run as crt_monitor_run
 
 logging.basicConfig(
     level=logging.INFO,
@@ -207,6 +209,15 @@ def main():
     if not (os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get("TELEGRAM_CHANNEL_LINK")):
         logger.critical("Missing TELEGRAM_CHANNEL_ID or TELEGRAM_CHANNEL_LINK")
         sys.exit(1)
+
+    # Run crt.sh discovery once daily before sending reminders
+    # Decoupled from the 5×/day scraper pipeline — certificates don't churn within hours
+    try:
+        new_candidates = crt_monitor_run()
+        if new_candidates:
+            logger.info("crt_monitor: discovered %d new candidate(s)", len(new_candidates))
+    except Exception as e:
+        logger.error("crt_monitor failed: %s", e)
 
     send_deadline_reminders()
     logger.info("=== Daily Reminder Run Complete ===")

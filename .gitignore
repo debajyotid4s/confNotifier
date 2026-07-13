@@ -41,3 +41,8 @@ test.py
 
 # Local documentation
 PROJECT_STATE.md
+ARTICLE_OUTLINE.md
+REPORT_gemini_rate_limits.md
+
+# Database scripts
+db/dedup.sql

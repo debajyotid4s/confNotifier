@@ -193,7 +193,7 @@ def _handle_subdomain_probe(source):
                     "subdomain_probe: checking %s — resolves=%s",
                     candidate, resolves
                 )
-                if resolves:
+                if resolves and _probe_url(candidate):
                     candidates.append(candidate)
                     save_seen_link(candidate, source="special", status="pending")
                     logger.info(
