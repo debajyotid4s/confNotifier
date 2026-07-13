@@ -8,8 +8,8 @@ from urllib.parse import urlparse
 
 import requests
 
-from db import get_connection
-from sources import crt_monitor, homepage_links, special
+from db import get_connection, TERMINAL_STATUSES
+from sources import homepage_links, special
 from extractor import extract, daily_quota_exhausted, total_requests_today
 from notifier import notify
 from browser import PlaywrightManager
@@ -82,8 +82,9 @@ def _mark_url_status(url: str, status: str) -> None:
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO seen_links (url, source, status) VALUES (%s, 'phase4', %s) "
-            "ON CONFLICT (url) DO UPDATE SET status = %s, last_seen = NOW()",
-            (url, status, status),
+            "ON CONFLICT (url) DO UPDATE SET status = %s, last_seen = NOW() "
+            "WHERE seen_links.status NOT IN %s",
+            (url, status, status, TERMINAL_STATUSES),
         )
         conn.commit()
         cur.close()
@@ -741,21 +742,13 @@ def run():
 
     logger.info("=== BD Conference Bot Run Started ===")
 
-    # Phase 1 — crt_monitor needs no browser
-    try:
-        crt_candidates = crt_monitor.run()
-        logger.info("crt_monitor returned %d candidates", len(crt_candidates))
-    except Exception as e:
-        logger.error("crt_monitor failed: %s", e)
-        crt_candidates = []
-
     homepage_candidates = []
     special_candidates = []
 
     try:
         with PlaywrightManager() as playwright:
 
-            # Phase 2
+            # Phase 1 — homepage scraping
             try:
                 homepage_candidates = homepage_links.run(playwright=playwright)
                 logger.info("homepage_links returned %d candidates", len(homepage_candidates))
@@ -763,7 +756,7 @@ def run():
                 logger.error("homepage_links failed: %s", e)
                 homepage_candidates = []
 
-            # Phase 3
+            # Phase 2 — special sources
             try:
                 special_candidates = special.run()
                 logger.info("special returned %d candidates", len(special_candidates))
@@ -772,7 +765,7 @@ def run():
                 special_candidates = []
 
             all_candidates = list(
-                set(crt_candidates + homepage_candidates + special_candidates)
+                set(homepage_candidates + special_candidates)
             )
 
             # Re-queue pending URLs from previous runs (status='pending', not yet extracted)

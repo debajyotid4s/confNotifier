@@ -93,7 +93,7 @@ def notify(conference):
     try:
         resp = requests.post(
             url,
-            json={"chat_id": channel_id, "text": message},
+            json={"chat_id": channel_id, "text": message, "parse_mode": "HTML"},
             timeout=15,
         )
         if resp.status_code == 200:

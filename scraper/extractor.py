@@ -9,7 +9,6 @@ from collections import deque
 
 from openai import OpenAI
 
-from db import save_seen_link
 from scraper.browser import PlaywrightManager
 
 logger = logging.getLogger(__name__)
@@ -333,18 +332,15 @@ def extract(url, playwright: PlaywrightManager):
     """
     if not _is_url_reachable(url):
         logger.warning("extractor: DNS resolution failed for %s, skipping", url)
-        save_seen_link(url, source="extractor", status="failed")
         return None
 
     text = _fetch_page_text(url, playwright)
     if text is None:
         logger.warning("extractor: could not fetch page text for %s", url)
-        save_seen_link(url, source="extractor", status="failed")
         return None
 
     if len(text.strip()) < 100:
         logger.warning("extractor: page text too short for %s, skipping", url)
-        save_seen_link(url, source="extractor", status="failed")
         return None
 
     logger.info("extractor: extracting from %s", url)

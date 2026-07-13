@@ -11,11 +11,11 @@ _Built with Python 3.11, Playwright, Gemini 2.5 Flash, PostgreSQL, and GitHub Ac
 - [The Problem](#the-problem)
 - [How It Works](#how-it-works)
 - [Pipeline Phases](#pipeline-phases)
-  - [1. Discovery](#1-discovery)
-  - [2–3. Filtering, Deduplication & Merge](#23-filtering-deduplication--merge)
-  - [4. Extraction](#4-extraction)
-  - [5. Notification](#5-notification)
-  - [6. Weekly Deadline Verification](#6-weekly-deadline-verification)
+  - [1. Discovery (main scraper)](#1-discovery-main-scraper)
+  - [2. Filtering & Deduplication](#2-filtering--deduplication)
+  - [3. Extraction](#3-extraction)
+  - [4. Notification](#4-notification)
+  - [5. Weekly Deadline Verification](#5-weekly-deadline-verification)
 - [The State Machine](#the-state-machine)
 - [Database Schema](#database-schema)
 - [Browser Automation](#browser-automation)
@@ -34,28 +34,28 @@ Two GitHub Actions workflows drive the system:
 
 | Workflow            | Schedule                                       | Duration | Purpose                                                |
 | ------------------- | ---------------------------------------------- | -------- | ------------------------------------------------------ |
-| **Main scraper**    | 5×/day — 00:00, 06:00, 12:00, 16:00, 18:00 UTC | ≤60 min  | Discovers, extracts, and saves new conferences         |
-| **Daily reminders** | Once/day — 04:00 UTC (10:00 AM BD time)        | <5 min   | Sends deadline reminders; no browser or LLM dependency |
+| **Main scraper**    | 4×/day — 00:00, 06:00, 12:00, 16:00, 18:00 UTC | ≤60 min  | Homepage scraping, LLM extraction, notifications       |
+| **Daily reminder**  | Once/day — 04:00 UTC (10:00 AM BD time)        | ≤15 min  | crt.sh certificate discovery + deadline reminders      |
 
-The main scraper progresses through six phases, from raw URL discovery to Telegram notification, detailed below.
+The main scraper progresses through four phases, detailed below. crt.sh runs once daily in the reminder workflow — certificates don't churn within hours, so the ~9 minutes it takes are reclaimed on 4 of the 5 previous scheduled runs.
 
 ## Pipeline Phases
 
-### 1. Discovery
+### 1. Discovery (main scraper)
 
-Three independent sources run to gather candidate URLs:
+Two sources run within the main scraper; a third (crt.sh) runs independently once daily:
 
-- **Certificate transparency logs** — the crt.sh API is queried for `.ac.bd`, `.edu.bd`, `.sust.edu`, and `.edu` wildcard certificates. A keyword matcher filters subdomains for conference-like patterns (`ic*`, `conf*`, `symposium`, `iccit`, `icmiee`) while blocking known non-conference prefixes (`library`, `mail`, `app`, `convocation`). Retries use exponential backoff at 5, 10, and 20 seconds for 502, 503, and timeout errors.
 - **Homepage scraper** — loads 72 Bangladeshi university domains using a multi-strategy fallback chain: `requests` with standard headers first; if the server sends malformed HTTP headers (a known issue with `buet.ac.bd` and `sust.edu`), it falls back to a `curl` subprocess with `-k`; if Cloudflare presents a JS challenge, it escalates to Playwright with stealth mode and human-like scrolling. A separate `www` fallback tries the bare domain if the `www` subdomain fails.
-- **Targeted special sources** — ten entries from `config/special_sources.json`. Six use path probing (`/{year}/home/` and `/{year}/`), one uses root-year detection via regex on page content, and three use DNS-only subdomain probing via `socket.getaddrinfo()` across 2026–2028, with no HTTP requests made.
+- **Targeted special sources** — ten entries from `config/special_sources.json`. Six use path probing (`/{year}/home/` and `/{year}/`), one uses root-year detection via regex on page content, and three use HTTP-probed subdomain discovery via `socket.getaddrinfo()` + `requests` across 2026–2028.
+- **Certificate transparency logs** (daily at 04 UTC) — the crt.sh API is queried for `.ac.bd`, `.edu.bd`, `.sust.edu`, and `.edu` wildcard certificates. A keyword matcher filters subdomains for conference-like patterns (`ic*`, `conf*`, `symposium`, `iccit`, `icmiee`) while blocking known non-conference prefixes (`library`, `mail`, `app`, `convocation`). Retries use exponential backoff at 5, 10, and 20 seconds for 502, 503, and timeout errors. Decoupled from the main pipeline — certificates don't churn within hours, so daily discovery is sufficient.
 
-### 2–3. Filtering, Deduplication & Merge
+### 2. Filtering & Deduplication
 
 All candidate URLs pass through a depth-first search filter against the `seen_links` table. URLs already in a terminal state — `extracted`, `not_conference`, `low_confidence`, or `failed` — are skipped immediately and never rechecked. This is the core state machine that prevents wasting LLM calls on dead or irrelevant URLs across runs (see [The State Machine](#the-state-machine)).
 
-Candidates from all three discovery sources are then merged into a single deduplicated list, and any URLs left pending from previous runs — typically due to API quota exhaustion — are re-queued.
+Candidates from both discovery sources are then merged into a single deduplicated list, along with any URLs left pending from previous runs (typically from API quota exhaustion or crt.sh candidates discovered by the daily 04 UTC workflow).
 
-### 4. Extraction
+### 3. Extraction
 
 For each candidate URL, two pre-checks run before any LLM call:
 
@@ -68,13 +68,13 @@ URLs that pass are loaded via Playwright, and the first 8,000 characters of visi
 - **Extraction schema** — the model returns strict JSON: conference title, start/end dates, city, organizer, category, confidence score, and up to two submission deadlines with labels. The prompt explicitly excludes Camera Ready and Registration deadlines, and instructs the model to scan full text for `Month DD, YYYY` patterns that may appear in visual timelines or infographics.
 - **Persistence** — extracted conferences are saved via an `ON CONFLICT` upsert that preserves existing values when re-extraction returns nulls. Results below 0.75 confidence are marked `low_confidence` and never revisited. DB write failures do _not_ mark the URL terminal, so transient Neon connection issues are retried on the next run.
 
-### 5. Notification
+### 4. Notification
 
 When a new conference is saved and its submission deadline falls within 30 days, the system immediately posts a formatted message to the Telegram channel and marks it notified, with a three-retry guard against duplicates.
 
 At the end of every run, a backlog catch-up function queries all unnotified conferences with either deadline within 30 days — catching conferences saved without notification because their deadline was outside the window at discovery time, or where the notification step previously crashed.
 
-### 6. Weekly Deadline Verification
+### 5. Weekly Deadline Verification
 
 A guard in the `daily_tasks` table ensures re-extraction happens at most once every seven days. The system selects upcoming conferences with deadlines in a 60-day window (30 days ago → 30 days ahead) to catch deadline extensions.
 
@@ -119,13 +119,13 @@ Page navigation uses `wait_until="domcontentloaded"` with a 30-second timeout, a
 
 Three distinct message types are sent to the channel:
 
-- **New conference alerts** — plain text with emoji formatting: title, date range, city, organizer, category, website URL, and hashtags derived from title, category, city, and country.
+- **New conference alerts** — HTML-formatted with emoji: title, date range, city, organizer, category, website URL, and hashtags derived from title, category, city, and country.
 - **Daily reminders** — HTML-formatted, with a collapsible links section. Each entry shows a 20-character progress bar filled proportionally to how much of the 30-day deadline window has elapsed, plus an urgency emoji (🔥 within 7 days, ⏳ within 20 days, ✅ beyond 20 days). When a deadline has been updated, the previous value is shown with strikethrough followed by the new value, so subscribers can spot extensions at a glance.
 - **Deadline change alerts** — triggered by weekly verification, following the same strikethrough pattern: old and new deadline dates plus a link to the conference website.
 
 ## Deployment
 
-The main scraper workflow runs on Ubuntu latest with Python 3.11. Playwright browsers are cached, keyed by Playwright version, to avoid redownloading on every run. The daily reminder workflow installs only two dependencies — `psycopg2-binary` and `requests` — and completes in under five minutes.
+The main scraper workflow runs on Ubuntu latest with Python 3.11. Playwright browsers are cached, keyed by Playwright version, to avoid redownloading on every run. The daily reminder workflow installs minimal dependencies (`psycopg2-binary`, `requests`) and runs `crt_monitor` for certificate discovery before sending reminders, with a 15-minute timeout to accommodate crt.sh query latency.
 
 **Required environment variables** (stored as GitHub Actions secrets):
 

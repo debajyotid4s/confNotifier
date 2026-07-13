@@ -197,10 +197,10 @@ def run() -> list:
         try:
             cur = conn.cursor()
             cur.execute(
-                "SELECT url FROM seen_links WHERE url LIKE 'https://%%' "
+                "SELECT url FROM seen_links WHERE (url LIKE 'https://%%' OR url LIKE 'http://%%') "
                 "AND status IN ('pending', 'not_conference', 'low_confidence', 'extracted')"
             )
-            known = {row[0].replace("https://", "") for row in cur.fetchall()}
+            known = {row[0].replace("https://", "").replace("http://", "") for row in cur.fetchall()}
             cur.close()
         finally:
             conn.close()   # closed BEFORE crt.sh queries start
