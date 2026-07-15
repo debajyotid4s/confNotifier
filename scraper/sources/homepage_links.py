@@ -38,7 +38,7 @@ def _is_safe_url(url: str) -> bool:
         if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
             return False
     except (socket.gaierror, ValueError):
-        return False
+        pass
     return True
 
 CONF_PATTERNS = [
