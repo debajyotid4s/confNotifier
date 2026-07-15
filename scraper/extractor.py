@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import re
 import socket
 import threading
 import time
@@ -121,26 +120,45 @@ _clients = [
 
 _current_key_idx = 0
 
+EXTRACTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "is_conference": {"type": "boolean"},
+        "title": {"type": "string"},
+        "date_start": {"type": ["string", "null"], "format": "date",
+                       "description": "YYYY-MM-DD or null"},
+        "date_end": {"type": ["string", "null"], "format": "date",
+                     "description": "YYYY-MM-DD or null"},
+        "submission_deadline": {"type": ["string", "null"], "format": "date",
+                                "description": "YYYY-MM-DD or null"},
+        "submission_deadline_label": {"type": ["string", "null"],
+                                      "description": "Short label for the first deadline or null"},
+        "submission_deadline_2": {"type": ["string", "null"], "format": "date",
+                                  "description": "YYYY-MM-DD or null"},
+        "submission_deadline_2_label": {"type": ["string", "null"],
+                                        "description": "Short label for the second deadline or null"},
+        "city": {"type": ["string", "null"]},
+        "country": {"type": "string"},
+        "website": {"type": "string"},
+        "organizer": {"type": ["string", "null"]},
+        "category": {"type": "string", "enum": [
+            "Engineering", "Electrical", "Computing", "Civil",
+            "Biomedical", "Business", "Energy", "Science",
+            "Agriculture", "Medical", "Textile", "Other"
+        ]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+    },
+    "required": [
+        "is_conference", "title", "date_start", "date_end",
+        "submission_deadline", "submission_deadline_label",
+        "submission_deadline_2", "submission_deadline_2_label",
+        "city", "country", "website", "organizer", "category", "confidence"
+    ],
+    "additionalProperties": False,
+}
+
 SYSTEM_PROMPT = """You are a precise conference data extractor for Bangladesh.
 Given raw webpage text, extract international conference details.
-Return ONLY a valid JSON object. No explanation. No markdown. No backticks.
-
-{
-  "is_conference": true or false,
-  "title": "Full official conference title",
-  "date_start": "YYYY-MM-DD or null",
-  "date_end": "YYYY-MM-DD or null",
-  "submission_deadline": "YYYY-MM-DD or null",
-  "submission_deadline_label": "short label for what this date represents (e.g. 'Extended Abstract Submission', 'Paper Submission') or null",
-  "submission_deadline_2": "YYYY-MM-DD or null",
-  "submission_deadline_2_label": "short label for the second date (e.g. 'Full Paper Submission', 'Registration Deadline') or null",
-  "city": "City in Bangladesh or null",
-  "country": "Bangladesh",
-  "website": "Full conference URL",
-  "organizer": "University or organization name or null",
-  "category": "One of: Engineering, Electrical, Computing, Civil, Biomedical, Business, Energy, Science, Agriculture, Medical, Textile, Other",
-  "confidence": 0.0 to 1.0
-}
 
 Rules:
 - is_conference = false for seminars, webinars, department pages, local events.
@@ -265,11 +283,16 @@ def extract_conferences(page_text: str, source_url: str) -> dict | None:
                     ],
                     temperature=0.0,
                     max_tokens=4096,
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "conference_extraction",
+                            "schema": EXTRACTION_SCHEMA,
+                        },
+                    },
                 )
 
-                raw = response.choices[0].message.content.strip()
-                raw = re.sub(r"```json|```", "", raw).strip()
-                result = json.loads(raw)
+                result = json.loads(response.choices[0].message.content)
                 logger.info(
                     "extractor: %s → is_conference=%s, confidence=%.2f",
                     source_url,

@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from db import get_connection, save_seen_link
+from db import get_connection, save_seen_link, load_special_path_cache, save_special_path_cache
 from scraper.sources.homepage_links import _is_safe_url
 
 logger = logging.getLogger(__name__)
@@ -66,10 +66,25 @@ def _handle_path(source):
     base_url = source["base_url"].rstrip("/")
     year = datetime.now().year
     candidates = []
+    path_cache = load_special_path_cache()
+    cached_entry = path_cache.get(base_url)
+    _, cached_pattern = cached_entry if cached_entry else (None, None)
 
     for y in [str(year), str(year + 1)]:
+        patterns = [f"{base_url}/{y}/home/", f"{base_url}/{y}/"]
+
+        # Try cached pattern first
+        if cached_pattern:
+            cached_url = cached_pattern.replace("{year}", str(y))
+            if not _is_seen(cached_url) and _probe_url(cached_url):
+                save_seen_link(cached_url, source="special")
+                candidates.append(cached_url)
+                logger.info("special/path (cached): new URL found: %s", cached_url)
+                continue
+            cached_pattern = None  # pattern failed for this year, re-probe
+
         url = None
-        for candidate in [f"{base_url}/{y}/home/", f"{base_url}/{y}/"]:
+        for candidate in patterns:
             if _is_seen(candidate):
                 break  # already known — don't also try the fallback
             if _probe_url(candidate):
@@ -80,6 +95,9 @@ def _handle_path(source):
         save_seen_link(url, source="special")
         candidates.append(url)
         logger.info("special/path: new URL found: %s", url)
+        pattern_template = url.replace(f"/{y}/", "/{year}/")
+        save_special_path_cache(base_url, y, pattern_template)
+        cached_pattern = pattern_template  # reuse for year+1 below
 
     return candidates
 
