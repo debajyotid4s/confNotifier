@@ -39,7 +39,7 @@ def _save_conference(conf: dict) -> bool:
                  submission_deadline_label, submission_deadline_2,
                  submission_deadline_2_label, raw_source, is_notified)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            ON CONFLICT (website) DO UPDATE SET
+            ON CONFLICT (website, date_start) DO UPDATE SET
                 submission_deadline = COALESCE(EXCLUDED.submission_deadline, conferences.submission_deadline),
                 submission_deadline_label = COALESCE(EXCLUDED.submission_deadline_label, conferences.submission_deadline_label),
                 submission_deadline_2 = COALESCE(EXCLUDED.submission_deadline_2, conferences.submission_deadline_2),
@@ -787,6 +787,16 @@ def run():
             quota_exhausted = False
 
             for idx, url in enumerate(all_candidates):
+                # Detect root_year-tagged URLs from special sources
+                # Format: "root_year:{year}:{actual_url}"
+                root_year_info = None
+                actual_url = url
+                if url.startswith("root_year:"):
+                    parts = url.split(":", 2)
+                    root_year_info = (parts[2], int(parts[1]))
+                    actual_url = parts[2]
+                    url = actual_url
+
                 # DFS: skip URLs already in terminal state (never re-check)
                 if _is_url_processed(url):
                     logger.debug("Already processed, skipping: %s", url)
@@ -804,7 +814,8 @@ def run():
 
                 # Pre-check 1: skip if conference website already in DB
                 # (catches duplicates before wasting an LLM call)
-                if url in known_websites:
+                # Root_year sources already verified by _is_edition_in_db — skip this check
+                if not root_year_info and url in known_websites:
                     logger.info("Duplicate (URL already known), skipping: %s", url)
                     _mark_url_status(url, "extracted")
                     skipped += 1
@@ -882,7 +893,7 @@ def run():
                     except (ValueError, TypeError):
                         pass
 
-                if result.get("website", "") in known_websites:
+                if not root_year_info and result.get("website", "") in known_websites:
                     logger.info("Duplicate conference, marking done: %s", url)
                     _mark_url_status(url, "extracted")
                     skipped += 1
