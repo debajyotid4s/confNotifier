@@ -188,7 +188,7 @@ def _handle_root_year(source):
         )
         return []
 
-    candidates.append(base_url)
+    candidates.append(f"root_year:{found_year}:{base_url}")
     logger.info("special/root_year: new edition detected — %s (%d)", base_url, found_year)
 
     return candidates

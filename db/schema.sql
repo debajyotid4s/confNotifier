@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS conferences (
     date_end DATE,
     city TEXT,
     country TEXT NOT NULL DEFAULT 'Bangladesh',
-    website TEXT NOT NULL UNIQUE,
+    website TEXT NOT NULL,
     organizer TEXT,
     category TEXT,
     confidence REAL NOT NULL DEFAULT 0.0,
@@ -47,7 +47,9 @@ CREATE TABLE IF NOT EXISTS conferences (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_conferences_website ON conferences (website);
+-- Migrate from UNIQUE(website) to UNIQUE(website, date_start)
+ALTER TABLE conferences DROP CONSTRAINT IF EXISTS conferences_website_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conferences_website_date ON conferences (website, date_start);
 CREATE INDEX IF NOT EXISTS idx_conferences_date_start ON conferences (date_start);
 CREATE INDEX IF NOT EXISTS idx_known_subdomains_subdomain ON known_subdomains (subdomain);
 CREATE INDEX IF NOT EXISTS idx_seen_links_url ON seen_links (url);
