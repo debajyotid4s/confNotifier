@@ -515,7 +515,7 @@ def _verify_deadlines(playwright) -> None:
         today = date.today()
         if row and row[0]:
             days_since = (today - row[0]).days
-            if days_since < 7:
+            if days_since < 1:
                 logger.info(
                     "deadline_verification: ran %d day(s) ago, skipping",
                     days_since
@@ -531,7 +531,7 @@ def _verify_deadlines(playwright) -> None:
             except Exception:
                 pass
 
-    logger.info("deadline_verification: starting weekly deadline re-check")
+    logger.info("deadline_verification: starting daily deadline re-check")
 
     # Load upcoming conferences with at least one deadline set
     conn = None
