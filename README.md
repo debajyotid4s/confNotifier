@@ -15,7 +15,7 @@ _Built with Python 3.11, Playwright, Gemini 2.5 Flash, PostgreSQL, and GitHub Ac
   - [2. Filtering & Deduplication](#2-filtering--deduplication)
   - [3. Extraction](#3-extraction)
   - [4. Notification](#4-notification)
-  - [5. Weekly Deadline Verification](#5-weekly-deadline-verification)
+  - [5. Daily Deadline Verification](#5-daily-deadline-verification)
 - [The State Machine](#the-state-machine)
 - [Database Schema](#database-schema)
 - [Browser Automation](#browser-automation)
@@ -30,12 +30,13 @@ Bangladeshi researchers and students lack a centralized aggregator for academic 
 
 ## How It Works
 
-Two GitHub Actions workflows drive the system:
+Three GitHub Actions workflows drive the system:
 
-| Workflow            | Schedule                                       | Duration | Purpose                                                |
-| ------------------- | ---------------------------------------------- | -------- | ------------------------------------------------------ |
-| **Main scraper**    | 4×/day — 00:00, 06:00, 12:00, 16:00, 18:00 UTC | ≤60 min  | Homepage scraping, LLM extraction, notifications       |
-| **Daily reminder**  | Once/day — 04:00 UTC (10:00 AM BD time)        | ≤15 min  | crt.sh certificate discovery + deadline reminders      |
+| Workflow                  | Schedule                                       | Duration | Purpose                                                   |
+| ------------------------- | ---------------------------------------------- | -------- | --------------------------------------------------------- |
+| **Main scraper**          | 5×/day — 00:00, 06:00, 12:00, 16:00, 18:00 UTC | ≤60 min  | Homepage scraping, LLM extraction, notifications          |
+| **Daily reminder**        | Once/day — 04:00 UTC (10:00 AM BD time)        | ≤15 min  | crt.sh certificate discovery + deadline reminders         |
+| **Deadline verification** | Once/day — 15:00 UTC (9:00 PM BD time)         | ≤60 min  | Re-extract deadlines for upcoming conferences, alert on changes |
 
 The main scraper progresses through four phases, detailed below. crt.sh runs once daily in the reminder workflow — certificates don't churn within hours, so the ~9 minutes it takes are reclaimed on 4 of the 5 previous scheduled runs.
 
@@ -57,10 +58,11 @@ Candidates from both discovery sources are then merged into a single deduplicate
 
 ### 3. Extraction
 
-For each candidate URL, two pre-checks run before any LLM call:
+For each candidate URL, three pre-checks run before any LLM call:
 
-1. Skip if the URL's website already exists in the `conferences` table.
-2. Skip if the hostname contains a past year (e.g. `icap2025.sust.edu` when the current year is 2026).
+1. Skip if the URL is already in a terminal state in `seen_links` (`extracted`, `not_conference`, `low_confidence`, or `failed`). Root-year sources bypass this check — they are already deduplicated at the source level via `_is_edition_in_db`.
+2. Skip if the URL's website already exists in the `conferences` table (also bypassed for root-year sources, which detect new editions on the same domain).
+3. Skip if the hostname contains a past year (e.g. `icap2025.sust.edu` when the current year is 2026).
 
 URLs that pass are loaded via Playwright, and the first 8,000 characters of visible text are sent to **Gemini 2.5 Flash** through the OpenAI-compatible API.
 
@@ -74,9 +76,9 @@ When a new conference is saved and its submission deadline falls within 30 days,
 
 At the end of every run, a backlog catch-up function queries all unnotified conferences with either deadline within 30 days — catching conferences saved without notification because their deadline was outside the window at discovery time, or where the notification step previously crashed.
 
-### 5. Weekly Deadline Verification
+### 5. Deadline Verification (Daily)
 
-A guard in the `daily_tasks` table ensures re-extraction happens at most once every seven days. The system selects upcoming conferences with deadlines in a 60-day window (30 days ago → 30 days ahead) to catch deadline extensions.
+A guard in the `daily_tasks` table ensures re-extraction happens at most once per day. The system selects upcoming conferences with deadlines in a 60-day window (30 days ago → 30 days ahead) to catch deadline extensions.
 
 For each, it re-extracts using the shared Playwright instance and compares old vs. new deadlines:
 
@@ -100,12 +102,14 @@ The critical guard lives in `save_seen_link`: its `INSERT ON CONFLICT` statement
 
 ## Database Schema
 
-Neon PostgreSQL hosts four tables:
+Neon PostgreSQL hosts six tables:
 
-- **`conferences`** — extracted data, unique constraint on website URL. Tracks two submission deadlines with labels, stores previous deadline values for change detection, and records notification status with timestamps.
-- **`known_subdomains`** — crt.sh discoveries with first/last-seen timestamps.
+- **`conferences`** — extracted data, unique constraint on `(website, date_start)`. Tracks two submission deadlines with labels, stores previous deadline values for change detection, and records notification status with timestamps.
 - **`seen_links`** — the DFS state machine: URL uniqueness and status tracking.
-- **`daily_tasks`** — simple key-value store for the weekly verification guard.
+- **`known_subdomains`** — crt.sh discoveries with first/last-seen timestamps.
+- **`domain_strategies`** — cached winning fetch strategy per university domain (requests/curl/playwright), so homepage scraping skips failed tiers on subsequent runs.
+- **`special_path_cache`** — cached path pattern per special source (e.g. `/{year}/home/`), so path probes skip failed years.
+- **`daily_tasks`** — simple key-value store for the deadline verification guard.
 
 All database connections are short-lived — open, execute, commit, close — to avoid Neon's serverless idle timeout. Connection attempts retry three times with five-second delays.
 
@@ -121,7 +125,7 @@ Three distinct message types are sent to the channel:
 
 - **New conference alerts** — HTML-formatted with emoji: title, date range, city, organizer, category, website URL, and hashtags derived from title, category, city, and country.
 - **Daily reminders** — HTML-formatted, with a collapsible links section. Each entry shows a 20-character progress bar filled proportionally to how much of the 30-day deadline window has elapsed, plus an urgency emoji (🔥 within 7 days, ⏳ within 20 days, ✅ beyond 20 days). When a deadline has been updated, the previous value is shown with strikethrough followed by the new value, so subscribers can spot extensions at a glance.
-- **Deadline change alerts** — triggered by weekly verification, following the same strikethrough pattern: old and new deadline dates plus a link to the conference website.
+- **Deadline change alerts** — triggered by the deadline verification workflow, following the same strikethrough pattern: old and new deadline dates plus a link to the conference website.
 
 ## Deployment
 
