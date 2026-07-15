@@ -105,6 +105,33 @@ def _handle_path(source):
 # ── Handler: "root_year" (QPAIN-style: detect year from page content) ──
 
 
+def _is_edition_in_db(base_url: str, year: int) -> bool:
+    """Return True if a conference with this website + year is already saved."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT 1 FROM conferences "
+            "WHERE website = %s "
+            "  AND date_start >= %s "
+            "  AND date_start < %s",
+            (base_url, f"{year}-01-01", f"{year + 1}-01-01")
+        )
+        exists = cur.fetchone() is not None
+        cur.close()
+        return exists
+    except Exception as e:
+        logger.error("_is_edition_in_db error: %s", e)
+        return False
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def _handle_root_year(source):
     base_url = source["base_url"]
     year = datetime.now().year
@@ -152,13 +179,15 @@ def _handle_root_year(source):
         logger.warning("special/root_year: no year found in %s, skipping", base_url)
         return []
 
-    # Dedup key: "https://qpain.org#2026"
-    dedup_key = f"{base_url}#{found_year}"
-
-    if _is_seen(dedup_key):
+    # Check if this edition already exists in the conferences table
+    # (more reliable than seen_links — a failed extraction won't block retries)
+    if _is_edition_in_db(base_url, found_year):
+        logger.info(
+            "special/root_year: edition %d already in DB, skipping — %s",
+            found_year, base_url
+        )
         return []
 
-    save_seen_link(dedup_key, source="special")
     candidates.append(base_url)
     logger.info("special/root_year: new edition detected — %s (%d)", base_url, found_year)
 
