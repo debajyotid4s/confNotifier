@@ -1,15 +1,15 @@
-name: BD Conference Scraper
+name: Deadline Verification
 
 on:
   schedule:
-    - cron: "0 0,6,12,16,18 * * *"
+    - cron: "0 15 * * *"   # 15:00 UTC = 9:00 PM Bangladesh
   workflow_dispatch:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  scrape:
+  verify:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -37,8 +37,8 @@ jobs:
         if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: playwright install --with-deps chromium
 
-      - name: Run scraper
-        run: PYTHONPATH=. python scraper/main.py
+      - name: Verify deadlines
+        run: PYTHONPATH=. python scraper/verify_deadlines.py
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GOOGLE_AI_KEY: ${{ secrets.GOOGLE_AI_KEY }}
