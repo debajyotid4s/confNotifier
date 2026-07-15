@@ -797,8 +797,8 @@ def run():
                     actual_url = parts[2]
                     url = actual_url
 
-                # DFS: skip URLs already in terminal state (never re-check)
-                if _is_url_processed(url):
+                # Root_year already verified by _is_edition_in_db — skip URL-processed check
+                if not root_year_info and _is_url_processed(url):
                     logger.debug("Already processed, skipping: %s", url)
                     skipped += 1
                     continue
