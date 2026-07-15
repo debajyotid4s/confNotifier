@@ -57,3 +57,17 @@ CREATE TABLE IF NOT EXISTS daily_tasks (
     task_name TEXT PRIMARY KEY,
     last_run_date DATE
 );
+
+CREATE TABLE IF NOT EXISTS domain_strategies (
+    domain TEXT PRIMARY KEY,
+    strategy TEXT NOT NULL,
+    loaded_url TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS special_path_cache (
+    base_url TEXT PRIMARY KEY,
+    year INTEGER NOT NULL,
+    path_pattern TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

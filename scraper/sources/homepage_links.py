@@ -9,9 +9,9 @@ from urllib.parse import urlparse, urljoin
 
 import requests
 from bs4 import BeautifulSoup
-import urllib3.exceptions
+from urllib3.exceptions import HeaderParsingError
 
-from db import get_connection, save_seen_link
+from db import get_connection, save_seen_link, load_domain_strategies, save_domain_strategy
 from scraper.browser import PlaywrightManager
 
 # Suppress noisy urllib3 connection warnings from malformed server headers
@@ -41,18 +41,6 @@ def _is_safe_url(url: str) -> bool:
         return False
     return True
 
-# Domains with known broken HTTP headers — always use curl, never requests
-CURL_ONLY_DOMAINS = {
-    "buet.ac.bd",
-    "www.buet.ac.bd",
-    "sust.edu",
-}
-
-# Domains that consistently timeout from GitHub Actions runners — skip entirely
-TIMEOUT_BLOCKLIST = {
-    "northsouth.edu",
-}
-
 CONF_PATTERNS = [
     re.compile(r"ieee[a-z]+\d{4}"),
     re.compile(r"ic[a-z]+\d{4}"),
@@ -74,6 +62,29 @@ URL_BLOCKLIST = {
 }
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+
+_REQUESTS_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+}
+
+
+def _try_requests(url: str) -> str | None:
+    """Try fetching with requests. Retries once on failure.
+    Returns HTML content or None if all attempts fail."""
+    if not _is_safe_url(url):
+        return None
+    for attempt in range(2):
+        try:
+            resp = requests.get(url, headers=_REQUESTS_HEADERS, timeout=10, allow_redirects=True)
+            if resp.status_code == 200 and "Just a moment" not in resp.text[:500]:
+                return resp.text
+        except (requests.exceptions.RequestException, HeaderParsingError):
+            pass
+        if attempt == 0:
+            time.sleep(3)
+    return None
 
 
 def _load_domains(path="config/universities.json"):
@@ -120,32 +131,36 @@ def _playwright_fetch(url: str, playwright: PlaywrightManager) -> str | None:
 
 
 def _curl_fetch(url: str, timeout: int = 15) -> str | None:
-    """Fetch page HTML using curl subprocess. Handles malformed headers
-    that break requests/urllib3 (Category B failures like buet.ac.bd)."""
+    """Fetch page HTML using curl subprocess. Retries once on failure.
+    Handles malformed headers that break requests/urllib3
+    (Category B failures like buet.ac.bd)."""
     if not _is_safe_url(url):
         logger.warning("SSRF blocked (curl): %s", url)
         return None
-    try:
-        proc = subprocess.run(
-            [
-                "curl", "-sS", "-L",
-                "--max-time", str(timeout),
-                "--user-agent", USER_AGENT,
-                "-H", "Accept: text/html,application/xhtml+xml,*/*",
-                "-k",
-                url,
-            ],
-            capture_output=True,
-            timeout=timeout + 5,
-        )
-        if proc.returncode == 0 and proc.stdout.strip():
-            try:
-                return proc.stdout.decode("utf-8", errors="replace")
-            except Exception:
-                return None
-        return None
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
+    for attempt in range(2):
+        try:
+            proc = subprocess.run(
+                [
+                    "curl", "-sS", "-L",
+                    "--max-time", str(timeout),
+                    "--user-agent", USER_AGENT,
+                    "-H", "Accept: text/html,application/xhtml+xml,*/*",
+                    "-k",
+                    url,
+                ],
+                capture_output=True,
+                timeout=timeout + 5,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                try:
+                    return proc.stdout.decode("utf-8", errors="replace")
+                except Exception:
+                    return None
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        if attempt == 0:
+            time.sleep(3)
+    return None
 
 
 def fetch_homepage_fast(url: str, retries: int = 2, playwright: PlaywrightManager = None):
@@ -205,7 +220,7 @@ def fetch_homepage_fast(url: str, retries: int = 2, playwright: PlaywrightManage
             # Non-200 status — try curl fallback
             logger.debug("%s HTTP %d, trying curl fallback", domain, resp.status_code)
 
-        except urllib3.exceptions.HeaderParsingError:
+        except HeaderParsingError:
             logger.info("%s malformed HTTP headers, trying curl fallback", domain)
             html = _curl_fetch(url)
             if html:
@@ -277,10 +292,12 @@ def run(playwright: PlaywrightManager = None):
     """Scan all university homepages for outbound conference links.
 
     Returns a list of newly discovered candidate URLs.
+    Caches winning fetch strategy per domain so future runs skip
+    directly to what works instead of re-discovering the fallback chain.
     """
     domains = _load_domains()
     candidates = []
-    stats = {"ok": 0, "tls_fix": 0, "dns_fix": 0, "curl_fix": 0, "playwright_fix": 0, "failed": 0}
+    stats = {"ok": 0, "tls_fix": 0, "dns_fix": 0, "curl_fix": 0, "playwright_fix": 0, "failed": 0, "cached": 0}
 
     try:
         conn = get_connection()
@@ -293,46 +310,92 @@ def run(playwright: PlaywrightManager = None):
         logger.error("Failed to load known links: %s", e)
         known = set()
 
+    strategies = load_domain_strategies()
+
     for domain in domains:
-        if domain in TIMEOUT_BLOCKLIST:
-            logger.info("homepage_links: %s in timeout blocklist, skipping", domain)
-            stats["failed"] += 1
-            continue
-        if domain in CURL_ONLY_DOMAINS:
-            logger.info("homepage_links: %s uses curl-only mode (malformed headers)", domain)
-            url = f"https://www.{domain}"
-            html = _curl_fetch(url)
-            if html:
-                soup = BeautifulSoup(html, "lxml")
-                loaded_url = url
-                strategy = "curl"
+        cached = strategies.get(domain)
+
+        if cached:
+            cached_strategy, cached_loaded_url = cached
+
+            if cached_strategy == "failed":
+                soup, loaded_url, strategy = fetch_homepage_with_www_fallback(domain, playwright=playwright)
+                if soup:
+                    save_domain_strategy(domain, strategy, loaded_url)
+                    stats["cached"] += 1
+                    logger.info("%s: recovered from 'failed' → '%s' via %s", domain, strategy, loaded_url)
+                else:
+                    stats["failed"] += 1
+                    logger.warning("Could not load %s, skipping", domain)
+                    continue
             else:
-                stats["failed"] += 1
-                logger.warning("Could not load %s, skipping", domain)
-                continue
+                tier_order = ["requests", "curl", "playwright"]
+                start_idx = tier_order.index(cached_strategy) if cached_strategy in tier_order else 0
+
+                url_variants = [cached_loaded_url]
+                other = f"https://{domain}" if "www." in cached_loaded_url else f"https://www.{domain}"
+                if other != cached_loaded_url:
+                    url_variants.append(other)
+
+                soup = None
+                loaded_url = None
+                strategy = None
+                for tier in tier_order[start_idx:]:
+                    for url in url_variants:
+                        if tier == "requests":
+                            html = _try_requests(url)
+                            if html:
+                                soup = BeautifulSoup(html, "lxml")
+                        elif tier == "curl":
+                            html = _curl_fetch(url)
+                            if html:
+                                soup = BeautifulSoup(html, "lxml")
+                        elif tier == "playwright" and playwright:
+                            html = _playwright_fetch(url, playwright)
+                            if html:
+                                soup = BeautifulSoup(html, "lxml")
+                        if soup:
+                            loaded_url = url
+                            strategy = tier
+                            break
+                    if soup:
+                        break
+
+                if soup:
+                    stats["cached"] += 1
+                    if strategy != cached_strategy or loaded_url != cached_loaded_url:
+                        save_domain_strategy(domain, strategy, loaded_url)
+                    logger.info("%s: cached '%s' → '%s' via %s", domain, cached_strategy, strategy, loaded_url)
+                else:
+                    save_domain_strategy(domain, "failed", cached_loaded_url)
+                    stats["failed"] += 1
+                    logger.warning("Could not load %s (all tiers exhausted), skipping", domain)
+                    continue
         else:
             soup, loaded_url, strategy = fetch_homepage_with_www_fallback(domain, playwright=playwright)
 
-        if soup is None:
-            stats["failed"] += 1
-            logger.warning("Could not load %s, skipping", domain)
-            continue
+            if soup is None:
+                stats["failed"] += 1
+                logger.warning("Could not load %s, skipping", domain)
+                continue
 
-        if strategy == "playwright":
-            stats["playwright_fix"] += 1
-            logger.info("%s: Playwright fix — loaded via %s", domain, loaded_url)
-        elif loaded_url != f"https://www.{domain}":
-            if domain in ("cvasu.ac.bd", "daffodilvarsity.edu.bd", "bdu.ac.bd"):
-                stats["tls_fix"] += 1
-                logger.info("%s: TLS fix — loaded via %s", domain, loaded_url)
-            elif domain == "rmstu.portal.gov.bd":
-                stats["dns_fix"] += 1
-                logger.info("%s: DNS fix — www subdomain missing, loaded bare", domain)
+            save_domain_strategy(domain, strategy, loaded_url)
+
+            if strategy == "playwright":
+                stats["playwright_fix"] += 1
+                logger.info("%s: Playwright fix — loaded via %s", domain, loaded_url)
+            elif loaded_url != f"https://www.{domain}":
+                if domain in ("cvasu.ac.bd", "daffodilvarsity.edu.bd", "bdu.ac.bd"):
+                    stats["tls_fix"] += 1
+                    logger.info("%s: TLS fix — loaded via %s", domain, loaded_url)
+                elif domain == "rmstu.portal.gov.bd":
+                    stats["dns_fix"] += 1
+                    logger.info("%s: DNS fix — www subdomain missing, loaded bare", domain)
+                else:
+                    stats["curl_fix"] += 1
+                    logger.info("%s: loaded via bare domain fallback", domain)
             else:
-                stats["curl_fix"] += 1
-                logger.info("%s: loaded via bare domain fallback", domain)
-        else:
-            stats["ok"] += 1
+                stats["ok"] += 1
 
         for a_tag in soup.find_all("a", href=True):
             href = a_tag["href"].strip()
@@ -349,9 +412,11 @@ def run(playwright: PlaywrightManager = None):
 
     logger.info(
         "homepage_links: found %d new conference-like links "
-        "(ok=%d, tls_fix=%d, dns_fix=%d, curl_fix=%d, playwright_fix=%d, failed=%d)",
+        "(ok=%d, tls_fix=%d, dns_fix=%d, curl_fix=%d, playwright_fix=%d, "
+        "cached=%d, failed=%d)",
         len(candidates),
         stats["ok"], stats["tls_fix"],
-        stats["dns_fix"], stats["curl_fix"], stats["playwright_fix"], stats["failed"],
+        stats["dns_fix"], stats["curl_fix"], stats["playwright_fix"],
+        stats["cached"], stats["failed"],
     )
     return candidates
