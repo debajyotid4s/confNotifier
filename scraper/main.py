@@ -4,7 +4,7 @@ import re
 import sys
 import time
 from datetime import datetime, date
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import requests
 
@@ -22,15 +22,47 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ── URL normalization for consistent dedup ──
+
+
+def _normalize_website(url: str) -> str:
+    """Normalize a conference website URL for consistent dedup comparison.
+
+    Strips trailing slash, lowercases hostname, strips www. prefix,
+    forces https scheme. Returns empty string for empty/None input.
+    """
+    if not url:
+        return url
+    url = url.strip()
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url
+    if not parsed.hostname:
+        return url
+    hostname = parsed.hostname.lower()
+    if hostname.startswith("www."):
+        hostname = hostname[4:]
+    path = parsed.path.rstrip("/")
+    return urlunparse(("https", hostname, path, parsed.params, parsed.query, parsed.fragment))
+
+
 # ── DB helpers — each opens, uses, and closes its own connection in <1s ──
 
 
-def _save_conference(conf: dict) -> bool:
-    """Open a fresh DB connection, save conference, close immediately."""
+def _save_conference(conf: dict) -> tuple[bool, bool]:
+    """Open a fresh DB connection, save conference, close immediately.
+
+    Normalizes the website URL for consistent dedup.
+    Returns (success, was_inserted).
+    success: True if DB write succeeded.
+    was_inserted: True if a new row was inserted (not an update of an existing row).
+    """
     conn = None
     try:
         conn = get_connection()
         cur = conn.cursor()
+        website = _normalize_website(conf.get("website", ""))
         cur.execute(
             """
             INSERT INTO conferences
@@ -45,22 +77,25 @@ def _save_conference(conf: dict) -> bool:
                 submission_deadline_2 = COALESCE(EXCLUDED.submission_deadline_2, conferences.submission_deadline_2),
                 submission_deadline_2_label = COALESCE(EXCLUDED.submission_deadline_2_label, conferences.submission_deadline_2_label),
                 updated_at = NOW()
+            RETURNING created_at = updated_at AS inserted
             """,
             (
                 conf.get("title"), conf.get("date_start"), conf.get("date_end"),
-                conf.get("city"), "Bangladesh", conf.get("website"),
+                conf.get("city"), "Bangladesh", website,
                 conf.get("organizer"), conf.get("category"),
                 conf.get("confidence"), conf.get("submission_deadline"),
                 conf.get("submission_deadline_label"), conf.get("submission_deadline_2"),
                 conf.get("submission_deadline_2_label"), conf.get("raw_source"), False,
             )
         )
+        row = cur.fetchone()
         conn.commit()
         cur.close()
-        return True
+        was_inserted = bool(row and row[0])
+        return True, was_inserted
     except Exception as e:
         logger.error("save_conference error: %s", e)
-        return False
+        return False, False
     finally:
         if conn:
             try:
@@ -108,7 +143,7 @@ def _load_known_websites() -> set:
         conn = get_connection()
         cur = conn.cursor()
         cur.execute("SELECT website FROM conferences")
-        websites = {row[0] for row in cur.fetchall() if row[0]}
+        websites = {_normalize_website(row[0]) for row in cur.fetchall() if row[0]}
         cur.close()
         return websites
     except Exception as e:
@@ -815,7 +850,7 @@ def run():
                 # Pre-check 1: skip if conference website already in DB
                 # (catches duplicates before wasting an LLM call)
                 # Root_year sources already verified by _is_edition_in_db — skip this check
-                if not root_year_info and url in known_websites:
+                if not root_year_info and _normalize_website(url) in known_websites:
                     logger.info("Duplicate (URL already known), skipping: %s", url)
                     _mark_url_status(url, "extracted")
                     skipped += 1
@@ -893,7 +928,7 @@ def run():
                     except (ValueError, TypeError):
                         pass
 
-                if not root_year_info and result.get("website", "") in known_websites:
+                if not root_year_info and _normalize_website(result.get("website", "")) in known_websites:
                     logger.info("Duplicate conference, marking done: %s", url)
                     _mark_url_status(url, "extracted")
                     skipped += 1
@@ -901,53 +936,57 @@ def run():
                     continue
 
                 result["raw_source"] = url
-                if not _save_conference(result):
+                save_success, was_inserted = _save_conference(result)
+                if not save_success:
                     # DB write failed — do NOT mark as terminal
                     # Leave URL as-is so next run retries
                     failed += 1
                     time.sleep(5)
                     continue
 
-                logger.info("New conference saved: %s", result.get("title"))
                 _mark_url_status(url, "extracted")
 
-                # Only notify if submission deadline is within 30 days
-                # (or no deadline extracted — discovery is still valuable)
-                should_notify = True
-                submission_dl = result.get("submission_deadline")
-                if submission_dl:
-                    try:
-                        dl_date = datetime.strptime(submission_dl, "%Y-%m-%d").date()
-                        days_until_dl = (dl_date - datetime.now().date()).days
-                        if days_until_dl > 30:
-                            logger.info(
-                                "Submission deadline %s is %d days away — "
-                                "saving but NOT notifying yet: %s",
-                                submission_dl, days_until_dl, result.get("title")
-                            )
-                            should_notify = False
-                        elif days_until_dl < 0:
-                            logger.info(
-                                "Submission deadline %s already past — "
-                                "saving but NOT notifying: %s",
-                                submission_dl, result.get("title")
-                            )
-                            should_notify = False
-                    except (ValueError, TypeError):
-                        pass
+                if was_inserted:
+                    logger.info("New conference saved: %s", result.get("title"))
 
-                if should_notify:
-                    notify(result)
-                    # Mark as notified (with retry to prevent duplicates)
-                    _mark_notified_with_retry_by_website(result.get("website"))
+                    # Only notify if submission deadline is within 30 days
+                    should_notify = True
+                    submission_dl = result.get("submission_deadline")
+                    if submission_dl:
+                        try:
+                            dl_date = datetime.strptime(submission_dl, "%Y-%m-%d").date()
+                            days_until_dl = (dl_date - datetime.now().date()).days
+                            if days_until_dl > 30:
+                                logger.info(
+                                    "Submission deadline %s is %d days away — "
+                                    "saving but NOT notifying yet: %s",
+                                    submission_dl, days_until_dl, result.get("title")
+                                )
+                                should_notify = False
+                            elif days_until_dl < 0:
+                                logger.info(
+                                    "Submission deadline %s already past — "
+                                    "saving but NOT notifying: %s",
+                                    submission_dl, result.get("title")
+                                )
+                                should_notify = False
+                        except (ValueError, TypeError):
+                            pass
+
+                    if should_notify:
+                        notify(result)
+                        _mark_notified_with_retry_by_website(result.get("website"))
+                    else:
+                        logger.info(
+                            "Conference saved (not yet notified): %s — "
+                            "will notify when deadline is within 30 days",
+                            result.get("title")
+                        )
+                    new_count += 1
                 else:
-                    logger.info(
-                        "Conference saved (not yet notified): %s — "
-                        "will notify when deadline is within 30 days",
-                        result.get("title")
-                    )
+                    logger.info("Conference already in DB (updated deadlines): %s", result.get("title"))
+                    skipped += 1
 
-                new_count += 1
                 time.sleep(5)
 
             logger.info(
