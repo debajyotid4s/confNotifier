@@ -42,11 +42,14 @@ def _is_safe_url(url: str) -> bool:
     return True
 
 CONF_PATTERNS = [
-    re.compile(r"ieee[a-z]+\d{4}"),
-    re.compile(r"ic[a-z]+\d{4}"),
+    # Conference name + optional separator + year (e.g. ieee-2026, icmiee.2026)
+    re.compile(r"ieee[a-z]+[\-_.]?\d{4}"),
+    re.compile(r"ic[a-z]+[\-_.]?\d{4}"),
     re.compile(r"[a-z]+con\.\w+"),
     re.compile(r"[a-z]+icon\.\w+"),
-    re.compile(r"conf[a-z]+\d{4}"),
+    re.compile(r"conf[a-z]+[\-_.]?\d{4}"),
+    # Generic path-segment pattern: /{word}-{year} or /{word}{year}
+    re.compile(r"/[a-z]{3,}[\-_.]?\d{4}"),
     re.compile(r"symposium"),
     re.compile(r"iccit"),
 ]
@@ -102,8 +105,6 @@ def _is_conference_link(href, domain):
     except Exception:
         return False
     if not parsed.netloc:
-        return False
-    if domain in parsed.netloc:
         return False
     lower = href.lower()
     for pat in CONF_PATTERNS:

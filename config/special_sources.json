@@ -47,5 +47,17 @@
     "base_domain": "ruet.ac.bd",
     "known_prefixes": ["isee", "iceab", "icaeee"],
     "probe_years": [2026, 2027, 2028]
+  },
+  {
+    "name": "conf.info.bd",
+    "type": "conf_info_bd",
+    "url": "https://conf.info.bd"
+  },
+  {
+    "name": "JU Research Society",
+    "type": "path",
+    "base_url": "https://jurs.info",
+    "paths": ["/jicirsigc-{year}", "/jicirsigc{year}"],
+    "probe_years": [2026, 2027, 2028]
   }
 ]

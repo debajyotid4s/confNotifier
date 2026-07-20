@@ -1,286 +1,245 @@
+import json
 import logging
+import os
+import re
 import time
 
-import psycopg2
 import requests
 
-from db import get_connection, save_seen_link
+from db import get_connection
 
 logger = logging.getLogger(__name__)
 
-# 3 broad queries instead of 159 individual domain queries.
-# %.ac.bd  → covers buet.ac.bd, cuet.ac.bd, ruet.ac.bd, kuet.ac.bd, etc.
-# %.edu.bd → covers aiub.edu.bd, daffodilvarsity.edu.bd, ulab.edu.bd, etc.
-# %.sust.edu → covers sust.edu subdomains specifically
-# %.edu    → covers northsouth.edu, iubat.edu, aust.edu, etc.
-BD_TLD_QUERIES = [
-    "%.ac.bd",
-    "%.edu.bd",
-    "%.sust.edu",
-    "%.edu",
+MAX_QUERIES_PER_RUN = 8
+CERTSPOTTER_URL = "https://api.certspotter.com/v1/issuances"
+
+KNOWN_JUNK_PATTERNS = [
+    "autodiscover", "cpcontacts", "convocation", "convapi",
+    "ictcell", "ictserver", "ictvm", "webdisk", "library",
+    "contact", "mail", "app", "heqep", "emss", "clab", "econ",
+    "info", "secondaryschool", "icpcdhaka", "icpcbd",
+    "ict.", "www.ict.", "ieeecomsoc", "ieee-comsoc",
+    "email", "moodle", "webmail", "vpn", "remote",
+    "portal", "sis", "erp", "accounts", "admission",
+    "campus", "registrar", "result", "notice",
 ]
 
-# Keywords checked against subdomain names only — keep short/slug-like patterns
-# that actually appear in subdomain strings, not full English phrases
-KEYWORDS = [
-    "conference",
-    "symposium",
-    "workshop",
-    "congress",
-    "summit",
-    "ieee",
-    "icon",
-    "icece",
-    "iccit",
-    "icmiee",
-    "icace",
-    "icca",
-    "iciset",
-    "peeiacon",
-    "raaicon",
-    "spicscon",
-    "becithcon",
+CONF_PREFIXES = ["ic", "conf", "conference", "symposium", "workshop", "congress", "summit"]
+CONF_KEYWORDS = [
+    "ieee", "icon", "icece", "iccit", "icmiee", "icace", "icca",
+    "iciset", "peeiacon", "raaicon", "spicscon", "becithcon",
     "icefront",
 ]
 
-# Subdomains starting with these prefixes are never conferences — blocked early
-SUBDOMAIN_BLOCKLIST = [
-    "cpcontacts",
-    "convocation",
-    "convapi",
-    "ictcell",
-    "ictserver",
-    "ictvm",
-    "webdisk",
-    "library",
-    "contact",
-    "mail",
-    "app",
-    "heqep",
-    "emss",
-    "clab",
-    "econ",
-    "info",
-    "secondaryschool",
-    "icpcdhaka",        # old ICPC event, not a conference site
-    "icpcbd",
-    "ict.",             # blocks ict.mbstu.ac.bd, ict.nu.ac.bd
-    "www.ict.",         # blocks www.ict.mbstu.ac.bd
-    "ieeecomsoc",       # IEEE COMSOC branch page, not a conference
-    "ieee-comsoc",      # IEEE COMSOC branch page, not a conference
-]
-
-# Exact Bangladesh university domains that use plain .edu TLD
-# (not .edu.bd) — prevents catching MIT, Harvard, etc. from %.edu query
-BD_EDU_EXACT_DOMAINS = {
-    "sust.edu",
-    "northsouth.edu",
-    "iubat.edu",
-    "aust.edu",
-    "aiub.edu",
-    "uap-bd.edu",
-    "ewubd.edu",
-    "iub.edu.bd",
-}
-
 
 def _is_conference_subdomain(name: str) -> bool:
-    """Return True if the subdomain name looks like a conference site.
-
-    First rejects known non-conference prefixes, then checks for
-    conference-like patterns.
-    """
-    lower = name.lower()
-
-    # Strip www. prefix before checking
+    lower = name.lower().lstrip("*.")
     if lower.startswith("www."):
         lower = lower[4:]
-
-    # Block obvious non-conference subdomains immediately
-    if any(lower.startswith(block) for block in SUBDOMAIN_BLOCKLIST):
+    for junk in KNOWN_JUNK_PATTERNS:
+        if lower.startswith(junk):
+            return False
+    years = re.findall(r"(20\d{2})", lower)
+    if years and max(int(y) for y in years) < 2025:
         return False
-
-    # Strong positive signals: starts with 'ic' or 'conf'
-    if lower.startswith("ic") or lower.startswith("conf"):
+    if any(lower.startswith(p) for p in CONF_PREFIXES):
         return True
-
-    # Keyword match in subdomain string
-    return any(kw in lower for kw in KEYWORDS)
+    return any(kw in lower for kw in CONF_KEYWORDS)
 
 
-def _is_bd_edu(name: str) -> bool:
-    """For %.edu results, keep only known Bangladesh university subdomains.
-
-    Uses exact domain suffix matching to avoid catching non-BD .edu domains
-    like mit.edu, harvard.edu, etc.
-    """
-    lower = name.lower()
-    return any(
-        lower == domain or lower.endswith("." + domain)
-        for domain in BD_EDU_EXACT_DOMAINS
-    )
+def _load_domains() -> list[str]:
+    with open("config/universities.json") as f:
+        return json.load(f)
 
 
-def _fetch_crt(query: str) -> list:
-    """Fetch crt.sh results for a TLD query with 3 retries.
+def _load_cursors() -> dict[str, int]:
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT domain, last_id FROM certspotter_cursor")
+        result = dict(cur.fetchall())
+        cur.close()
+        return result
+    finally:
+        conn.close()
 
-    Retries on 502, 503, and timeout errors with exponential backoff
-    (5s, 10s, 20s). Returns list of certificate entries or empty list on failure.
-    """
-    url = f"https://crt.sh/?q={query}&output=json"
-    delays = [5, 10, 20]
 
-    for attempt in range(len(delays) + 1):  # 4 attempts total: attempt 0 + 3 retries
-        try:
-            resp = requests.get(
-                url,
-                timeout=60,
-                headers={"User-Agent": "curl/8.0"},
+def _save_cursor(domain: str, last_id: int) -> None:
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO certspotter_cursor (domain, last_id) VALUES (%s, %s) "
+            "ON CONFLICT (domain) DO UPDATE SET last_id = EXCLUDED.last_id",
+            (domain, last_id),
+        )
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        logger.error("crt_monitor: failed to save cursor for %s: %s", domain, e)
+    finally:
+        conn.close()
+
+
+def _load_seen_urls() -> set[str]:
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT url FROM seen_links WHERE status IN "
+            "('pending', 'not_conference', 'low_confidence', 'extracted')"
+        )
+        result = {row[0].replace("https://", "").replace("http://", "") for row in cur.fetchall()}
+        cur.close()
+        return result
+    finally:
+        conn.close()
+
+
+def _save_candidates(candidates: list[str]) -> None:
+    if not candidates:
+        return
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        for url in candidates:
+            cur.execute(
+                "INSERT INTO seen_links (url, source, status) VALUES (%s, 'crt_monitor', 'pending') "
+                "ON CONFLICT (url) DO NOTHING",
+                (url,),
             )
-            if resp.status_code == 200:
-                return resp.json()
-            elif resp.status_code == 404:
-                logger.info("crt.sh 404 for %s (no certs found)", query)
-                return []
-            elif resp.status_code in [502, 503]:
-                if attempt < len(delays):
-                    logger.warning(
-                        "crt.sh HTTP %d for %s, retrying in %ds...",
-                        resp.status_code, query, delays[attempt],
-                    )
-                    time.sleep(delays[attempt])
-                else:
-                    logger.critical(
-                        "crt.sh %s failed after %d retries, skipping",
-                        query, len(delays),
-                    )
-                    return []
-            else:
-                logger.warning(
-                    "crt.sh HTTP %d for %s, skipping",
-                    resp.status_code, query,
-                )
-                return []
-        except requests.exceptions.Timeout:
-            if attempt < len(delays):
-                logger.warning(
-                    "crt.sh timeout for %s, retrying in %ds...",
-                    query, delays[attempt],
-                )
-                time.sleep(delays[attempt])
-            else:
-                logger.critical(
-                    "crt.sh %s failed after %d retries, skipping",
-                    query, len(delays),
-                )
-                return []
-        except Exception as e:
-            logger.error("crt.sh unexpected error for %s: %s", query, e)
-            return []
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        logger.error("crt_monitor: failed to save candidates: %s", e)
+        raise
+    finally:
+        conn.close()
 
-    logger.critical("crt.sh %s failed after %d retries, skipping", query, len(delays))
+
+def _query_certspotter(domain: str, after_id: int | None) -> tuple[list[str], int | None, bool]:
+    params = {
+        "domain": domain,
+        "include_subdomains": "true",
+        "match_wildcards": "true",
+    }
+    if after_id:
+        params["after"] = after_id
+
+    key = os.environ["CERTSPOTTER_API_KEY"]
+    headers = {"Authorization": f"Bearer {key}"}
+
+    resp = requests.get(CERTSPOTTER_URL, params=params, headers=headers, timeout=15)
+
+    if resp.status_code == 429:
+        logger.warning("certspotter: 429 rate limited for %s", domain)
+        return [], None, True
+    if resp.status_code == 404:
+        return [], 0, False
+    if resp.status_code != 200:
+        logger.warning("certspotter: HTTP %d for %s", resp.status_code, domain)
+        return [], None, False
+
+    try:
+        data = resp.json()
+    except ValueError:
+        logger.warning("certspotter: non-JSON response for %s", domain)
+        return [], None, False
+    if not data:
+        return [], 0, False
+
+    dns_names = []
+    last_id = 0
+    for item in data:
+        try:
+            item_id = item["id"]
+        except (KeyError, TypeError):
+            continue
+        if item_id > last_id:
+            last_id = item_id
+        for name in item.get("dns_names", []):
+            dns_names.append(name.strip().lower())
+
+    return dns_names, last_id, False
+
+
+def _crtsh_fallback(domain: str) -> list[str]:
+    url = f"https://crt.sh/?q=%.{domain}&output=json"
+    try:
+        resp = requests.get(url, timeout=60, headers={"User-Agent": "curl/8.0"})
+        if resp.status_code == 200:
+            names = []
+            for entry in resp.json():
+                for raw in entry.get("name_value", "").split("\n"):
+                    raw = raw.strip().lower().lstrip("*.")
+                    if raw:
+                        names.append(raw)
+            return names
+    except Exception as e:
+        logger.warning("crtsh fallback failed for %s: %s", domain, e)
     return []
 
 
-def run() -> list:
-    """Query crt.sh and return all candidate URLs for extraction.
+def run() -> list[str]:
+    if not os.environ.get("CERTSPOTTER_API_KEY"):
+        logger.critical("certspotter: CERTSPOTTER_API_KEY not set")
+        return []
 
-    Uses three separate short-lived DB connections to avoid Neon's
-    idle connection timeout during long crt.sh waits.
-    """
+    all_domains = _load_domains()
+    cursors = _load_cursors()
+    seen = _load_seen_urls()
     candidates = []
 
-    # ── Phase A: Load already-seen subdomains (connection lives ~1s) ──
-    known = set()
-    try:
-        conn = get_connection()
+    unscanned = [d for d in all_domains if d not in cursors]
+    scanned = [d for d in all_domains if d in cursors]
+    batch = (unscanned + scanned)[:MAX_QUERIES_PER_RUN]
+
+    cursor_updates = {}
+    rate_limited = False
+
+    for domain in batch:
+        if rate_limited:
+            break
+
+        after_id = cursors.get(domain)
+        dns_names = []
+        new_cursor = None
+        is_rate_limited = False
+
         try:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT url FROM seen_links WHERE (url LIKE 'https://%%' OR url LIKE 'http://%%') "
-                "AND status IN ('pending', 'not_conference', 'low_confidence', 'extracted')"
-            )
-            known = {row[0].replace("https://", "").replace("http://", "") for row in cur.fetchall()}
-            cur.close()
-        finally:
-            conn.close()   # closed BEFORE crt.sh queries start
-    except Exception as e:
-        logger.error("crt_monitor: failed to load known subdomains: %s", e)
-        # Continue anyway — at minimum we have empty known set
+            dns_names, new_cursor, is_rate_limited = _query_certspotter(domain, after_id)
+        except requests.RequestException as e:
+            logger.warning("certspotter: request error for %s: %s", domain, e)
 
-    # ── Phase B: Query crt.sh (no DB connection open) ──
-    new_subdomains = []
-    seen_in_run = set(known)
+        if is_rate_limited:
+            rate_limited = True
+            break
 
-    for query in BD_TLD_QUERIES:
-        logger.info("crt_monitor: querying crt.sh for %s ...", query)
-        entries = _fetch_crt(query)
+        if dns_names:
+            cursor_updates[domain] = new_cursor
+        elif new_cursor is None:
+            logger.info("certspotter: fallback to crt.sh for %s", domain)
+            dns_names = _crtsh_fallback(domain)
+        else:
+            cursor_updates[domain] = 0
 
-        if not entries:
-            continue
+        for name in dns_names:
+            if not _is_conference_subdomain(name):
+                continue
+            bare = name.replace("www.", "", 1)
+            if bare in seen or f"www.{bare}" in seen:
+                continue
+            url = f"https://{name}"
+            candidates.append(url)
+            seen.add(name)
+            seen.add(bare)
+            logger.info("crt_monitor: new candidate -> %s", url)
 
-        logger.info(
-            "crt_monitor: %d cert entries returned for %s",
-            len(entries), query,
-        )
+        time.sleep(0.2)
 
-        for entry in entries:
-            name_value = entry.get("name_value", "")
-            for raw_name in name_value.split("\n"):
-                raw_name = raw_name.strip().lower().lstrip("*.")
+    _save_candidates(candidates)
+    for domain, last_id in cursor_updates.items():
+        _save_cursor(domain, last_id)
 
-                if not raw_name:
-                    continue
-                if query == "%.edu" and not _is_bd_edu(raw_name):
-                    continue
-                if not _is_conference_subdomain(raw_name):
-                    continue
-                if raw_name in seen_in_run:
-                    continue
-
-                # Skip www variant if bare domain already seen (or vice versa)
-                bare = raw_name.replace("www.", "", 1)
-                if bare in seen_in_run or f"www.{bare}" in seen_in_run:
-                    continue
-
-                seen_in_run.add(raw_name)
-                new_subdomains.append((raw_name, query))
-                candidates.append(f"https://{raw_name}")
-                logger.info("crt_monitor: new candidate → https://%s", raw_name)
-
-        time.sleep(5)
-
-    # ── Phase C: Save new subdomains (fresh connection, lives ~1s) ──
-    if new_subdomains:
-        try:
-            conn = get_connection()
-            try:
-                cur = conn.cursor()
-                for subdomain, query in new_subdomains:
-                    try:
-                        cur.execute(
-                            """
-                            INSERT INTO known_subdomains (subdomain, domain)
-                            VALUES (%s, %s)
-                            ON CONFLICT (subdomain) DO UPDATE SET last_seen = NOW()
-                            """,
-                            (subdomain, query),
-                        )
-                    except psycopg2.Error as e:
-                        logger.error(
-                            "crt_monitor: DB error saving %s: %s", subdomain, e
-                        )
-                conn.commit()
-                cur.close()
-            finally:
-                conn.close()
-        except Exception as e:
-            logger.error("crt_monitor: failed to save new subdomains: %s", e)
-            # Not fatal — subdomains will be re-discovered next run
-
-    logger.info(
-        "crt_monitor: finished — %d new candidates, %d re-queued unextracted",
-        len(new_subdomains),
-        len(candidates) - len(new_subdomains),
-    )
+    logger.info("crt_monitor: %d new candidate(s) from %d domain(s)", len(candidates), len(batch))
     return candidates
