@@ -95,6 +95,16 @@ def _load_domains(path="config/universities.json"):
         return json.load(f)
 
 
+NON_HTML_EXTENSIONS = {
+    ".pdf", ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp",
+    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".zip", ".rar", ".7z", ".tar", ".gz",
+    ".mp4", ".mp3", ".mov", ".avi", ".wmv",
+    ".ico", ".css", ".js", ".xml", ".json", ".csv",
+    ".exe", ".msi", ".deb", ".rpm",
+}
+
+
 def _is_conference_link(href, domain):
     if not href:
         return False
@@ -105,6 +115,10 @@ def _is_conference_link(href, domain):
     except Exception:
         return False
     if not parsed.netloc:
+        return False
+    # Skip non-HTML resources (PDFs, images, documents, etc.)
+    path = parsed.path.lower()
+    if any(path.endswith(ext) for ext in NON_HTML_EXTENSIONS):
         return False
     lower = href.lower()
     for pat in CONF_PATTERNS:
