@@ -2,6 +2,7 @@ import logging
 import random
 import time
 import threading
+from urllib.parse import urlparse, urlunparse, quote, unquote
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from playwright_stealth import Stealth
@@ -144,6 +145,17 @@ class PlaywrightManager:
         # Relaunch — __enter__ checks _page is None, so it will re-init
         self.__enter__()
 
+    def _normalize_url(self, url: str) -> str:
+        """Percent-encode special chars (spaces, unicode, etc.) in the URL path
+        without double-encoding already-encoded sequences."""
+        try:
+            parsed = urlparse(url)
+            path = quote(unquote(parsed.path), safe="/:@!$&'()*+,;=-._~%")
+            query = quote(unquote(parsed.query), safe="&=")
+            return urlunparse((parsed.scheme, parsed.netloc, path, parsed.params, query, parsed.fragment))
+        except Exception:
+            return url
+
     def _human_like_scroll(self):
         """Inject small randomized scroll to mimic human behavior."""
         steps = random.randint(3, 5)
@@ -169,6 +181,7 @@ class PlaywrightManager:
             return None
 
         with self._page_lock:
+            url = self._normalize_url(url)
             for attempt in range(2):
                 try:
                     self._page.goto(url, timeout=30000, wait_until="domcontentloaded")
@@ -205,6 +218,7 @@ class PlaywrightManager:
             return None
 
         with self._page_lock:
+            url = self._normalize_url(url)
             for attempt in range(2):
                 try:
                     self._page.goto(url, timeout=30000, wait_until="domcontentloaded")
