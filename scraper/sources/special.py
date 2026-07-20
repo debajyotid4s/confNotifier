@@ -42,7 +42,15 @@ def _is_seen(url):
                 pass
 
 
-def _probe_url(url, timeout=10):
+def _probe_url(url, timeout=10, min_content=500):
+    """Probe a URL with requests. Returns True if reachable and has meaningful content.
+
+    Args:
+        url: The URL to probe.
+        timeout: Request timeout in seconds.
+        min_content: Minimum response body length to consider valid.
+                     Use 200 for SPA pages that have a small HTML shell.
+    """
     if not _is_safe_url(url):
         logger.warning("SSRF blocked: %s", url)
         return False
@@ -53,27 +61,90 @@ def _probe_url(url, timeout=10):
             headers={"User-Agent": USER_AGENT},
             allow_redirects=True,
         )
-        return resp.status_code == 200 and len(resp.text) > 500
+        return resp.status_code == 200 and len(resp.text) > min_content
     except requests.RequestException as e:
         logger.debug("Probe failed for %s: %s", url, e)
     return False
 
 
+# ── Handler: "conf_info_bd" (conf.info.bd HTML table scraper) ──
+
+
+def _handle_conf_info_bd(source):
+    """Scrape conf.info.bd's HTML table of upcoming conferences.
+
+    The site has 3 tables (IEEE, ACM, Others). Each table row has 6 columns,
+    the last being a <a class="conf-link"> with the conference website URL.
+    """
+    url = source.get("url", "https://conf.info.bd")
+    logger.info("conf_info_bd: fetching %s", url)
+
+    try:
+        resp = requests.get(url, timeout=15, headers={"User-Agent": USER_AGENT})
+        if resp.status_code != 200:
+            logger.error("conf_info_bd: HTTP %d from %s", resp.status_code, url)
+            return []
+    except requests.RequestException as e:
+        logger.error("conf_info_bd: request failed for %s: %s", url, e)
+        return []
+
+    soup = BeautifulSoup(resp.text, "lxml")
+    candidates = []
+
+    # Select all <a class="conf-link"> — this is the 6th column in each data row
+    for link_tag in soup.select("a.conf-link"):
+        href = link_tag.get("href", "").strip()
+        if not href:
+            continue
+        if not _is_safe_url(href):
+            logger.warning("conf_info_bd: SSRF blocked: %s", href)
+            continue
+        if _is_seen(href):
+            continue
+        save_seen_link(href, source="special")
+        candidates.append(href)
+        logger.info("conf_info_bd: new URL found: %s", href)
+
+    logger.info("conf_info_bd: found %d new candidate(s) from %s", len(candidates), url)
+    return candidates
+
+
 # ── Handler: "path" (ICCIT-style: probe /YYYY/home/ then /YYYY/) ──
+#     Enhanced to support optional "paths" and "probe_years" fields.
 
 
 def _handle_path(source):
     base_url = source["base_url"].rstrip("/")
     year = datetime.now().year
     candidates = []
+
+    # Use provided probe_years or default to current year and next
+    probe_years = source.get("probe_years", [year, year + 1])
+
+    # Use provided paths or default to standard year-based patterns
+    custom_paths = source.get("paths")
+    if custom_paths:
+        # Explicit path templates with {year} placeholder — probe exactly these
+        for y in probe_years:
+            for path_template in custom_paths:
+                probe_url = base_url + path_template.replace("{year}", str(y))
+                if _is_seen(probe_url):
+                    continue
+                # SPAs (React) often have small HTML shells — use 200-byte threshold
+                if _probe_url(probe_url, min_content=200):
+                    save_seen_link(probe_url, source="special")
+                    candidates.append(probe_url)
+                    logger.info("special/path: new URL found: %s", probe_url)
+        return candidates
+
+    # Original behavior: probe /{year}/home/ and /{year}/
     path_cache = load_special_path_cache()
     cached_entry = path_cache.get(base_url)
     _, cached_pattern = cached_entry if cached_entry else (None, None)
 
-    for y in [str(year), str(year + 1)]:
+    for y in [str(y) for y in probe_years]:
         patterns = [f"{base_url}/{y}/home/", f"{base_url}/{y}/"]
 
-        # Try cached pattern first
         if cached_pattern:
             cached_url = cached_pattern.replace("{year}", str(y))
             if not _is_seen(cached_url) and _probe_url(cached_url):
@@ -81,12 +152,12 @@ def _handle_path(source):
                 candidates.append(cached_url)
                 logger.info("special/path (cached): new URL found: %s", cached_url)
                 continue
-            cached_pattern = None  # pattern failed for this year, re-probe
+            cached_pattern = None
 
         url = None
         for candidate in patterns:
             if _is_seen(candidate):
-                break  # already known — don't also try the fallback
+                break
             if _probe_url(candidate):
                 url = candidate
                 break
@@ -97,7 +168,7 @@ def _handle_path(source):
         logger.info("special/path: new URL found: %s", url)
         pattern_template = url.replace(f"/{y}/", "/{year}/")
         save_special_path_cache(base_url, y, pattern_template)
-        cached_pattern = pattern_template  # reuse for year+1 below
+        cached_pattern = pattern_template
 
     return candidates
 
@@ -266,6 +337,7 @@ _HANDLERS = {
     "path": _handle_path,
     "root_year": _handle_root_year,
     "subdomain_probe": _handle_subdomain_probe,
+    "conf_info_bd": _handle_conf_info_bd,
 }
 
 

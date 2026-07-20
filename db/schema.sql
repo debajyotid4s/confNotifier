@@ -1,12 +1,3 @@
-CREATE TABLE IF NOT EXISTS known_subdomains (
-    id SERIAL PRIMARY KEY,
-    subdomain TEXT NOT NULL UNIQUE,
-    domain TEXT NOT NULL,
-    extracted BOOLEAN NOT NULL DEFAULT FALSE,
-    first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
 CREATE TABLE IF NOT EXISTS seen_links (
     id SERIAL PRIMARY KEY,
     url TEXT NOT NULL UNIQUE,
@@ -51,7 +42,6 @@ CREATE TABLE IF NOT EXISTS conferences (
 ALTER TABLE conferences DROP CONSTRAINT IF EXISTS conferences_website_key;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_conferences_website_date ON conferences (website, date_start);
 CREATE INDEX IF NOT EXISTS idx_conferences_date_start ON conferences (date_start);
-CREATE INDEX IF NOT EXISTS idx_known_subdomains_subdomain ON known_subdomains (subdomain);
 CREATE INDEX IF NOT EXISTS idx_seen_links_url ON seen_links (url);
 CREATE INDEX IF NOT EXISTS idx_seen_links_status ON seen_links (status);
 
@@ -72,4 +62,9 @@ CREATE TABLE IF NOT EXISTS special_path_cache (
     year INTEGER NOT NULL,
     path_pattern TEXT NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS certspotter_cursor (
+    domain TEXT PRIMARY KEY,
+    last_id BIGINT NOT NULL
 );
