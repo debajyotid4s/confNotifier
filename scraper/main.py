@@ -50,13 +50,14 @@ def _normalize_website(url: str) -> str:
 # ── DB helpers — each opens, uses, and closes its own connection in <1s ──
 
 
-def _save_conference(conf: dict) -> tuple[bool, bool]:
+def _save_conference(conf: dict) -> tuple[bool, bool, int | None]:
     """Open a fresh DB connection, save conference, close immediately.
 
     Normalizes the website URL for consistent dedup.
-    Returns (success, was_inserted).
+    Returns (success, was_inserted, conf_id).
     success: True if DB write succeeded.
     was_inserted: True if a new row was inserted (not an update of an existing row).
+    conf_id: The conference ID if the write succeeded, None otherwise.
     """
     conn = None
     try:
@@ -77,7 +78,7 @@ def _save_conference(conf: dict) -> tuple[bool, bool]:
                 submission_deadline_2 = COALESCE(EXCLUDED.submission_deadline_2, conferences.submission_deadline_2),
                 submission_deadline_2_label = COALESCE(EXCLUDED.submission_deadline_2_label, conferences.submission_deadline_2_label),
                 updated_at = NOW()
-            RETURNING created_at = updated_at AS inserted
+            RETURNING created_at = updated_at AS inserted, id
             """,
             (
                 conf.get("title"), conf.get("date_start"), conf.get("date_end"),
@@ -92,10 +93,11 @@ def _save_conference(conf: dict) -> tuple[bool, bool]:
         conn.commit()
         cur.close()
         was_inserted = bool(row and row[0])
-        return True, was_inserted
+        conf_id = row[1] if row else None
+        return True, was_inserted, conf_id
     except Exception as e:
         logger.error("save_conference error: %s", e)
-        return False, False
+        return False, False, None
     finally:
         if conn:
             try:
@@ -528,12 +530,13 @@ def _send_deadline_change_notification(title, website, changes) -> None:
 def _verify_deadlines(playwright) -> None:
     """
     Re-extract submission deadlines for all upcoming conferences.
-    Runs once per week. If a deadline changed, updates the DB and
+    Runs at most once per day (guarded by daily_tasks table).
+    If a deadline changed, updates the DB and
     sends a Telegram notification about the extension/change.
     Only processes conferences with date_start > today.
     Only checks conferences with at least one non-null deadline.
     """
-    # Once-per-week guard using daily_tasks
+    # Once-per-day guard using daily_tasks
     conn = None
     try:
         conn = get_connection()
@@ -936,7 +939,7 @@ def run():
                     continue
 
                 result["raw_source"] = url
-                save_success, was_inserted = _save_conference(result)
+                save_success, was_inserted, conf_id = _save_conference(result)
                 if not save_success:
                     # DB write failed — do NOT mark as terminal
                     # Leave URL as-is so next run retries
@@ -973,9 +976,9 @@ def run():
                         except (ValueError, TypeError):
                             pass
 
-                    if should_notify:
+                    if should_notify and conf_id:
                         notify(result)
-                        _mark_notified_with_retry_by_website(result.get("website"))
+                        _mark_notified_with_retry(conf_id)
                     else:
                         logger.info(
                             "Conference saved (not yet notified): %s — "

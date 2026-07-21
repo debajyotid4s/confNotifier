@@ -4,7 +4,7 @@ import re
 import socket
 import time
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -176,8 +176,28 @@ def _handle_path(source):
 # ── Handler: "root_year" (QPAIN-style: detect year from page content) ──
 
 
+def _normalize_website(url: str) -> str:
+    """Normalize a website URL for consistent dedup comparison.
+    Must match main._normalize_website exactly.
+    """
+    if not url:
+        return url
+    try:
+        parsed = urlparse(url)
+        if not parsed.hostname:
+            return url
+        hostname = parsed.hostname.lower()
+        if hostname.startswith("www."):
+            hostname = hostname[4:]
+        path = parsed.path.rstrip("/")
+        return urlunparse(("https", hostname, path, "", "", ""))
+    except Exception:
+        return url
+
+
 def _is_edition_in_db(base_url: str, year: int) -> bool:
     """Return True if a conference with this website + year is already saved."""
+    normalized = _normalize_website(base_url)
     conn = None
     try:
         conn = get_connection()
@@ -187,7 +207,7 @@ def _is_edition_in_db(base_url: str, year: int) -> bool:
             "WHERE website = %s "
             "  AND date_start >= %s "
             "  AND date_start < %s",
-            (base_url, f"{year}-01-01", f"{year + 1}-01-01")
+            (normalized, f"{year}-01-01", f"{year + 1}-01-01")
         )
         exists = cur.fetchone() is not None
         cur.close()
