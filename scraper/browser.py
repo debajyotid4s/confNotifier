@@ -187,7 +187,7 @@ class PlaywrightManager:
                     self._page.goto(url, timeout=30000, wait_until="domcontentloaded")
                     self._human_like_scroll()
                     text = self._page.evaluate("document.body.innerText")
-                    if not text or len(text.strip()) < 50:
+                    if not text or len(text.strip()) < 100:
                         return None
                     return text[:8000]
                 except PlaywrightTimeout:
