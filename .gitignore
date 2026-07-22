@@ -47,3 +47,15 @@ application_plan.md
 
 # Database scripts
 db/dedup.sql
+
+# Go migration — build outputs
+go-migration/scraper
+go-migration/send-reminders
+go-migration/verify-deadlines
+go-migration/.env
+go-migration/*.out
+go-migration/*.test
+go-migration/ts/dist/
+go-migration/ts/node_modules/
+go-migration/go.work
+go-migration/go.work.sum
