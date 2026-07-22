@@ -48,8 +48,10 @@ CONF_PATTERNS = [
     re.compile(r"[a-z]+con\.\w+"),
     re.compile(r"[a-z]+icon\.\w+"),
     re.compile(r"conf[a-z]+[\-_.]?\d{4}"),
-    # Generic path-segment pattern: /{word}-{year} or /{word}{year}
-    re.compile(r"/[a-z]{3,}[\-_.]?\d{4}"),
+    # Generic path-segment pattern: requires a conference keyword before the year
+    # e.g. /conference-2026, /workshop2026, /some-conference-2026
+    # Not: /summer-2025, /exam-2026, /fall-2026 (those are exam notices, etc.)
+    re.compile(r"/(?:conf(?:erence)?|symposium|workshop|congress|summit|seminar|colloquium|convention|meeting|forum)[a-z]*[\-_.]?\d{4}"),
     re.compile(r"symposium"),
     re.compile(r"iccit"),
 ]
