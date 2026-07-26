@@ -1,14 +1,17 @@
-name: Daily Deadline Reminder
+name: Daily Reminder + Deadline Verification
 
 on:
   schedule:
     - cron: "0 4 * * *"   # 04:00 UTC = 10:00 AM Bangladesh
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
-  remind:
+  daily:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -16,8 +19,34 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install minimal dependencies
-        run: pip install psycopg2-binary==2.9.9 requests==2.32.3
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Get Playwright version
+        id: pw-version
+        run: echo "version=$(python -c 'import playwright; print(playwright.__version__)')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-v${{ steps.pw-version.outputs.version }}
+
+      - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: playwright install --with-deps chromium
+
+      - name: Verify deadlines
+        run: PYTHONPATH=. python scraper/verify_deadlines.py
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GOOGLE_AI_KEY: ${{ secrets.GOOGLE_AI_KEY }}
+          GOOGLE_AI_KEY_2: ${{ secrets.GOOGLE_AI_KEY_2 }}
+          GOOGLE_AI_KEY_3: ${{ secrets.GOOGLE_AI_KEY_3 }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          TELEGRAM_CHANNEL_LINK: ${{ secrets.TELEGRAM_CHANNEL_LINK }}
 
       - name: Send daily reminders
         run: PYTHONPATH=. python scraper/send_reminders.py

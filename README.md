@@ -4,13 +4,12 @@ Automated pipeline that discovers academic conference announcements from Banglad
 
 ## Architecture
 
-Three GitHub Actions workflows:
+Two GitHub Actions workflows:
 
 | Workflow | Schedule | Purpose |
 |----------|----------|---------|
-| Main scraper | 5×/day | Homepage scraping, special sources, LLM extraction, notifications |
-| Daily reminder | 1×/day at 04 UTC | CertSpotter CT log discovery + deadline reminders |
-| Deadline verification | 1×/day at 15 UTC | Re-extract deadlines, alert on changes |
+| Main scraper | 5×/day (00, 06, 12, 16, 18 UTC) | Homepage scraping, special sources, LLM extraction, notifications |
+| Daily reminder + deadline verification | 1×/day at 04 UTC | Re-extract deadlines, send HTML deadline reminder to Telegram |
 
 ### Discovery Pipeline
 
