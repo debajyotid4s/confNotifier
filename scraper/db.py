@@ -24,7 +24,7 @@ def get_connection():
     raise RuntimeError("Could not connect to database after 3 attempts")
 
 
-TERMINAL_STATUSES = ("not_conference", "low_confidence", "extracted", "failed")
+TERMINAL_STATUSES = ("not_conference", "low_confidence", "extracted", "failed_permanent")
 
 
 def save_seen_link(url, source="unknown", status="pending"):

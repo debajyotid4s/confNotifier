@@ -10,6 +10,18 @@ logger = logging.getLogger(__name__)
 TELEGRAM_API = "https://api.telegram.org/bot{}/sendMessage"
 
 
+def _escape_html(s):
+    """Escape HTML special characters for safe Telegram HTML rendering."""
+    if s is None:
+        return ""
+    return (
+        str(s)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 def _make_hashtag(text):
     """Convert a string to a clean PascalCase hashtag."""
     words = re.sub(r"[^a-zA-Z0-9\s]", "", text).split()
@@ -68,9 +80,9 @@ def notify(conference):
     website = conference.get("website", "")
 
     if date_start == date_end or not conference.get("date_end"):
-        date_line = f"📅 {date_start}"
+        date_line = f"📅 {_escape_html(date_start)}"
     else:
-        date_line = f"📅 {date_start} to {date_end}"
+        date_line = f"📅 {_escape_html(date_start)} to {_escape_html(date_end)}"
 
     short_title = title.split(",")[0].split("(")[0].split(":")[0].strip()
     title_tag = _make_hashtag(short_title)[:30]
@@ -81,12 +93,12 @@ def notify(conference):
 
     message = (
         f"\U0001F514 New International Conference \u2014 Bangladesh\n\n"
-        f"\U0001F4CC {title}\n\n"
+        f"\U0001F4CC {_escape_html(title)}\n\n"
         f"{date_line}\n"
-        f"\U0001F4CD {city}, Bangladesh\n"
-        f"\U0001F3DB Organized by: {organizer}\n"
-        f"\U0001F3F7 Category: {category}\n\n"
-        f"\U0001F517 {website}\n\n"
+        f"\U0001F4CD {_escape_html(city)}, Bangladesh\n"
+        f"\U0001F3DB Organized by: {_escape_html(organizer)}\n"
+        f"\U0001F3F7 Category: {_escape_html(category)}\n\n"
+        f"\U0001F517 {_escape_html(website)}\n\n"
         f"#{title_tag} #{cat_tag} #{city_tag} #{country_tag}"
     )
 

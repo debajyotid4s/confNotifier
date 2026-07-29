@@ -3,6 +3,8 @@ CREATE TABLE IF NOT EXISTS seen_links (
     url TEXT NOT NULL UNIQUE,
     source TEXT NOT NULL DEFAULT 'unknown',
     status TEXT NOT NULL DEFAULT 'pending',
+    retry_count INT NOT NULL DEFAULT 0,
+    last_attempt_at TIMESTAMPTZ,
     first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -24,12 +26,26 @@ CREATE TABLE IF NOT EXISTS conferences (
     organizer TEXT,
     category TEXT,
     confidence REAL NOT NULL DEFAULT 0.0,
+    -- Legacy deadline columns (kept for backward compat with existing data)
     submission_deadline DATE,
     submission_deadline_label TEXT,
     submission_deadline_2 DATE,
     submission_deadline_2_label TEXT,
     submission_deadline_previous DATE,
     submission_deadline_2_previous DATE,
+    -- Named deadline types: each maps to a specific extraction field
+    abstract_deadline DATE,
+    abstract_deadline_label TEXT,
+    abstract_deadline_previous DATE,
+    full_paper_deadline DATE,
+    full_paper_deadline_label TEXT,
+    full_paper_deadline_previous DATE,
+    camera_ready_deadline DATE,
+    camera_ready_deadline_label TEXT,
+    camera_ready_deadline_previous DATE,
+    registration_deadline DATE,
+    registration_deadline_label TEXT,
+    registration_deadline_previous DATE,
     deadline_last_verified TIMESTAMPTZ,
     raw_source TEXT,
     is_notified BOOLEAN NOT NULL DEFAULT FALSE,
@@ -41,6 +57,10 @@ CREATE TABLE IF NOT EXISTS conferences (
 -- Migrate from UNIQUE(website) to UNIQUE(website, date_start)
 ALTER TABLE conferences DROP CONSTRAINT IF EXISTS conferences_website_key;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_conferences_website_date ON conferences (website, date_start);
+
+-- Migration for retry bookkeeping in seen_links
+-- ALTER TABLE seen_links ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFAULT 0;
+-- ALTER TABLE seen_links ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_conferences_date_start ON conferences (date_start);
 CREATE INDEX IF NOT EXISTS idx_seen_links_url ON seen_links (url);
 CREATE INDEX IF NOT EXISTS idx_seen_links_status ON seen_links (status);
@@ -68,3 +88,15 @@ CREATE TABLE IF NOT EXISTS certspotter_cursor (
     domain TEXT PRIMARY KEY,
     last_id BIGINT NOT NULL
 );
+
+-- One-time backfill: retire legacy deadline columns where new-schema data exists
+-- Run after migration to clean rows that were extracted before the new columns existed.
+-- UPDATE conferences
+-- SET submission_deadline = NULL,
+--     submission_deadline_label = NULL,
+--     submission_deadline_2 = NULL,
+--     submission_deadline_2_label = NULL,
+--     submission_deadline_previous = NULL,
+--     submission_deadline_2_previous = NULL
+-- WHERE submission_deadline IS NOT NULL
+--   AND (abstract_deadline IS NOT NULL OR full_paper_deadline IS NOT NULL);
