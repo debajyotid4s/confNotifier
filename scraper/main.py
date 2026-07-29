@@ -11,6 +11,11 @@ import requests
 from db import get_connection, TERMINAL_STATUSES
 from sources import homepage_links, special
 from extractor import extract, daily_quota_exhausted, total_requests_today
+from schema import DEADLINE_TYPES, DEADLINE_LABELS
+from validation import (
+    _parse_date_safe, _check_deadline_swap,
+    _check_chronological_order, _check_deadline_context,
+)
 from notifier import notify
 from browser import PlaywrightManager
 
@@ -50,6 +55,33 @@ def _normalize_website(url: str) -> str:
 # ── DB helpers — each opens, uses, and closes its own connection in <1s ──
 
 
+def _build_deadline_cols(conf: dict) -> tuple[list[str], list]:
+    """Build column names and values for the 4 named deadline types from extraction result.
+
+    Each deadline type has 2 columns: {type}_deadline (DATE) and {type}_deadline_label (TEXT).
+    The _previous columns are omitted here — they are only set during verification.
+    Returns (column_names_list, values_list) for use in INSERT.
+    """
+    cols = []
+    vals = []
+    for typ in DEADLINE_TYPES:
+        cols.append(f"{typ}_deadline")
+        cols.append(f"{typ}_deadline_label")
+        vals.append(conf.get(f"{typ}_deadline"))
+        vals.append(conf.get(f"{typ}_deadline_label"))
+    return cols, vals
+
+
+def _build_deadline_set_clause() -> str:
+    """Build the ON CONFLICT DO UPDATE SET clause for all 4 deadline types."""
+    set_parts = []
+    for typ in DEADLINE_TYPES:
+        for suffix in ["", "_label"]:
+            field = f"{typ}_deadline{suffix}"
+            set_parts.append(f"{field} = COALESCE(EXCLUDED.{field}, conferences.{field})")
+    return ", ".join(set_parts)
+
+
 def _save_conference(conf: dict) -> tuple[bool, bool, int | None]:
     """Open a fresh DB connection, save conference, close immediately.
 
@@ -64,31 +96,37 @@ def _save_conference(conf: dict) -> tuple[bool, bool, int | None]:
         conn = get_connection()
         cur = conn.cursor()
         website = _normalize_website(conf.get("website", ""))
-        cur.execute(
-            """
-            INSERT INTO conferences
-                (title, date_start, date_end, city, country, website,
-                 organizer, category, confidence, submission_deadline,
-                 submission_deadline_label, submission_deadline_2,
-                 submission_deadline_2_label, raw_source, is_notified)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        dl_cols, dl_vals = _build_deadline_cols(conf)
+        dl_set = _build_deadline_set_clause()
+
+        base_cols = ["title", "date_start", "date_end", "city", "country",
+                     "website", "organizer", "category", "confidence", "raw_source", "is_notified"]
+        all_cols = base_cols + dl_cols
+        placeholders = ", ".join(f"%s" for _ in all_cols)
+        col_names = ", ".join(all_cols)
+
+        sql = f"""
+            INSERT INTO conferences ({col_names})
+            VALUES ({placeholders})
             ON CONFLICT (website, date_start) DO UPDATE SET
-                submission_deadline = COALESCE(EXCLUDED.submission_deadline, conferences.submission_deadline),
-                submission_deadline_label = COALESCE(EXCLUDED.submission_deadline_label, conferences.submission_deadline_label),
-                submission_deadline_2 = COALESCE(EXCLUDED.submission_deadline_2, conferences.submission_deadline_2),
-                submission_deadline_2_label = COALESCE(EXCLUDED.submission_deadline_2_label, conferences.submission_deadline_2_label),
+                {dl_set},
+                submission_deadline = NULL,
+                submission_deadline_label = NULL,
+                submission_deadline_2 = NULL,
+                submission_deadline_2_label = NULL,
+                submission_deadline_previous = NULL,
+                submission_deadline_2_previous = NULL,
                 updated_at = NOW()
             RETURNING created_at = updated_at AS inserted, id
-            """,
-            (
-                conf.get("title"), conf.get("date_start"), conf.get("date_end"),
-                conf.get("city"), "Bangladesh", website,
-                conf.get("organizer"), conf.get("category"),
-                conf.get("confidence"), conf.get("submission_deadline"),
-                conf.get("submission_deadline_label"), conf.get("submission_deadline_2"),
-                conf.get("submission_deadline_2_label"), conf.get("raw_source"), False,
-            )
-        )
+        """
+
+        base_vals = [
+            conf.get("title"), conf.get("date_start"), conf.get("date_end"),
+            conf.get("city"), "Bangladesh", website,
+            conf.get("organizer"), conf.get("category"),
+            conf.get("confidence"), conf.get("raw_source"), False,
+        ]
+        cur.execute(sql, base_vals + dl_vals)
         row = cur.fetchone()
         conn.commit()
         cur.close()
@@ -178,7 +216,7 @@ def _is_url_processed(url: str) -> bool:
         cur.close()
         if row is None:
             return False  # new URL, not yet seen
-        return row[0] in ("not_conference", "low_confidence", "extracted", "failed")
+        return row[0] in TERMINAL_STATUSES
     except Exception as e:
         logger.error("is_url_processed error for %s: %s", url, e)
         return False  # on error, let it be processed (safer)
@@ -210,6 +248,74 @@ def _load_pending_urls() -> list:
     except Exception as e:
         logger.error("load_pending_urls error: %s", e)
         return []
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# ── Retry logic for failed_transient URLs ──
+
+MAX_RETRIES = 3
+RETRY_BACKOFF_HOURS = [6, 24, 72]
+
+
+def _load_retryable_urls() -> list:
+    """Load failed_transient URLs eligible for retry with widening backoff.
+
+    URLs that exhaust retries are demoted to failed_permanent (terminal).
+    Returns list of (url, retry_count) for URLs whose backoff window has elapsed.
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT url, retry_count, last_attempt_at FROM seen_links "
+            "WHERE status = 'failed_transient'"
+        )
+        now = datetime.now()
+        retryable = []
+        for url, retry_count, last_attempt_at in cur.fetchall():
+            if retry_count >= MAX_RETRIES:
+                logger.warning("Retries exhausted for %s, demoting to failed_permanent", url)
+                _mark_url_status(url, "failed_permanent")
+                continue
+            if last_attempt_at is None:
+                retryable.append((url, retry_count))
+                continue
+            hours_since = (now - last_attempt_at).total_seconds() / 3600
+            if hours_since >= RETRY_BACKOFF_HOURS[retry_count]:
+                retryable.append((url, retry_count))
+        cur.close()
+        return retryable
+    except Exception as e:
+        logger.error("_load_retryable_urls error: %s", e)
+        return []
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _increment_retry(url: str) -> None:
+    """Increment retry_count and set last_attempt_at for a URL."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE seen_links SET retry_count = COALESCE(retry_count, 0) + 1, "
+            "last_attempt_at = NOW() WHERE url = %s", (url,)
+        )
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        logger.error("_increment_retry error for %s: %s", url, e)
     finally:
         if conn:
             try:
@@ -324,27 +430,44 @@ def _notify_pending(notify_fn) -> int:
             except Exception:
                 pass
 
+    dl_date_checks = []
+    dl_select_cols = []
+    for typ in DEADLINE_TYPES:
+        dl_select_cols.append(f"{typ}_deadline")
+        dl_select_cols.append(f"{typ}_deadline_label")
+        dl_date_checks.append(
+            f"({typ}_deadline IS NOT NULL"
+            f" AND {typ}_deadline >= CURRENT_DATE"
+            f" AND {typ}_deadline <= CURRENT_DATE + INTERVAL '30 days')"
+        )
+
+    # Also check legacy columns for conferences that haven't been re-extracted yet
+    dl_date_checks.append(
+        "(submission_deadline IS NOT NULL"
+        " AND submission_deadline >= CURRENT_DATE"
+        " AND submission_deadline <= CURRENT_DATE + INTERVAL '30 days')"
+    )
+    dl_date_checks.append(
+        "(submission_deadline_2 IS NOT NULL"
+        " AND submission_deadline_2 >= CURRENT_DATE"
+        " AND submission_deadline_2 <= CURRENT_DATE + INTERVAL '30 days')"
+    )
+
+    select_dl = ", ".join(dl_select_cols)
+    date_or_clause = " OR ".join(dl_date_checks)
+
     try:
         conn = get_connection()
         cur = conn.cursor()
         cur.execute(
-            """
+            f"""
             SELECT id, title, date_start, date_end, city, website,
                    organizer, category, confidence,
-                   submission_deadline, submission_deadline_label,
-                   submission_deadline_2, submission_deadline_2_label
+                   {select_dl}
             FROM conferences
             WHERE is_notified = FALSE
               AND (date_start IS NULL OR date_start >= CURRENT_DATE)
-              AND (
-                  (submission_deadline IS NOT NULL
-                   AND submission_deadline >= CURRENT_DATE
-                   AND submission_deadline <= CURRENT_DATE + INTERVAL '30 days')
-                  OR
-                  (submission_deadline_2 IS NOT NULL
-                   AND submission_deadline_2 >= CURRENT_DATE
-                   AND submission_deadline_2 <= CURRENT_DATE + INTERVAL '30 days')
-              )
+              AND ({date_or_clause})
             ORDER BY created_at ASC
             """
         )
@@ -372,11 +495,14 @@ def _notify_pending(notify_fn) -> int:
                 "organizer":  row[6],
                 "category":   row[7],
                 "confidence": row[8],
-                "submission_deadline": str(row[9]) if row[9] else None,
-                "submission_deadline_label": row[10],
-                "submission_deadline_2": str(row[11]) if row[11] else None,
-                "submission_deadline_2_label": row[12],
             }
+            # Map the 8 deadline fields (date + label for each type)
+            dl_offset = 9
+            for i, typ in enumerate(DEADLINE_TYPES):
+                date_col_idx = dl_offset + i * 2
+                label_col_idx = dl_offset + i * 2 + 1
+                conf[f"{typ}_deadline"] = str(row[date_col_idx]) if row[date_col_idx] else None
+                conf[f"{typ}_deadline_label"] = row[label_col_idx]
 
             try:
                 success = notify_fn(conf)
@@ -415,16 +541,6 @@ def _notify_pending(notify_fn) -> int:
 
 
 # ── Deadline re-verification (weekly) ──
-
-
-def _parse_date_safe(date_str):
-    """Parse a YYYY-MM-DD string to date, return None on failure."""
-    if not date_str:
-        return None
-    try:
-        return date.fromisoformat(str(date_str))
-    except (ValueError, TypeError):
-        return None
 
 
 def _mark_verification_done() -> None:
@@ -571,28 +687,47 @@ def _verify_deadlines(playwright) -> None:
 
     logger.info("deadline_verification: starting daily deadline re-check")
 
-    # Load upcoming conferences with at least one deadline set
+    # Build deadline column names for SELECT — we need both old legacy fields and new named fields
+    dl_select_cols = []
+    dl_date_checks = []
+    for typ in DEADLINE_TYPES:
+        dl_select_cols.append(f"{typ}_deadline")
+        dl_select_cols.append(f"{typ}_deadline_label")
+        dl_date_checks.append(
+            f"({typ}_deadline IS NOT NULL"
+            f" AND {typ}_deadline >= CURRENT_DATE - INTERVAL '30 days'"
+            f" AND {typ}_deadline <= CURRENT_DATE + INTERVAL '30 days')"
+        )
+
+    # Also include legacy fields in the check
+    dl_date_checks.append(
+        "(submission_deadline IS NOT NULL"
+        " AND submission_deadline >= CURRENT_DATE - INTERVAL '30 days'"
+        " AND submission_deadline <= CURRENT_DATE + INTERVAL '30 days')"
+    )
+    dl_date_checks.append(
+        "(submission_deadline_2 IS NOT NULL"
+        " AND submission_deadline_2 >= CURRENT_DATE - INTERVAL '30 days'"
+        " AND submission_deadline_2 <= CURRENT_DATE + INTERVAL '30 days')"
+    )
+
+    select_dl = ", ".join(dl_select_cols)
+    date_or_clause = " OR ".join(dl_date_checks)
+
     conn = None
     conferences = []
     try:
         conn = get_connection()
         cur = conn.cursor()
         cur.execute(
-            """
+            f"""
             SELECT id, title, website,
                    submission_deadline, submission_deadline_label,
-                   submission_deadline_2, submission_deadline_2_label
+                   submission_deadline_2, submission_deadline_2_label,
+                   {select_dl}
             FROM conferences
             WHERE date_start > CURRENT_DATE
-              AND (
-                (submission_deadline IS NOT NULL
-                 AND submission_deadline >= CURRENT_DATE - INTERVAL '30 days'
-                 AND submission_deadline <= CURRENT_DATE + INTERVAL '30 days')
-                OR
-                (submission_deadline_2 IS NOT NULL
-                 AND submission_deadline_2 >= CURRENT_DATE - INTERVAL '30 days'
-                 AND submission_deadline_2 <= CURRENT_DATE + INTERVAL '30 days')
-              )
+              AND ({date_or_clause})
             ORDER BY date_start ASC
             """
         )
@@ -619,7 +754,34 @@ def _verify_deadlines(playwright) -> None:
         "deadline_verification: checking %d conference(s)", len(conferences)
     )
 
-    for conf_id, title, website, dl1, label1, dl2, label2 in conferences:
+    # Build the allowed fields set for SQL injection protection
+    _ALLOWED_FIELDS = set()
+    for typ in DEADLINE_TYPES:
+        _ALLOWED_FIELDS.add(f"{typ}_deadline")
+        _ALLOWED_FIELDS.add(f"{typ}_deadline_label")
+        _ALLOWED_FIELDS.add(f"{typ}_deadline_previous")
+
+    for row in conferences:
+        conf_id = row[0]
+        title = row[1]
+        website = row[2]
+        # Legacy fields
+        leg_dl1 = row[3]
+        leg_label1 = row[4]
+        leg_dl2 = row[5]
+        leg_label2 = row[6]
+
+        # Build old values dict from named columns (falling back to legacy)
+        old_values = {}
+        dl_offset = 7
+        for i, typ in enumerate(DEADLINE_TYPES):
+            named_dl = row[dl_offset + i * 2]
+            named_label = row[dl_offset + i * 2 + 1]
+            old_values[typ] = {
+                "date": named_dl if named_dl else (leg_dl1 if i == 0 else (leg_dl2 if i == 1 else None)),
+                "label": named_label if named_label else (leg_label1 if i == 0 else (leg_label2 if i == 1 else None)),
+            }
+
         try:
             # Re-extract using shared browser instance
             result = extract(website, playwright)
@@ -629,41 +791,80 @@ def _verify_deadlines(playwright) -> None:
                 )
                 continue
 
-            new_dl1 = _parse_date_safe(result.get("submission_deadline"))
-            new_dl2 = _parse_date_safe(result.get("submission_deadline_2"))
-            new_label1 = result.get("submission_deadline_label") or label1
-            new_label2 = result.get("submission_deadline_2_label") or label2
+            # ── Validation layers ──
+            new_values = {}
+            for typ in DEADLINE_TYPES:
+                new_values[typ] = _parse_date_safe(result.get(f"{typ}_deadline"))
+
+            stored_values = {}
+            for typ in DEADLINE_TYPES:
+                stored_values[typ] = old_values[typ]["date"]
+
+            # Layer A: cross-field swap detection
+            swapped_fields = _check_deadline_swap(new_values, stored_values)
+
+            # Layer B: chronological order constraint
+            conf_start = _parse_date_safe(result.get("date_start"))
+            if not _check_chronological_order(new_values, conf_start):
+                logger.warning(
+                    "deadline_verification: %s — chronological order violated, "
+                    "skipping entire re-verification",
+                    website
+                )
+                continue
+
+            # Layer C: context keyword validation
+            context_mismatches = _check_deadline_context(result)
 
             # Build list of fields that changed or are newly discovered
             updates = []
             notify_changes = []
 
-            # Check submission_deadline
-            if new_dl1 and new_dl1 != dl1:
-                updates.append(("submission_deadline", "submission_deadline_label",
-                                "submission_deadline_previous", new_dl1, new_label1))
-                # Only notify if old value existed (not first discovery)
-                if dl1 is not None:
-                    notify_changes.append({"old": dl1, "new": new_dl1,
-                                           "label": new_label1 or "Submission Deadline"})
-                else:
-                    logger.info(
-                        "deadline_verification: %s — first deadline found: %s",
-                        website, new_dl1
+            # Check each named deadline type independently
+            for typ in DEADLINE_TYPES:
+                if typ in swapped_fields:
+                    logger.warning(
+                        "deadline_verification: %s — %s swapped, skipping",
+                        website, typ
                     )
+                    continue
 
-            # Check submission_deadline_2
-            if new_dl2 and new_dl2 != dl2:
-                updates.append(("submission_deadline_2", "submission_deadline_2_label",
-                                "submission_deadline_2_previous", new_dl2, new_label2))
-                if dl2 is not None:
-                    notify_changes.append({"old": dl2, "new": new_dl2,
-                                           "label": new_label2 or "Deadline 2"})
-                else:
-                    logger.info(
-                        "deadline_verification: %s — second deadline found: %s",
-                        website, new_dl2
+                if typ in context_mismatches:
+                    logger.warning(
+                        "deadline_verification: %s — %s context mismatch, skipping",
+                        website, typ
                     )
+                    continue
+
+                new_dl_str = result.get(f"{typ}_deadline")
+                if not new_dl_str:
+                    continue  # LLM didn't find this deadline type on the page
+
+                new_dl = _parse_date_safe(new_dl_str)
+                new_label = result.get(f"{typ}_deadline_label") or DEADLINE_LABELS.get(typ, typ.replace("_", " ").title())
+                old_dl = old_values[typ]["date"]
+
+                if new_dl and new_dl != old_dl:
+                    if old_dl is not None and new_dl < old_dl:
+                        logger.warning(
+                            "deadline_verification: %s — %s moved backward %s → %s, "
+                            "likely extraction error, skipping",
+                            website, typ, old_dl, new_dl
+                        )
+                        continue
+
+                    field = f"{typ}_deadline"
+                    label_field = f"{typ}_deadline_label"
+                    prev_field = f"{typ}_deadline_previous"
+                    updates.append((field, label_field, prev_field, new_dl, new_label))
+                    if old_dl is not None:
+                        notify_changes.append({"old": old_dl, "new": new_dl,
+                                               "label": new_label})
+                    else:
+                        logger.info(
+                            "deadline_verification: %s — first %s found: %s",
+                            website, field, new_dl
+                        )
 
             if not updates:
                 logger.info(
@@ -672,11 +873,6 @@ def _verify_deadlines(playwright) -> None:
                 continue
 
             # Always save new/changed deadlines to DB
-            # Whitelist of allowed field names to prevent SQL injection
-            _ALLOWED_FIELDS = {
-                "submission_deadline", "submission_deadline_label", "submission_deadline_previous",
-                "submission_deadline_2", "submission_deadline_2_label", "submission_deadline_2_previous",
-            }
             conn = None
             try:
                 conn = get_connection()
@@ -812,6 +1008,14 @@ def run():
                 all_candidates = list(set(pending_prev + all_candidates))
                 logger.info("Re-queued %d pending URLs from previous runs", len(pending_prev))
 
+            # Re-queue retryable URLs (status='failed_transient', backoff elapsed)
+            retryable = _load_retryable_urls()
+            retryable_urls = [url for url, _ in retryable]
+            retryable_url_set = set(retryable_urls)
+            if retryable_urls:
+                all_candidates = list(set(retryable_urls + all_candidates))
+                logger.info("Re-queued %d retryable URLs from previous runs", len(retryable_urls))
+
             logger.info("Phase 4: Processing %d unique candidates", len(all_candidates))
 
             known_websites = _load_known_websites()
@@ -825,6 +1029,9 @@ def run():
             quota_exhausted = False
 
             for idx, url in enumerate(all_candidates):
+                # Increment retry counter before retrying a failed_transient URL
+                if url in retryable_url_set:
+                    _increment_retry(url)
                 # Detect root_year-tagged URLs from special sources
                 # Format: "root_year:{year}:{actual_url}"
                 root_year_info = None
@@ -884,7 +1091,7 @@ def run():
                         time.sleep(5)
                         continue
                     logger.error("Unexpected error for %s: %s", url, e)
-                    _mark_url_status(url, "failed")
+                    _mark_url_status(url, "failed_transient")
                     failed += 1
                     time.sleep(5)
                     continue
@@ -893,7 +1100,7 @@ def run():
                     if daily_quota_exhausted():
                         quota_exhausted = True
                     logger.warning("Extraction failed for: %s", url)
-                    _mark_url_status(url, "failed")
+                    _mark_url_status(url, "failed_transient")
                     failed += 1
                     time.sleep(5)
                     continue
@@ -938,6 +1145,32 @@ def run():
                     time.sleep(5)
                     continue
 
+                # Layer B: chronological order constraint
+                conf_start = _parse_date_safe(result.get("date_start"))
+                new_values = {}
+                for typ in DEADLINE_TYPES:
+                    new_values[typ] = _parse_date_safe(result.get(f"{typ}_deadline"))
+                if not _check_chronological_order(new_values, conf_start):
+                    logger.warning(
+                        "Chronological order violated at %s, retry next run", url
+                    )
+                    _mark_url_status(url, "failed_transient")
+                    failed += 1
+                    time.sleep(5)
+                    continue
+
+                # Layer C: context validation
+                context_mismatches = _check_deadline_context(result)
+                if context_mismatches:
+                    logger.warning(
+                        "Context mismatch for fields %s at %s, retry next run",
+                        context_mismatches, url
+                    )
+                    _mark_url_status(url, "failed_transient")
+                    failed += 1
+                    time.sleep(5)
+                    continue
+
                 result["raw_source"] = url
                 save_success, was_inserted, conf_id = _save_conference(result)
                 if not save_success:
@@ -952,29 +1185,29 @@ def run():
                 if was_inserted:
                     logger.info("New conference saved: %s", result.get("title"))
 
-                    # Only notify if submission deadline is within 30 days
+                    # Only notify if at least one deadline is within 30 days
                     should_notify = True
-                    submission_dl = result.get("submission_deadline")
-                    if submission_dl:
-                        try:
-                            dl_date = datetime.strptime(submission_dl, "%Y-%m-%d").date()
-                            days_until_dl = (dl_date - datetime.now().date()).days
-                            if days_until_dl > 30:
-                                logger.info(
-                                    "Submission deadline %s is %d days away — "
-                                    "saving but NOT notifying yet: %s",
-                                    submission_dl, days_until_dl, result.get("title")
-                                )
-                                should_notify = False
-                            elif days_until_dl < 0:
-                                logger.info(
-                                    "Submission deadline %s already past — "
-                                    "saving but NOT notifying: %s",
-                                    submission_dl, result.get("title")
-                                )
-                                should_notify = False
-                        except (ValueError, TypeError):
-                            pass
+                    now_date = datetime.now().date()
+                    any_within_30 = False
+                    for typ in DEADLINE_TYPES:
+                        dl_str = result.get(f"{typ}_deadline")
+                        if dl_str:
+                            try:
+                                dl_date = datetime.strptime(dl_str, "%Y-%m-%d").date()
+                                days_until_dl = (dl_date - now_date).days
+                                if 0 <= days_until_dl <= 30:
+                                    any_within_30 = True
+                                    break
+                            except (ValueError, TypeError):
+                                pass
+
+                    if not any_within_30:
+                        logger.info(
+                            "No deadline within 30 days — "
+                            "saving but NOT notifying yet: %s",
+                            result.get("title")
+                        )
+                        should_notify = False
 
                     if should_notify and conf_id:
                         notify(result)

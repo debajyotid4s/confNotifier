@@ -15,6 +15,7 @@ import psycopg2
 import requests
 
 from scraper.sources.crt_monitor import run as crt_monitor_run
+from scraper.schema import DEADLINE_TYPES, DEADLINE_LABELS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -78,26 +79,46 @@ def _urgency_emoji(days_left: int) -> str:
 
 
 def send_deadline_reminders() -> None:
+    dl_select_cols = []
+    dl_date_checks = []
+    for typ in DEADLINE_TYPES:
+        dl_select_cols.append(f"{typ}_deadline")
+        dl_select_cols.append(f"{typ}_deadline_label")
+        dl_select_cols.append(f"{typ}_deadline_previous")
+        dl_date_checks.append(
+            f"({typ}_deadline IS NOT NULL"
+            f" AND {typ}_deadline >= CURRENT_DATE"
+            f" AND {typ}_deadline <= CURRENT_DATE + INTERVAL '30 days')"
+        )
+
+    # Also include legacy fields
+    dl_date_checks.append(
+        "(submission_deadline IS NOT NULL"
+        " AND submission_deadline >= CURRENT_DATE"
+        " AND submission_deadline <= CURRENT_DATE + INTERVAL '30 days')"
+    )
+    dl_date_checks.append(
+        "(submission_deadline_2 IS NOT NULL"
+        " AND submission_deadline_2 >= CURRENT_DATE"
+        " AND submission_deadline_2 <= CURRENT_DATE + INTERVAL '30 days')"
+    )
+
+    select_dl = ", ".join(dl_select_cols)
+    date_or_clause = " OR ".join(dl_date_checks)
+
     conn = None
     try:
         conn = _get_db_connection()
         cur = conn.cursor()
         cur.execute(
-            """
+            f"""
             SELECT title, website,
                    submission_deadline, submission_deadline_label,
                    submission_deadline_2, submission_deadline_2_label,
-                   submission_deadline_previous, submission_deadline_2_previous
+                   submission_deadline_previous, submission_deadline_2_previous,
+                   {select_dl}
             FROM conferences
-            WHERE (
-                (submission_deadline IS NOT NULL
-                 AND submission_deadline >= CURRENT_DATE
-                 AND submission_deadline <= CURRENT_DATE + INTERVAL '30 days')
-                OR
-                (submission_deadline_2 IS NOT NULL
-                 AND submission_deadline_2 >= CURRENT_DATE
-                 AND submission_deadline_2 <= CURRENT_DATE + INTERVAL '30 days')
-            )
+            WHERE ({date_or_clause})
             """
         )
         rows = cur.fetchall()
@@ -107,13 +128,35 @@ def send_deadline_reminders() -> None:
 
         entries = []
 
-        for title, website, dl1, label1, dl2, label2, dl1_prev, dl2_prev in rows:
-            if _within_30_days(dl1):
-                is_updated = dl1_prev is not None and dl1_prev != dl1
-                entries.append((dl1, website, title, is_updated, dl1_prev if is_updated else None))
-            if _within_30_days(dl2):
-                is_updated = dl2_prev is not None and dl2_prev != dl2
-                entries.append((dl2, website, title, is_updated, dl2_prev if is_updated else None))
+        for row in rows:
+            title = row[0]
+            website = row[1]
+            leg_dl1 = row[2]
+            leg_label1 = row[3]
+            leg_dl2 = row[4]
+            leg_label2 = row[5]
+            leg_dl1_prev = row[6]
+            leg_dl2_prev = row[7]
+
+            # Check each named deadline type first
+            dl_offset = 8
+            has_new_deadline = any(row[dl_offset + i * 3] is not None for i in range(len(DEADLINE_TYPES)))
+
+            # Legacy columns are only used when no new-schema deadline exists yet
+            if not has_new_deadline:
+                if _within_30_days(leg_dl1):
+                    is_updated = leg_dl1_prev is not None and leg_dl1_prev != leg_dl1
+                    entries.append((leg_dl1, website, title, is_updated, leg_dl1_prev if is_updated else None))
+                if _within_30_days(leg_dl2):
+                    is_updated = leg_dl2_prev is not None and leg_dl2_prev != leg_dl2
+                    entries.append((leg_dl2, website, title, is_updated, leg_dl2_prev if is_updated else None))
+
+            for i, typ in enumerate(DEADLINE_TYPES):
+                dl = row[dl_offset + i * 3]
+                dl_prev = row[dl_offset + i * 3 + 2]
+                if _within_30_days(dl):
+                    is_updated = dl_prev is not None and dl_prev != dl
+                    entries.append((dl, website, title, is_updated, dl_prev if is_updated else None))
 
         if not entries:
             logger.info("no upcoming deadlines, skipping")

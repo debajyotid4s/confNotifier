@@ -9,6 +9,7 @@ from collections import deque
 from openai import OpenAI
 
 from scraper.browser import PlaywrightManager
+from scraper.schema import EXTRACTION_SCHEMA, SYSTEM_PROMPT, normalize_extraction
 
 logger = logging.getLogger(__name__)
 
@@ -120,73 +121,6 @@ _clients = [
 
 _current_key_idx = 0
 
-EXTRACTION_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "is_conference": {"type": "boolean"},
-        "title": {"type": "string"},
-        "date_start": {"type": ["string", "null"], "format": "date",
-                       "description": "YYYY-MM-DD or null"},
-        "date_end": {"type": ["string", "null"], "format": "date",
-                     "description": "YYYY-MM-DD or null"},
-        "submission_deadline": {"type": ["string", "null"], "format": "date",
-                                "description": "YYYY-MM-DD or null"},
-        "submission_deadline_label": {"type": ["string", "null"],
-                                      "description": "Short label for the first deadline or null"},
-        "submission_deadline_2": {"type": ["string", "null"], "format": "date",
-                                  "description": "YYYY-MM-DD or null"},
-        "submission_deadline_2_label": {"type": ["string", "null"],
-                                        "description": "Short label for the second deadline or null"},
-        "city": {"type": ["string", "null"]},
-        "country": {"type": "string"},
-        "website": {"type": "string"},
-        "organizer": {"type": ["string", "null"]},
-        "category": {"type": "string", "enum": [
-            "Engineering", "Electrical", "Computing", "Civil",
-            "Biomedical", "Business", "Energy", "Science",
-            "Agriculture", "Medical", "Textile", "Other"
-        ]},
-        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
-    },
-    "required": [
-        "is_conference", "title", "date_start", "date_end",
-        "submission_deadline", "submission_deadline_label",
-        "submission_deadline_2", "submission_deadline_2_label",
-        "city", "country", "website", "organizer", "category", "confidence"
-    ],
-    "additionalProperties": False,
-}
-
-SYSTEM_PROMPT = """You are a precise conference data extractor for Bangladesh.
-Given raw webpage text, extract international conference details.
-
-Rules:
-- is_conference = false for seminars, webinars, department pages, local events.
-- is_conference = true only for multi-day international conferences.
-- If held outside Bangladesh, is_conference = false.
-- If page has no conference content, return is_conference = false.
-- submission_deadline: the EARLIEST paper/abstract submission due date ONLY.
-  Look for phrases like "submission deadline", "paper due", "last date of submission",
-  "abstract submission", "full paper due", "call for papers deadline".
-  ALSO scan the full text for date patterns like "Month DD, YYYY" (e.g. "August 02, 2026")
-  and check if any date near text about "submission", "paper", "deadline" is the deadline.
-  Dates may appear in visual timelines, infographics, or bullet lists — the date and its
-  label might be on separate lines. Match dates to nearby labels by proximity.
-  IMPORTANT: "Camera Ready", "Registration", "Author Registration", "Camera-Ready Submission"
-  are NOT submission deadlines — they are post-acceptance steps. Never use these as submission_deadline.
-  If not found, return null.
-- submission_deadline_label: a short descriptive label for what the first deadline
-  represents (e.g. "Extended Abstract Submission", "Paper Submission").
-  If submission_deadline is null, this should also be null.
-- submission_deadline_2: a SECOND submission deadline if the page mentions one
-  (e.g. full paper deadline after extended abstract deadline).
-  Must be a different date from submission_deadline.
-  This is for multi-stage submission processes (abstract → full paper).
-  Camera Ready, Registration, and Author Registration deadlines do NOT go here.
-  If not found, return null.
-- submission_deadline_2_label: a short descriptive label for the second deadline.
-  If submission_deadline_2 is null, this should also be null."""
-
 
 def _is_url_reachable(url: str) -> bool:
     """Quick DNS check before launching browser — avoids wasting time on dead sites."""
@@ -282,6 +216,7 @@ def extract_conferences(page_text: str, source_url: str) -> dict | None:
                         }
                     ],
                     temperature=0.0,
+                    seed=42,
                     max_tokens=4096,
                     response_format={
                         "type": "json_schema",
@@ -293,6 +228,7 @@ def extract_conferences(page_text: str, source_url: str) -> dict | None:
                 )
 
                 result = json.loads(response.choices[0].message.content)
+                result = normalize_extraction(result)
                 logger.info(
                     "extractor: %s → is_conference=%s, confidence=%.2f",
                     source_url,
