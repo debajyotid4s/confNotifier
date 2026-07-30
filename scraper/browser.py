@@ -194,6 +194,7 @@ class PlaywrightManager:
                     logger.warning("PlaywrightManager: timeout loading %s", url)
                     return None
                 except Exception as e:
+                    err_msg = str(e)
                     if attempt == 0 and not self._is_alive():
                         logger.error("PlaywrightManager: browser crashed on %s, restarting", url)
                         try:
@@ -202,6 +203,16 @@ class PlaywrightManager:
                         except Exception as restart_err:
                             logger.critical("PlaywrightManager: restart failed: %s", restart_err)
                             return None
+                    if attempt == 0 and "Execution context was destroyed" in err_msg:
+                        logger.warning("PlaywrightManager: page navigated after load on %s, retrying", url)
+                        try:
+                            self._page.wait_for_load_state("networkidle", timeout=15000)
+                            text = self._page.evaluate("document.body.innerText")
+                            if text and len(text.strip()) >= 100:
+                                return text[:8000]
+                        except Exception:
+                            pass
+                        return None
                     logger.warning("PlaywrightManager: error loading %s: %s", url, e)
                     return None
         return None
@@ -231,6 +242,7 @@ class PlaywrightManager:
                     logger.warning("PlaywrightManager: timeout loading %s", url)
                     return None
                 except Exception as e:
+                    err_msg = str(e)
                     if attempt == 0 and not self._is_alive():
                         logger.error("PlaywrightManager: browser crashed on %s, restarting", url)
                         try:
@@ -239,6 +251,16 @@ class PlaywrightManager:
                         except Exception as restart_err:
                             logger.critical("PlaywrightManager: restart failed: %s", restart_err)
                             return None
+                    if attempt == 0 and "Execution context was destroyed" in err_msg:
+                        logger.warning("PlaywrightManager: page navigated after load on %s, retrying", url)
+                        try:
+                            self._page.wait_for_load_state("networkidle", timeout=15000)
+                            html = self._page.content()
+                            if html and len(html.strip()) >= 50:
+                                return html
+                        except Exception:
+                            pass
+                        return None
                     logger.warning("PlaywrightManager: error loading %s: %s", url, e)
                     return None
         return None

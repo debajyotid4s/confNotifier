@@ -59,8 +59,8 @@ ALTER TABLE conferences DROP CONSTRAINT IF EXISTS conferences_website_key;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_conferences_website_date ON conferences (website, date_start);
 
 -- Migration for retry bookkeeping in seen_links
--- ALTER TABLE seen_links ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFAULT 0;
--- ALTER TABLE seen_links ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ;
+ALTER TABLE seen_links ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFAULT 0;
+ALTER TABLE seen_links ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_conferences_date_start ON conferences (date_start);
 CREATE INDEX IF NOT EXISTS idx_seen_links_url ON seen_links (url);
 CREATE INDEX IF NOT EXISTS idx_seen_links_status ON seen_links (status);
