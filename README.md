@@ -156,3 +156,7 @@ None yet. The code gets tested by running it against the live DB. If you want to
 ## Future: Go + TypeScript
 
 There's a skeleton Go rewrite in `go-migration/`. Not actively worked on — this Python version is the real one.
+
+## Future: Mobile Apps
+
+Flutter app reading from the same DB — browse conferences, bookmark deadlines, get push notifications. Nothing built yet.
