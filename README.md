@@ -153,9 +153,20 @@ PYTHONPATH=. python scraper/main.py
 
 None yet. The code gets tested by running it against the live DB. If you want to add tests, `validation.py` and `schema.py` are the most self-contained places to start.
 
-## Future: Go + TypeScript
+## Future: Go Scheduler
 
-There's a skeleton Go rewrite in `go-migration/`. Not actively worked on — this Python version is the real one.
+A single Go binary that replaces the three GitHub Actions workflows:
+
+```
+conf-notifier serve
+  ├── scheduler         — in-process cron (6h scrape, 24h verify, 24h reminder)
+  ├── scraper           — homepage fetcher + special sources + certspotter
+  ├── extractor         — Gemini LLM extraction
+  ├── notifier          — Telegram push
+  └── db                — pgx pool (no more open/close per op)
+```
+
+Drops GitHub Actions dependency entirely — deploy as a systemd service or Docker container on a $5 VPS.
 
 ## Future: Mobile Apps
 
