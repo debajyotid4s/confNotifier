@@ -44,6 +44,7 @@ PROJECT_STATE.md
 ARTICLE_OUTLINE.md
 REPORT_gemini_rate_limits.md
 application_plan.md
+go_cli_plan.md
 
 # Database scripts
 db/dedup.sql

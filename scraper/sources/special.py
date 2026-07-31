@@ -2,7 +2,6 @@ import json
 import logging
 import re
 import socket
-import time
 from datetime import datetime
 from urllib.parse import urlparse, urlunparse
 

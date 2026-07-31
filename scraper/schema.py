@@ -21,6 +21,51 @@ for typ in DEADLINE_TYPES:
     DEADLINE_DB_FIELDS.append(_deadline_field(typ, "_label"))
     DEADLINE_DB_FIELDS.append(_deadline_field(typ, "_previous"))
 
+
+def deadline_select_columns(include_previous: bool = False) -> list[str]:
+    """Column names for the 4 named deadline types (date + label [+ previous]).
+
+    Order matches the per-type grouping used by row unpacking downstream
+    (date at index i*2, label at i*2+1, previous at i*2+2 when included).
+    """
+    cols = []
+    for typ in DEADLINE_TYPES:
+        cols.append(_deadline_field(typ, ""))
+        cols.append(_deadline_field(typ, "_label"))
+        if include_previous:
+            cols.append(_deadline_field(typ, "_previous"))
+    return cols
+
+
+def deadline_range_checks(
+    within_days: int,
+    past_days: int = 0,
+    include_legacy: bool = False,
+) -> list[str]:
+    """SQL boolean expressions: each deadline column within a date window.
+
+    Each expression is of the form "(col IS NOT NULL AND col >= today - past_days
+    AND col <= today + within_days)". When include_legacy is True, the old
+    submission_deadline columns are included for rows that predate the named
+    deadline schema.
+    """
+    checks = []
+    for typ in DEADLINE_TYPES:
+        col = _deadline_field(typ, "")
+        checks.append(
+            f"({col} IS NOT NULL"
+            f" AND {col} >= CURRENT_DATE - INTERVAL '{past_days} days'"
+            f" AND {col} <= CURRENT_DATE + INTERVAL '{within_days} days')"
+        )
+    if include_legacy:
+        for col in ("submission_deadline", "submission_deadline_2"):
+            checks.append(
+                f"({col} IS NOT NULL"
+                f" AND {col} >= CURRENT_DATE - INTERVAL '{past_days} days'"
+                f" AND {col} <= CURRENT_DATE + INTERVAL '{within_days} days')"
+            )
+    return checks
+
 FIELD_KEYWORDS = {
     "abstract":     ["abstract", "extended abstract", "short paper", "summary", "proposal submission"],
     "full_paper":   ["full paper", "final paper", "manuscript", "full-length", "complete paper", "paper submission"],

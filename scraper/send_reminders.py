@@ -15,7 +15,7 @@ import psycopg2
 import requests
 
 from scraper.sources.crt_monitor import run as crt_monitor_run
-from scraper.schema import DEADLINE_TYPES, DEADLINE_LABELS
+from scraper.schema import DEADLINE_TYPES
 
 logging.basicConfig(
     level=logging.INFO,
@@ -83,7 +83,6 @@ def send_deadline_reminders() -> None:
     dl_date_checks = []
     for typ in DEADLINE_TYPES:
         dl_select_cols.append(f"{typ}_deadline")
-        dl_select_cols.append(f"{typ}_deadline_label")
         dl_select_cols.append(f"{typ}_deadline_previous")
         dl_date_checks.append(
             f"({typ}_deadline IS NOT NULL"
@@ -113,8 +112,7 @@ def send_deadline_reminders() -> None:
         cur.execute(
             f"""
             SELECT title, website,
-                   submission_deadline, submission_deadline_label,
-                   submission_deadline_2, submission_deadline_2_label,
+                   submission_deadline, submission_deadline_2,
                    submission_deadline_previous, submission_deadline_2_previous,
                    {select_dl}
             FROM conferences
@@ -132,15 +130,13 @@ def send_deadline_reminders() -> None:
             title = row[0]
             website = row[1]
             leg_dl1 = row[2]
-            leg_label1 = row[3]
-            leg_dl2 = row[4]
-            leg_label2 = row[5]
-            leg_dl1_prev = row[6]
-            leg_dl2_prev = row[7]
+            leg_dl2 = row[3]
+            leg_dl1_prev = row[4]
+            leg_dl2_prev = row[5]
 
             # Check each named deadline type first
-            dl_offset = 8
-            has_new_deadline = any(row[dl_offset + i * 3] is not None for i in range(len(DEADLINE_TYPES)))
+            dl_offset = 6
+            has_new_deadline = any(row[dl_offset + i * 2] is not None for i in range(len(DEADLINE_TYPES)))
 
             # Legacy columns are only used when no new-schema deadline exists yet
             if not has_new_deadline:
@@ -152,8 +148,8 @@ def send_deadline_reminders() -> None:
                     entries.append((leg_dl2, website, title, is_updated, leg_dl2_prev if is_updated else None))
 
             for i, typ in enumerate(DEADLINE_TYPES):
-                dl = row[dl_offset + i * 3]
-                dl_prev = row[dl_offset + i * 3 + 2]
+                dl = row[dl_offset + i * 2]
+                dl_prev = row[dl_offset + i * 2 + 1]
                 if _within_30_days(dl):
                     is_updated = dl_prev is not None and dl_prev != dl
                     entries.append((dl, website, title, is_updated, dl_prev if is_updated else None))
