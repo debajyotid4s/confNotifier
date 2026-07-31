@@ -1,15 +1,15 @@
 """Stand-alone deadline verification entry point.
 
-Runs _verify_deadlines with a fresh PlaywrightManager.
+Runs verify_deadlines with a fresh PlaywrightManager.
 Used by the separate GHA workflow at 15:00 UTC (9pm Bangladesh).
 """
 import logging
 import os
 import sys
 
-from browser import PlaywrightManager
-from db import get_connection
-from main import _verify_deadlines
+from scraper.browser import PlaywrightManager
+from scraper.db import get_connection
+from scraper.verifier import verify_deadlines
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,7 +34,7 @@ def main():
         sys.exit(1)
 
     with PlaywrightManager() as playwright:
-        _verify_deadlines(playwright)
+        verify_deadlines(playwright)
 
 
 if __name__ == "__main__":

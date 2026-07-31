@@ -176,7 +176,7 @@ def extract_conferences(page_text: str, source_url: str) -> dict | None:
         logger.error("extractor: no API keys available")
         return None
 
-    trimmed = page_text[:8000]
+    trimmed = page_text[:MAX_TEXT_CHARS]
     max_attempts_per_key = 3
     total_keys = len(_clients)
 

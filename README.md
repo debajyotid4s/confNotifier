@@ -39,16 +39,15 @@ Three GitHub Actions workflows running on Neon free tier:
 ## How It Works
 
 ```
-GitHub Actions → main.py
-  ├─ homepage_links   — fetches 80+ .ac.bd homepages (requests → curl → Playwright)
-  ├─ certspotter      — SSLMate CertSpotter API, falls back to crt.sh
-  ├─ special          — hardcoded path probes, root_year detection, DNS subdomain checks
-  ├─ seen_links DFS   — skips URLs already processed, retries transient failures
-  ├─ dedup            — merges all sources into one candidate list
-  ├─ extract + save   — Gemini 2.5 Flash → parse JSON → write to Neon
-  ├─ notify           — Telegram post (if a deadline is within 30 days)
-  └─ verify           — weekly re-extraction with validation checks
+GitHub Actions → scraper/main.py
+  ├─ Phase 1-2  discovery     — homepage_links (80+ .ac.bd homepages) + special (crt, probes)
+  ├─ Phase 3    requeue       — merge pending + retryable URLs from previous runs
+  ├─ Phase 4    extract+save  — Gemini 2.5 Flash → parse JSON → dedup → write to Neon
+  ├─ Phase 5    notify        — Telegram post (deadline within 30 days) + pending backlog flush
+  └─ Phase 6    verify        — scraper/verifier.py: once-daily deadline re-check
 ```
+
+`main.py` is a thin orchestrator — it only wires phases together. All persistence lives in `db.py`, all Telegram messaging in `notifier.py`, deadline re-verification in `verifier.py`. Every DB operation opens and closes its own connection (Neon idle timeout requirement).
 
 ### State Machine
 
@@ -112,15 +111,16 @@ Three checks run before saving anything:
 
 ```
 scraper/
-├── main.py              # Pipeline orchestrator
+├── main.py              # Pipeline orchestrator — phases 1-6, no business logic
 ├── extractor.py         # Gemini client, rate limiter
-├── schema.py            # Deadline definitions, JSON schema, system prompt
+├── schema.py            # Deadline definitions, JSON schema, SQL builders, system prompt
 ├── validation.py        # Three validation layers
+├── verifier.py          # Deadline re-verification: once-per-day guard, diff, apply, notify
 ├── browser.py           # Playwright singleton with crash recovery
-├── db.py                # DB connection, cache helpers
-├── notifier.py          # Telegram message builder
+├── db.py                # All persistence: conferences, seen_links DFS, dedup, task state
+├── notifier.py          # Telegram: notify, pending flush, deadline-change alerts
 ├── send_reminders.py    # Daily deadline digest
-├── verify_deadlines.py  # Standalone deadline verification entrypoint
+├── verify_deadlines.py  # Standalone entrypoint → verifier.py (15 UTC workflow)
 └── sources/
     ├── homepage_links.py
     ├── special.py
