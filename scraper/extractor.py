@@ -216,7 +216,6 @@ def extract_conferences(page_text: str, source_url: str) -> dict | None:
                         }
                     ],
                     temperature=0.0,
-                    seed=42,
                     max_tokens=4096,
                     response_format={
                         "type": "json_schema",
