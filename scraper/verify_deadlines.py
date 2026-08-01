@@ -33,8 +33,13 @@ def main():
         logger.critical("Cannot connect to PostgreSQL: %s", e)
         sys.exit(1)
 
-    with PlaywrightManager() as playwright:
-        verify_deadlines(playwright)
+    try:
+        with PlaywrightManager() as playwright:
+            verify_deadlines(playwright)
+    except Exception as e:
+        logger.critical(
+            "Browser failed to launch — skipping deadline verification: %s", e
+        )
 
 
 if __name__ == "__main__":
