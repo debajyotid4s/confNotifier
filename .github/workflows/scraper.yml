@@ -33,8 +33,23 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-v${{ steps.pw-version.outputs.version }}
 
+      - name: Verify cached Playwright browsers
+        id: pw-check
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: |
+          if python -c "
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              b = p.chromium.launch(headless=True)
+              b.close()
+          " 2>/dev/null; then
+            echo "browser-ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "browser-ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install Playwright browsers
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        if: steps.playwright-cache.outputs.cache-hit != 'true' || steps.pw-check.outputs.browser-ok == 'false'
         run: playwright install --with-deps chromium
 
       - name: Run scraper
