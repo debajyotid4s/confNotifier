@@ -19,27 +19,32 @@ def _parse_date_safe(date_str):
 def _check_deadline_swap(new_values: dict, stored_values: dict) -> set:
     """Layer A: cross-field swap detection.
 
-    For each deadline type, if the new value exactly equals a stored value
-    for a different deadline type, flag it as a probable field swap.
+    Flags a pair of fields only for a TWO-WAY swap: the new value of field A
+    equals the stored value of field B, AND the new value of field B equals
+    the stored value of field A. A genuine Gemini field swap is two-way by
+    definition. One-way date matches are usually coincidence (deadlines
+    repeat/align) or evidence that a stored value was itself misplaced — they
+    are not swaps and must not block updates.
 
-    Returns set of field types (e.g. {'abstract', 'full_paper'}) that look swapped.
+    Returns set of field types involved in a two-way swap.
     """
     swapped = set()
     for typ1 in DEADLINE_TYPES:
-        new_val = new_values.get(typ1)
-        if new_val is None:
+        new1 = new_values.get(typ1)
+        if new1 is None:
             continue
         for typ2 in DEADLINE_TYPES:
-            if typ1 == typ2:
+            if typ2 <= typ1:  # each pair considered once
                 continue
-            stored_val = stored_values.get(typ2)
-            if stored_val is not None and new_val == stored_val:
-                swapped.add(typ1)
+            new2 = new_values.get(typ2)
+            if new2 is None:
+                continue
+            if new1 == stored_values.get(typ2) and new2 == stored_values.get(typ1):
+                swapped.update((typ1, typ2))
                 logger.warning(
-                    "deadline_swap: new %s (%s) == stored %s (%s) — probable swap",
-                    typ1, new_val, typ2, stored_val
+                    "deadline_swap: two-way swap between %s (%s) and %s (%s)",
+                    typ1, new1, typ2, new2
                 )
-                break
     return swapped
 
 

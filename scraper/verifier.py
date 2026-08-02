@@ -7,6 +7,7 @@ First-time discoveries save silently (no notification).
 
 import logging
 from datetime import date, datetime, timezone
+from urllib.parse import urlparse
 
 from scraper import db
 from scraper.extractor import extract
@@ -183,12 +184,33 @@ def _diff_deadlines(result: dict, old_values: dict, swapped_fields: set, context
             continue
 
         if old_dl is not None and new_dl < old_dl:
-            logger.warning(
-                "deadline_verification: %s — %s moved backward %s → %s, "
-                "likely extraction error, skipping",
-                website, typ, old_dl, new_dl
+            # The stored value may itself be wrong: an earlier extraction may
+            # have misplaced a date into this field. If the stored value now
+            # matches ANOTHER field's freshly extracted date, it belonged
+            # there — accept the correction instead of blocking it.
+            misplaced = any(
+                other_typ != typ
+                and _parse_date_safe(result.get(f"{other_typ}_deadline")) == old_dl
+                for other_typ in DEADLINE_TYPES
             )
-            continue
+            if misplaced:
+                logger.warning(
+                    "deadline_verification: %s — %s moved backward %s → %s but "
+                    "stored value matches new %s — stored value was misplaced, accepting",
+                    website, typ, old_dl, new_dl,
+                    next(
+                        (o for o in DEADLINE_TYPES if o != typ
+                         and _parse_date_safe(result.get(f"{o}_deadline")) == old_dl),
+                        "?"
+                    )
+                )
+            else:
+                logger.warning(
+                    "deadline_verification: %s — %s moved backward %s → %s, "
+                    "likely extraction error, skipping",
+                    website, typ, old_dl, new_dl
+                )
+                continue
 
         updates.append((f"{typ}_deadline", f"{typ}_deadline_label", f"{typ}_deadline_previous", new_dl, new_label))
         if old_dl is not None:
@@ -267,6 +289,12 @@ def _process_conference(row, playwright) -> None:
     used_url = None
     for candidate_url in dict.fromkeys([raw_source, website]):
         if not candidate_url:
+            continue
+        if urlparse(candidate_url).scheme not in ("http", "https"):
+            logger.debug(
+                "deadline_verification: skipping non-URL raw_source %r for %s",
+                candidate_url, title
+            )
             continue
         try:
             result = extract(
