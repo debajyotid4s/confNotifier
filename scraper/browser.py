@@ -168,10 +168,14 @@ class PlaywrightManager:
             except Exception:
                 break
 
-    def fetch_page_text(self, url: str, timeout: int = 30000) -> str | None:
+    def fetch_page_text(self, url: str, timeout: int = 30000, wait_until: str = "domcontentloaded") -> str | None:
         """Load a URL and return visible text (first 8000 chars).
 
-        Uses networkidle for automatic wait — no arbitrary sleep needed.
+        wait_until controls the Playwright load condition:
+        - "domcontentloaded" (default, fast) — deadlines rendered by JS shortly
+          after DOM ready may be missed.
+        - "load" — waits for the load event, letting JS-rendered deadline
+          timelines (ICCIT/ICMIEE style) appear before innerText is read.
         Applies human-like scroll after load for stealth.
         Auto-restarts browser on crash, retries once.
         Returns None on any error.
@@ -184,7 +188,7 @@ class PlaywrightManager:
             url = self._normalize_url(url)
             for attempt in range(2):
                 try:
-                    self._page.goto(url, timeout=30000, wait_until="domcontentloaded")
+                    self._page.goto(url, timeout=30000, wait_until=wait_until)
                     self._human_like_scroll()
                     text = self._page.evaluate("document.body.innerText")
                     if not text or len(text.strip()) < 100:

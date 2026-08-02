@@ -1,7 +1,7 @@
 import logging
 import os
 import time
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from urllib.parse import urlparse, urlunparse
 
 import psycopg2
@@ -506,7 +506,8 @@ def load_known_websites() -> set:
 
 
 def mark_verification_done() -> None:
-    """Mark deadline_verification as done today in daily_tasks."""
+    """Record the last deadline-verification run as a timestamp."""
+    now = datetime.now(timezone.utc)
     conn = None
     try:
         conn = get_connection()
@@ -517,7 +518,7 @@ def mark_verification_done() -> None:
             VALUES ('deadline_verification', %s)
             ON CONFLICT (task_name) DO UPDATE SET last_run_date = %s
             """,
-            (date.today(), date.today())
+            (now, now)
         )
         conn.commit()
         cur.close()

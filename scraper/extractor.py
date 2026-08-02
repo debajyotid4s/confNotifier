@@ -9,7 +9,13 @@ from collections import deque
 from openai import OpenAI
 
 from scraper.browser import PlaywrightManager
-from scraper.schema import EXTRACTION_SCHEMA, SYSTEM_PROMPT, normalize_extraction
+from scraper.schema import (
+    DEADLINE_LABELS,
+    DEADLINE_TYPES,
+    EXTRACTION_SCHEMA,
+    SYSTEM_PROMPT,
+    normalize_extraction,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -132,12 +138,14 @@ def _is_url_reachable(url: str) -> bool:
         return False
 
 
-def _fetch_page_text(url, playwright: PlaywrightManager):
+def _fetch_page_text(url, playwright: PlaywrightManager, wait_until: str = "domcontentloaded"):
     """Load a URL with Playwright and extract the visible text content.
 
     Args:
         url: The URL to fetch.
         playwright: Active PlaywrightManager instance (single browser for entire run).
+        wait_until: Playwright wait condition. "domcontentloaded" for speed,
+                    "load" for pages whose deadlines render via JS after DOM ready.
 
     Returns:
         Extracted text content (first 8000 chars), or None on failure.
@@ -147,14 +155,35 @@ def _fetch_page_text(url, playwright: PlaywrightManager):
         logger.warning("SSRF blocked: %s", url)
         return None
 
-    text = playwright.fetch_page_text(url)
+    text = playwright.fetch_page_text(url, wait_until=wait_until)
     if text is None:
         logger.error("Failed to load candidate URL: %s", url)
         return None
     return text
 
 
-def extract_conferences(page_text: str, source_url: str) -> dict | None:
+def _format_previous_deadlines(previous_deadlines: dict) -> str | None:
+    """Render previously stored deadlines as 'may be outdated' context for the LLM."""
+    if not previous_deadlines:
+        return None
+    lines = []
+    for typ in DEADLINE_TYPES:
+        old = previous_deadlines.get(typ)
+        old_date = old.get("date") if isinstance(old, dict) else old
+        if old_date:
+            lines.append(f"  - {DEADLINE_LABELS.get(typ, typ)}: {old_date}")
+    if not lines:
+        return None
+    return (
+        "\n\nPreviously recorded deadlines from our database (may be OUTDATED — "
+        "the website may have been updated):\n"
+        + "\n".join(lines)
+        + "\nIMPORTANT: Extract the CURRENT dates shown on the page right now. "
+        "Do NOT repeat the previously recorded values unless the page still displays them."
+    )
+
+
+def extract_conferences(page_text: str, source_url: str, previous_deadlines: dict | None = None) -> dict | None:
     """
     Send page text to Gemini 2.5 Flash via Google AI Studio.
 
@@ -163,7 +192,13 @@ def extract_conferences(page_text: str, source_url: str) -> dict | None:
     - All keys' daily quotas are exhausted
     - API returns a non-rate-limit error after 3 attempts per key
     - Page text is empty
-    
+
+    Args:
+        page_text: Visible text of the page.
+        source_url: The URL that was fetched.
+        previous_deadlines: Optional {type: {date, label}} of what we had stored,
+                            passed so the LLM anchors on the CURRENT page values.
+
     Returns parsed dict or None.
     """
     global _current_key_idx
@@ -179,6 +214,11 @@ def extract_conferences(page_text: str, source_url: str) -> dict | None:
     trimmed = page_text[:MAX_TEXT_CHARS]
     max_attempts_per_key = 3
     total_keys = len(_clients)
+
+    user_content = f"Source URL: {source_url}\n\nPage content:\n{trimmed}"
+    previous_block = _format_previous_deadlines(previous_deadlines)
+    if previous_block:
+        user_content += previous_block
 
     # Try each key, starting from current
     for key_offset in range(total_keys):
@@ -212,7 +252,7 @@ def extract_conferences(page_text: str, source_url: str) -> dict | None:
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {
                             "role": "user",
-                            "content": f"Source URL: {source_url}\n\nPage content:\n{trimmed}"
+                            "content": user_content
                         }
                     ],
                     temperature=0.0,
@@ -278,12 +318,18 @@ def total_requests_today() -> int:
     return sum(c["limiter"]._daily_count for c in _clients)
 
 
-def extract(url, playwright: PlaywrightManager):
+def extract(url, playwright: PlaywrightManager, previous_deadlines: dict | None = None,
+            wait_until: str = "domcontentloaded"):
     """Extract conference details from a candidate URL using Gemini 2.5 Flash.
 
     Args:
         url: The candidate conference URL.
         playwright: Active PlaywrightManager instance.
+        previous_deadlines: Optional {type: {date, label}} of what we had stored,
+                            passed so the LLM anchors on the CURRENT page values
+                            (used by deadline verification).
+        wait_until: Playwright wait condition — "domcontentloaded" (default) or
+                    "load" when JS-rendered deadline timelines must be present.
 
     Returns:
         Dict with conference data if found, or None.
@@ -292,7 +338,7 @@ def extract(url, playwright: PlaywrightManager):
         logger.warning("extractor: DNS resolution failed for %s, skipping", url)
         return None
 
-    text = _fetch_page_text(url, playwright)
+    text = _fetch_page_text(url, playwright, wait_until=wait_until)
     if text is None:
         logger.warning("extractor: could not fetch page text for %s", url)
         return None
@@ -302,4 +348,4 @@ def extract(url, playwright: PlaywrightManager):
         return None
 
     logger.info("extractor: extracting from %s", url)
-    return extract_conferences(text, url)
+    return extract_conferences(text, url, previous_deadlines=previous_deadlines)

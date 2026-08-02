@@ -67,7 +67,7 @@ CREATE INDEX IF NOT EXISTS idx_seen_links_status ON seen_links (status);
 
 CREATE TABLE IF NOT EXISTS daily_tasks (
     task_name TEXT PRIMARY KEY,
-    last_run_date DATE
+    last_run_date TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS domain_strategies (

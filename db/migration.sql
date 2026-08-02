@@ -22,3 +22,8 @@ ALTER TABLE conferences ADD COLUMN IF NOT EXISTS deadline_last_verified TIMESTAM
 -- conferences: unique index on (website, date_start)
 ALTER TABLE conferences DROP CONSTRAINT IF EXISTS conferences_website_key;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_conferences_website_date ON conferences (website, date_start);
+
+-- daily_tasks: DATE → TIMESTAMPTZ so deadline verification can run on an
+-- hourly interval instead of once per day (existing rows = midnight UTC).
+ALTER TABLE daily_tasks ALTER COLUMN last_run_date TYPE TIMESTAMPTZ
+    USING last_run_date::timestamp AT TIME ZONE 'UTC';
