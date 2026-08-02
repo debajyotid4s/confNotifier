@@ -6,7 +6,7 @@ First-time discoveries save silently (no notification).
 """
 
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
 
 from scraper import db
 from scraper.extractor import extract
@@ -28,6 +28,10 @@ from scraper.validation import (
 logger = logging.getLogger(__name__)
 
 VERIFY_WINDOW_DAYS = 30
+# Interval (hours) between re-verification runs. The main scraper runs 5x/day
+# and calls verify_deadlines at the end of each run; this guard lets updates
+# (deadline extensions) be caught within hours instead of once per day.
+VERIFY_INTERVAL_HOURS = 8
 TASK_NAME = "deadline_verification"
 
 # Whitelist of columns writable during verification (SQL injection guard).
@@ -35,7 +39,11 @@ ALLOWED_FIELDS = set(DEADLINE_DB_FIELDS)
 
 
 def _should_run_verification() -> bool:
-    """Once-per-day guard. Returns True when verification should run today."""
+    """Interval guard. Returns True when verification should run now.
+
+    Verifies at most once per VERIFY_INTERVAL_HOURS (stored as a timestamp
+    in daily_tasks; legacy DATE rows are treated as midnight UTC).
+    """
     conn = None
     try:
         conn = db.get_connection()
@@ -47,14 +55,21 @@ def _should_run_verification() -> bool:
         row = cur.fetchone()
         cur.close()
 
-        today = date.today()
         if not row or not row[0]:
             return True
-        days_since = (today - row[0]).days
-        if days_since < 1:
+        last_run = row[0]
+        # NOTE: datetime is a subclass of date — check datetime FIRST, and
+        # only treat as a legacy DATE row when it is not a datetime.
+        if isinstance(last_run, datetime):
+            if last_run.tzinfo is None:
+                last_run = last_run.replace(tzinfo=timezone.utc)
+        elif isinstance(last_run, date):
+            last_run = datetime.combine(last_run, datetime.min.time(), tzinfo=timezone.utc)
+        hours_since = (datetime.now(timezone.utc) - last_run).total_seconds() / 3600
+        if hours_since < VERIFY_INTERVAL_HOURS:
             logger.info(
-                "deadline_verification: ran %d day(s) ago, skipping",
-                days_since
+                "deadline_verification: last ran %.1fh ago (< %dh), skipping",
+                hours_since, VERIFY_INTERVAL_HOURS
             )
             return False
         return True
@@ -85,7 +100,7 @@ def _load_conferences_for_verification() -> list | None:
         cur = conn.cursor()
         cur.execute(
             f"""
-            SELECT id, title, website,
+            SELECT id, title, website, raw_source,
                    submission_deadline, submission_deadline_label,
                    submission_deadline_2, submission_deadline_2_label,
                    {select_dl}
@@ -112,12 +127,12 @@ def _load_conferences_for_verification() -> list | None:
 def _extract_old_deadlines(row) -> dict:
     """Map a verification row to per-type {date, label}, falling back to legacy columns.
 
-    Row layout: id, title, website, legacy_dl1, legacy_label1,
+    Row layout: id, title, website, raw_source, legacy_dl1, legacy_label1,
     legacy_dl2, legacy_label2, then date+label per DEADLINE_TYPES.
     """
-    legacy_dates = {0: row[3], 1: row[5]}
-    legacy_labels = {0: row[4], 1: row[6]}
-    dl_offset = 7
+    legacy_dates = {0: row[4], 1: row[6]}
+    legacy_labels = {0: row[5], 1: row[7]}
+    dl_offset = 8
 
     old = {}
     for i, typ in enumerate(DEADLINE_TYPES):
@@ -237,23 +252,68 @@ def _apply_updates(conf_id: int, updates: list, website: str) -> bool:
 
 
 def _process_conference(row, playwright) -> None:
-    """Re-extract one conference and apply validated deadline changes."""
+    """Re-extract one conference and apply validated deadline changes.
+
+    Re-fetches the originally scraped page (raw_source) first — the stored
+    `website` is the LLM's guess and may point at a landing page that does
+    not show deadlines. Falls back to `website`, then logs loudly when the
+    re-extraction is inconclusive so missed updates are never silent.
+    """
     conf_id, title, website = row[0], row[1], row[2]
+    raw_source = row[3]
     old_values = _extract_old_deadlines(row)
 
-    try:
-        result = extract(website, playwright)
-    except Exception as e:
-        logger.error(
-            "deadline_verification: extraction error for %s: %s", website, e
+    result = None
+    used_url = None
+    for candidate_url in dict.fromkeys([raw_source, website]):
+        if not candidate_url:
+            continue
+        try:
+            result = extract(
+                candidate_url,
+                playwright,
+                previous_deadlines=old_values,
+                wait_until="load",
+            )
+        except Exception as e:
+            logger.error(
+                "deadline_verification: extraction error for %s: %s",
+                candidate_url, e
+            )
+            continue
+        if result and result.get("is_conference"):
+            used_url = candidate_url
+            break
+        logger.warning(
+            "deadline_verification: inconclusive re-extraction at %s — trying next URL",
+            candidate_url
         )
-        return
 
     if not result or not result.get("is_conference"):
         logger.warning(
-            "deadline_verification: could not re-extract %s", website
+            "deadline_verification: could not re-extract %s (tried raw_source=%s, website=%s) — "
+            "deadline changes may be missed; check manually",
+            title, raw_source, website
         )
         return
+
+    if used_url and used_url != website:
+        logger.info(
+            "deadline_verification: re-extracted %s via %s (stored website is %s)",
+            title, used_url, website
+        )
+
+    # A previously-known conference that now yields zero deadlines is a red
+    # flag (page restructured, deadline moved to an image/PDF, fetch issue).
+    if any(old_values[t]["date"] for t in DEADLINE_TYPES) and not any(
+        result.get(f"{t}_deadline") for t in DEADLINE_TYPES
+    ):
+        logger.warning(
+            "deadline_verification: %s — extraction returned NO deadlines while the DB has %d; "
+            "the page may have changed structure — check manually",
+            title,
+            sum(1 for t in DEADLINE_TYPES if old_values[t]["date"])
+        )
 
     # ── Validation layers ──
     new_values = {}
@@ -296,7 +356,7 @@ def _process_conference(row, playwright) -> None:
 def verify_deadlines(playwright) -> None:
     """
     Re-extract submission deadlines for all upcoming conferences.
-    Runs at most once per day (guarded by daily_tasks table).
+    Runs at most once every VERIFY_INTERVAL_HOURS (guarded by daily_tasks table).
     If a deadline changed, updates the DB and
     sends a Telegram notification about the extension/change.
     Only processes conferences with date_start > today.
