@@ -34,7 +34,12 @@ Three GitHub Actions workflows running on Neon free tier:
    psql "$DATABASE_URL" -f db/schema.sql
    psql "$DATABASE_URL" -f db/migration.sql
    ```
-4. Push. Workflows run on cron; you can trigger them manually from the Actions tab.
+4. In your GitHub Actions workflow, install the package before running:
+   ```bash
+   pip install -e .
+   python scraper/main.py
+   ```
+5. Push. Workflows run on cron; you can trigger them manually from the Actions tab.
 
 ## How It Works
 
@@ -121,6 +126,7 @@ scraper/
 ├── notifier.py          # Telegram: notify, pending flush, deadline-change alerts
 ├── send_reminders.py    # Daily deadline digest
 ├── verify_deadlines.py  # Standalone entrypoint → verifier.py (15 UTC workflow)
+├── utils.py             # Shared utilities (SSRF protection, etc.)
 └── sources/
     ├── homepage_links.py
     ├── special.py
@@ -132,13 +138,15 @@ config/
 db/
 ├── schema.sql
 └── migration.sql
+pyproject.toml           # Package definition (pip install -e .)
+requirements.txt         # Pinned runtime dependencies
 ```
 
 ## Running Locally
 
 ```bash
 python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+pip install -e .
 playwright install --with-deps chromium
 
 export DATABASE_URL="postgresql://..."
@@ -146,7 +154,7 @@ export GOOGLE_AI_KEY="..."
 export TELEGRAM_BOT_TOKEN="..."
 export TELEGRAM_CHANNEL_ID="@channel"
 
-PYTHONPATH=. python scraper/main.py
+python scraper/main.py
 ```
 
 ## Tests

@@ -27,6 +27,7 @@ class PlaywrightManager:
 
     _instance = None
     _lock = threading.Lock()
+    _init_lock = threading.Lock()
 
     def __new__(cls):
         with cls._lock:
@@ -38,12 +39,15 @@ class PlaywrightManager:
     def __init__(self):
         if self._initialized:
             return
-        self._initialized = True
-        self._pw = None
-        self._browser = None
-        self._context = None
-        self._page = None
-        self._page_lock = threading.Lock()
+        with PlaywrightManager._init_lock:
+            if self._initialized:
+                return
+            self._initialized = True
+            self._pw = None
+            self._browser = None
+            self._context = None
+            self._page = None
+            self._page_lock = threading.Lock()
 
     def __enter__(self):
         if self._page is not None:

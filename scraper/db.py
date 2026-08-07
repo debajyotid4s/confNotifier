@@ -178,7 +178,8 @@ def normalize_website(url: str) -> str:
     """Normalize a conference website URL for consistent dedup comparison.
 
     Strips trailing slash, lowercases hostname, strips www. prefix,
-    forces https scheme. Returns empty string for empty/None input.
+    forces https scheme, strips query params/fragment.
+    Returns empty string for empty/None input.
     """
     if not url:
         return url
@@ -193,7 +194,7 @@ def normalize_website(url: str) -> str:
     if hostname.startswith("www."):
         hostname = hostname[4:]
     path = parsed.path.rstrip("/")
-    return urlunparse(("https", hostname, path, parsed.params, parsed.query, parsed.fragment))
+    return urlunparse(("https", hostname, path, "", "", ""))
 
 
 # ── Conference persistence ──

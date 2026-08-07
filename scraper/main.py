@@ -19,7 +19,7 @@ import logging
 import os
 import re
 import sys
-import time
+import threading
 from datetime import datetime
 from enum import Enum, auto
 from urllib.parse import urlparse
@@ -48,7 +48,6 @@ logger = logging.getLogger(__name__)
 
 MIN_CONFIDENCE = 0.75
 NOTIFY_WINDOW_DAYS = 30
-PAUSE_SECONDS = 5
 
 REQUIRED_ENV_VARS = ["DATABASE_URL", "GOOGLE_AI_KEY", "TELEGRAM_BOT_TOKEN"]
 CHANNEL_ENV_VARS = ["TELEGRAM_CHANNEL_ID", "TELEGRAM_CHANNEL_LINK"]
@@ -77,9 +76,10 @@ class CandidateOutcome(Enum):
 
 
 class RunStats:
-    """Aggregates counters for one pipeline run."""
+    """Aggregates counters for one pipeline run. Thread-safe."""
 
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         self.found = 0
         self.new = 0
         self.skipped = 0
@@ -87,21 +87,22 @@ class RunStats:
         self.quota_exhausted = False
 
     def tally(self, outcome: CandidateOutcome) -> None:
-        if outcome is CandidateOutcome.SAVED:
-            self.new += 1
-            return
-        if outcome in {
-            CandidateOutcome.PROCESSED,
-            CandidateOutcome.DUPLICATE,
-            CandidateOutcome.PAST_YEAR_URL,
-            CandidateOutcome.NOT_CONFERENCE,
-            CandidateOutcome.LOW_CONFIDENCE,
-            CandidateOutcome.PAST_CONFERENCE,
-            CandidateOutcome.UPDATED,
-        }:
-            self.skipped += 1
-            return
-        self.failed += 1
+        with self._lock:
+            if outcome is CandidateOutcome.SAVED:
+                self.new += 1
+                return
+            if outcome in {
+                CandidateOutcome.PROCESSED,
+                CandidateOutcome.DUPLICATE,
+                CandidateOutcome.PAST_YEAR_URL,
+                CandidateOutcome.NOT_CONFERENCE,
+                CandidateOutcome.LOW_CONFIDENCE,
+                CandidateOutcome.PAST_CONFERENCE,
+                CandidateOutcome.UPDATED,
+            }:
+                self.skipped += 1
+                return
+            self.failed += 1
 
     def log_summary(self) -> None:
         logger.info(
@@ -321,7 +322,8 @@ def _process_candidate(
 ) -> CandidateOutcome:
     """Extract + validate + persist one candidate URL.
 
-    The caller owns pacing (sleep) and quota-loop termination.
+    Pacing is handled by the rate limiters in extractor.py.
+    Quota-loop termination is owned by the caller.
     """
     if url in retryable_url_set:
         db.increment_retry(url)
@@ -414,7 +416,6 @@ def _run_extraction_loop(
 
         outcome = _process_candidate(url, playwright, known_websites, retryable_url_set, stats)
         stats.tally(outcome)
-        time.sleep(PAUSE_SECONDS)
 
 
 # ── Main orchestrator ──

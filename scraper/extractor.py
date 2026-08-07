@@ -59,6 +59,7 @@ class GoogleRateLimiter:
         Raises RuntimeError if daily quota is exhausted.
         """
         while True:
+            wait_seconds = 0.0
             with self._lock:
                 self._reset_daily_if_needed()
 
@@ -90,7 +91,7 @@ class GoogleRateLimiter:
                     self._daily_count += 1
                     return
                 else:
-                    # At RPM limit — calculate exact wait time
+                    # At RPM limit — calculate exact wait time (do NOT record yet)
                     oldest_in_window = self._request_timestamps[0]
                     wait_seconds = (oldest_in_window + self.WINDOW_SECONDS) - now + 0.5
 
@@ -150,8 +151,8 @@ def _fetch_page_text(url, playwright: PlaywrightManager, wait_until: str = "domc
     Returns:
         Extracted text content (first 8000 chars), or None on failure.
     """
-    from scraper.sources.homepage_links import _is_safe_url
-    if not _is_safe_url(url):
+    from scraper.utils import is_safe_url
+    if not is_safe_url(url):
         logger.warning("SSRF blocked: %s", url)
         return None
 
