@@ -36,6 +36,11 @@ VERIFY_INTERVAL_HOURS = 8
 TASK_NAME = "deadline_verification"
 
 # Whitelist of columns writable during verification (SQL injection guard).
+# SECURITY: f-string column names are safe because ALLOWED_FIELDS is a static
+# set derived from DEADLINE_DB_FIELDS (schema.py) — all values are hardcoded
+# strings like "abstract_deadline", not user input. The UPDATE uses parameterized
+# values (%s) for all data. If a new deadline type is added, it must appear in
+# DEADLINE_DB_FIELDS to be writable here.
 ALLOWED_FIELDS = set(DEADLINE_DB_FIELDS)
 
 

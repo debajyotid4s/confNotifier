@@ -1,8 +1,6 @@
-import ipaddress
 import json
 import logging
 import re
-import socket
 import subprocess
 import time
 from urllib.parse import urlparse, urljoin
@@ -11,8 +9,9 @@ import requests
 from bs4 import BeautifulSoup
 from urllib3.exceptions import HeaderParsingError
 
-from db import get_connection, save_seen_link, load_domain_strategies, save_domain_strategy
+from scraper.db import get_connection, save_seen_link, load_domain_strategies, save_domain_strategy
 from scraper.browser import PlaywrightManager
+from scraper.utils import is_safe_url
 
 # Suppress noisy urllib3 connection warnings from malformed server headers
 logging.getLogger("urllib3.connection").setLevel(logging.ERROR)
@@ -20,7 +19,7 @@ logging.getLogger("urllib3.connection").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 
 
-def _is_safe_url(url: str) -> bool:
+def is_safe_url(url: str) -> bool:
     """Block SSRF: dangerous schemes, private/internal IPs, localhost."""
     try:
         parsed = urlparse(url)
@@ -78,7 +77,7 @@ _REQUESTS_HEADERS = {
 def _try_requests(url: str) -> str | None:
     """Try fetching with requests. Retries once on failure.
     Returns HTML content or None if all attempts fail."""
-    if not _is_safe_url(url):
+    if not is_safe_url(url):
         return None
     for attempt in range(2):
         try:
@@ -137,7 +136,7 @@ def _playwright_fetch(url: str, playwright: PlaywrightManager) -> str | None:
     """Fetch page HTML using Playwright with stealth.
     Handles Cloudflare JS challenge (Category A1) that block requests and curl.
     """
-    if not _is_safe_url(url):
+    if not is_safe_url(url):
         logger.warning("SSRF blocked (playwright): %s", url)
         return None
     try:
@@ -151,7 +150,7 @@ def _curl_fetch(url: str, timeout: int = 15) -> str | None:
     """Fetch page HTML using curl subprocess. Retries once on failure.
     Handles malformed headers that break requests/urllib3
     (Category B failures like buet.ac.bd)."""
-    if not _is_safe_url(url):
+    if not is_safe_url(url):
         logger.warning("SSRF blocked (curl): %s", url)
         return None
     for attempt in range(2):
@@ -186,7 +185,7 @@ def fetch_homepage_fast(url: str, retries: int = 2, playwright: PlaywrightManage
     Returns (soup, strategy) where strategy is one of:
     "requests", "curl", "playwright", or None if all failed.
     """
-    if not _is_safe_url(url):
+    if not is_safe_url(url):
         logger.warning("SSRF blocked: %s", url)
         return None, None
 

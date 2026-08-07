@@ -6,7 +6,7 @@ import time
 
 import requests
 
-from db import get_connection
+from scraper.db import get_connection
 
 logger = logging.getLogger(__name__)
 

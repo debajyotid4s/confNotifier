@@ -8,12 +8,11 @@ Telegram message to the channel. crt_monitor runs first (once daily).
 import logging
 import os
 import sys
-import time
 from datetime import date, datetime, timezone
 
-import psycopg2
 import requests
 
+from scraper import db
 from scraper.sources.crt_monitor import run as crt_monitor_run
 from scraper.schema import DEADLINE_TYPES
 
@@ -26,18 +25,6 @@ logger = logging.getLogger("send_reminders")
 
 MAX_DAYS = 30
 BAR_LEN = 20
-
-
-def _get_db_connection():
-    dsn = os.environ["DATABASE_URL"]
-    for attempt in range(3):
-        try:
-            return psycopg2.connect(dsn)
-        except psycopg2.Error as e:
-            logger.error("DB connection attempt %d/3 failed: %s", attempt + 1, e)
-            if attempt < 2:
-                time.sleep(5)
-    raise RuntimeError("Could not connect to database after 3 attempts")
 
 
 def _escape_html(text: str) -> str:
@@ -107,7 +94,7 @@ def send_deadline_reminders() -> None:
 
     conn = None
     try:
-        conn = _get_db_connection()
+        conn = db.get_connection()
         cur = conn.cursor()
         cur.execute(
             f"""

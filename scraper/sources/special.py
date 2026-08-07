@@ -8,8 +8,11 @@ from urllib.parse import urlparse, urlunparse
 import requests
 from bs4 import BeautifulSoup
 
-from db import get_connection, save_seen_link, load_special_path_cache, save_special_path_cache
-from scraper.sources.homepage_links import _is_safe_url
+from scraper.db import (
+    get_connection, save_seen_link, load_special_path_cache,
+    save_special_path_cache, normalize_website,
+)
+from scraper.utils import is_safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +53,7 @@ def _probe_url(url, timeout=10, min_content=500):
         min_content: Minimum response body length to consider valid.
                      Use 200 for SPA pages that have a small HTML shell.
     """
-    if not _is_safe_url(url):
+    if not is_safe_url(url):
         logger.warning("SSRF blocked: %s", url)
         return False
     try:
@@ -95,7 +98,7 @@ def _handle_conf_info_bd(source):
         href = link_tag.get("href", "").strip()
         if not href:
             continue
-        if not _is_safe_url(href):
+        if not is_safe_url(href):
             logger.warning("conf_info_bd: SSRF blocked: %s", href)
             continue
         if _is_seen(href):
@@ -175,28 +178,9 @@ def _handle_path(source):
 # ── Handler: "root_year" (QPAIN-style: detect year from page content) ──
 
 
-def _normalize_website(url: str) -> str:
-    """Normalize a website URL for consistent dedup comparison.
-    Must match main._normalize_website exactly.
-    """
-    if not url:
-        return url
-    try:
-        parsed = urlparse(url)
-        if not parsed.hostname:
-            return url
-        hostname = parsed.hostname.lower()
-        if hostname.startswith("www."):
-            hostname = hostname[4:]
-        path = parsed.path.rstrip("/")
-        return urlunparse(("https", hostname, path, "", "", ""))
-    except Exception:
-        return url
-
-
 def _is_edition_in_db(base_url: str, year: int) -> bool:
     """Return True if a conference with this website + year is already saved."""
-    normalized = _normalize_website(base_url)
+    normalized = normalize_website(base_url)
     conn = None
     try:
         conn = get_connection()
@@ -227,7 +211,7 @@ def _handle_root_year(source):
     year = datetime.now().year
     candidates = []
 
-    if not _is_safe_url(base_url):
+    if not is_safe_url(base_url):
         logger.warning("SSRF blocked: %s", base_url)
         return []
 
