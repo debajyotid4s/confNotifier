@@ -20,7 +20,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -e .
 
       - name: Get Playwright version
         id: pw-version
@@ -53,7 +53,7 @@ jobs:
         run: playwright install --with-deps chromium
 
       - name: Verify deadlines
-        run: PYTHONPATH=. python scraper/verify_deadlines.py
+        run: python scraper/verify_deadlines.py
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GOOGLE_AI_KEY: ${{ secrets.GOOGLE_AI_KEY }}
@@ -64,7 +64,7 @@ jobs:
           TELEGRAM_CHANNEL_LINK: ${{ secrets.TELEGRAM_CHANNEL_LINK }}
 
       - name: Send daily reminders
-        run: PYTHONPATH=. python scraper/send_reminders.py
+        run: python scraper/send_reminders.py
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

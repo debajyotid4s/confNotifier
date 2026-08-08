@@ -12,7 +12,7 @@ Every DB operation opens and closes its own connection — no long-lived
 connection is held during source scanning or LLM extraction (Neon idle
 timeout requirement).
 
-Runs as: PYTHONPATH=. python scraper/main.py
+Runs as: pip install -e . && python scraper/main.py
 """
 
 import logging
