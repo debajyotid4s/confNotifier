@@ -20,7 +20,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -e .
 
       - name: Get Playwright version
         id: pw-version
@@ -53,7 +53,7 @@ jobs:
         run: playwright install --with-deps chromium
 
       - name: Run scraper
-        run: PYTHONPATH=. python scraper/main.py
+        run: python scraper/main.py
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GOOGLE_AI_KEY: ${{ secrets.GOOGLE_AI_KEY }}
