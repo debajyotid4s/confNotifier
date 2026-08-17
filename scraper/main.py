@@ -461,7 +461,7 @@ def run():
             if pending_sent > 0:
                 logger.info("notify_pending: sent %d notification(s)", pending_sent)
 
-            # Phase 6: weekly deadline re-verification
+            # Phase 6: interval-guarded deadline re-verification
             try:
                 verify_deadlines(playwright)
             except Exception as e:
@@ -469,7 +469,7 @@ def run():
 
     except Exception as e:
         logger.critical("PlaywrightManager failed to launch — skipping browser-dependent phases: %s", e)
-        logger.info("=== Run complete (partial — no browser): crt_monitor candidates only ===")
+        logger.info("=== Run complete (partial — browser unavailable, nothing processed) ===")
 
 
 if __name__ == "__main__":

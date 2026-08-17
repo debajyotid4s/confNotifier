@@ -141,7 +141,6 @@ db/
 ├── schema.sql
 └── migration.sql
 pyproject.toml           # Package definition (pip install -e .)
-requirements.txt         # Pinned runtime dependencies
 ```
 
 ## Running Locally
