@@ -89,6 +89,18 @@ CREATE TABLE IF NOT EXISTS certspotter_cursor (
     last_id BIGINT NOT NULL
 );
 
+-- Homepage change detection: per-domain link-count history + LLM verdicts
+CREATE TABLE IF NOT EXISTS domain_stats (
+    domain TEXT PRIMARY KEY,
+    links_found INT NOT NULL DEFAULT 0,
+    history TEXT,
+    baseline_links INT NOT NULL DEFAULT 0,
+    consecutive_zero INT NOT NULL DEFAULT 0,
+    last_classification TEXT,
+    last_classified_at TIMESTAMPTZ,
+    last_alerted_at TIMESTAMPTZ
+);
+
 -- One-time backfill: retire legacy deadline columns where new-schema data exists
 -- Run after migration to clean rows that were extracted before the new columns existed.
 -- UPDATE conferences

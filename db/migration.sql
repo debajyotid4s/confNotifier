@@ -27,3 +27,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_conferences_website_date ON conferences (w
 -- hourly interval instead of once per day (existing rows = midnight UTC).
 ALTER TABLE daily_tasks ALTER COLUMN last_run_date TYPE TIMESTAMPTZ
     USING last_run_date::timestamp AT TIME ZONE 'UTC';
+
+-- Homepage change detection: per-domain link-count history + LLM verdicts
+CREATE TABLE IF NOT EXISTS domain_stats (
+    domain TEXT PRIMARY KEY,
+    links_found INT NOT NULL DEFAULT 0,
+    history TEXT,
+    baseline_links INT NOT NULL DEFAULT 0,
+    consecutive_zero INT NOT NULL DEFAULT 0,
+    last_classification TEXT,
+    last_classified_at TIMESTAMPTZ,
+    last_alerted_at TIMESTAMPTZ
+);

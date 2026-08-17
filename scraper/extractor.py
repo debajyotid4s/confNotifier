@@ -184,42 +184,31 @@ def _format_previous_deadlines(previous_deadlines: dict) -> str | None:
     )
 
 
-def extract_conferences(page_text: str, source_url: str, previous_deadlines: dict | None = None) -> dict | None:
-    """
-    Send page text to Gemini 2.5 Flash via Google AI Studio.
+def _call_gemini(
+    system_prompt: str,
+    user_content: str,
+    schema: dict,
+    *,
+    source_url: str,
+    response_name: str = "conference_extraction",
+    max_tokens: int = 4096,
+) -> dict | None:
+    """Single LLM completion with API key rotation and rate limiting.
 
-    Uses API key rotation — if one key hits 429, tries the next key.
-    Only gives up if:
-    - All keys' daily quotas are exhausted
-    - API returns a non-rate-limit error after 3 attempts per key
-    - Page text is empty
+    Tries each key in round-robin order starting from the last working one.
+    Within a key, retries up to 3 times on non-rate-limit errors. Gives up
+    when all keys fail or every key's daily quota is exhausted.
 
-    Args:
-        page_text: Visible text of the page.
-        source_url: The URL that was fetched.
-        previous_deadlines: Optional {type: {date, label}} of what we had stored,
-                            passed so the LLM anchors on the CURRENT page values.
-
-    Returns parsed dict or None.
+    Returns the parsed JSON dict, or None.
     """
     global _current_key_idx
-
-    if not page_text or len(page_text.strip()) < 100:
-        logger.warning("extractor: page text too short for %s, skipping", source_url)
-        return None
 
     if not _clients:
         logger.error("extractor: no API keys available")
         return None
 
-    trimmed = page_text[:MAX_TEXT_CHARS]
     max_attempts_per_key = 3
     total_keys = len(_clients)
-
-    user_content = f"Source URL: {source_url}\n\nPage content:\n{trimmed}"
-    previous_block = _format_previous_deadlines(previous_deadlines)
-    if previous_block:
-        user_content += previous_block
 
     # Try each key, starting from current
     for key_offset in range(total_keys):
@@ -250,31 +239,21 @@ def extract_conferences(page_text: str, source_url: str, previous_deadlines: dic
                 response = client.chat.completions.create(
                     model=MODEL,
                     messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {
-                            "role": "user",
-                            "content": user_content
-                        }
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content},
                     ],
                     temperature=0.0,
-                    max_tokens=4096,
+                    max_tokens=max_tokens,
                     response_format={
                         "type": "json_schema",
                         "json_schema": {
-                            "name": "conference_extraction",
-                            "schema": EXTRACTION_SCHEMA,
+                            "name": response_name,
+                            "schema": schema,
                         },
                     },
                 )
 
                 result = json.loads(response.choices[0].message.content)
-                result = normalize_extraction(result)
-                logger.info(
-                    "extractor: %s → is_conference=%s, confidence=%.2f",
-                    source_url,
-                    result.get("is_conference"),
-                    result.get("confidence", 0.0),
-                )
                 _current_key_idx = key_idx  # remember last working key
                 return result
 
@@ -307,6 +286,53 @@ def extract_conferences(page_text: str, source_url: str, previous_deadlines: dic
 
     logger.warning("extractor: all keys exhausted for %s", source_url)
     return None
+
+
+def extract_conferences(page_text: str, source_url: str, previous_deadlines: dict | None = None) -> dict | None:
+    """
+    Send page text to Gemini 2.5 Flash via Google AI Studio.
+
+    Uses API key rotation — if one key hits 429, tries the next key.
+    Only gives up if:
+    - All keys' daily quotas are exhausted
+    - API returns a non-rate-limit error after 3 attempts per key
+    - Page text is empty
+
+    Args:
+        page_text: Visible text of the page.
+        source_url: The URL that was fetched.
+        previous_deadlines: Optional {type: {date, label}} of what we had stored,
+                            passed so the LLM anchors on the CURRENT page values.
+
+    Returns parsed dict or None.
+    """
+    if not page_text or len(page_text.strip()) < 100:
+        logger.warning("extractor: page text too short for %s, skipping", source_url)
+        return None
+
+    trimmed = page_text[:MAX_TEXT_CHARS]
+    user_content = f"Source URL: {source_url}\n\nPage content:\n{trimmed}"
+    previous_block = _format_previous_deadlines(previous_deadlines)
+    if previous_block:
+        user_content += previous_block
+
+    result = _call_gemini(
+        SYSTEM_PROMPT,
+        user_content,
+        EXTRACTION_SCHEMA,
+        source_url=source_url,
+    )
+    if result is None:
+        return None
+
+    result = normalize_extraction(result)
+    logger.info(
+        "extractor: %s → is_conference=%s, confidence=%.2f",
+        source_url,
+        result.get("is_conference"),
+        result.get("confidence", 0.0),
+    )
+    return result
 
 
 def daily_quota_exhausted() -> bool:

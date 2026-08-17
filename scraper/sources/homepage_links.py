@@ -11,6 +11,7 @@ from urllib3.exceptions import HeaderParsingError
 
 from scraper.db import get_connection, save_seen_link, load_domain_strategies, save_domain_strategy
 from scraper.browser import PlaywrightManager
+from scraper.change_detector import run_detection as detect_homepage_change
 from scraper.utils import is_safe_url
 
 # Suppress noisy urllib3 connection warnings from malformed server headers
@@ -293,6 +294,7 @@ def run(playwright: PlaywrightManager = None):
     domains = _load_domains()
     candidates = []
     stats = {"ok": 0, "tls_fix": 0, "dns_fix": 0, "curl_fix": 0, "playwright_fix": 0, "failed": 0, "cached": 0}
+    domain_link_counts = {}
 
     try:
         conn = get_connection()
@@ -392,6 +394,7 @@ def run(playwright: PlaywrightManager = None):
             else:
                 stats["ok"] += 1
 
+        matched_count = 0
         for a_tag in soup.find_all("a", href=True):
             href = a_tag["href"].strip()
             if not href or href.startswith("#") or href.startswith("javascript:"):
@@ -399,11 +402,26 @@ def run(playwright: PlaywrightManager = None):
             full_url = _build_url(loaded_url, href)
             if not _is_conference_link(full_url, domain):
                 continue
+            matched_count += 1
             if full_url in known:
                 continue
             candidates.append(full_url)
             known.add(full_url)
             save_seen_link(full_url, source="homepage")
+
+        try:
+            page_text = soup.get_text(" ", strip=True)[:4000]
+        except Exception:
+            page_text = ""
+        domain_link_counts[domain] = (matched_count, page_text)
+
+    # Homepage change detection: flag domains that silently stopped yielding links.
+    # record_run is DB-only; the AI classification inside only fires for flagged domains.
+    for domain, (matched_count, page_text) in domain_link_counts.items():
+        try:
+            detect_homepage_change(domain, matched_count, page_text)
+        except Exception as e:
+            logger.error("change_detector: run_detection error for %s: %s", domain, e)
 
     logger.info(
         "homepage_links: found %d new conference-like links "
