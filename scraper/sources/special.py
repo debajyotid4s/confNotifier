@@ -3,7 +3,7 @@ import logging
 import re
 import socket
 from datetime import datetime
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
