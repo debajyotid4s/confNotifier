@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import time
+from datetime import datetime
 
 import requests
 
@@ -12,6 +13,10 @@ logger = logging.getLogger(__name__)
 
 MAX_QUERIES_PER_RUN = 8
 CERTSPOTTER_URL = "https://api.certspotter.com/v1/issuances"
+
+# Subdomains whose newest year is older than this are past editions, not upcoming
+# conferences. Self-advancing so no manual yearly bump is needed.
+YEAR_FLOOR = datetime.now().year - 1
 
 KNOWN_JUNK_PATTERNS = [
     "autodiscover", "cpcontacts", "convocation", "convapi",
@@ -40,7 +45,7 @@ def _is_conference_subdomain(name: str) -> bool:
         if lower.startswith(junk):
             return False
     years = re.findall(r"(20\d{2})", lower)
-    if years and max(int(y) for y in years) < 2025:
+    if years and max(int(y) for y in years) < YEAR_FLOOR:
         return False
     if any(lower.startswith(p) for p in CONF_PREFIXES):
         return True

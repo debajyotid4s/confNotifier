@@ -1,5 +1,6 @@
 """Shared utilities for the scraper package."""
 
+import html
 import ipaddress
 import socket
 from urllib.parse import urlparse
@@ -25,3 +26,18 @@ def is_safe_url(url: str) -> bool:
     except (socket.gaierror, ValueError):
         pass
     return True
+
+
+def escape_html(text) -> str:
+    """Escape HTML special characters for Telegram HTML rendering (None-safe)."""
+    if text is None:
+        return ""
+    return html.escape(str(text), quote=False)
+
+
+def resolve_channel(value: str) -> str:
+    """Resolve a channel reference to an @handle: accepts @handle, chat ID, or a
+    t.me/... link (bare or with scheme)."""
+    if "t.me/" in value:
+        return "@" + value.split("t.me/")[-1].strip("/")
+    return value

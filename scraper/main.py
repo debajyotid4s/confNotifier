@@ -117,13 +117,22 @@ class RunStats:
 
 
 def _check_environment() -> None:
-    """Fail fast when required environment variables are missing."""
+    """Fail fast when required environment variables are missing.
+
+    Only presence/length is logged — never any part of a secret value.
+    """
+    missing = []
     for var in REQUIRED_ENV_VARS:
-        if not os.environ.get(var, "").strip():
-            print(f"ERROR: Missing or empty environment variable: {var}")
-            print("  Set it in GitHub repo -> Settings -> Secrets -> Actions")
-            sys.exit(1)
-        logger.info("Env var %s: set (%s...)", var, os.environ[var][:8])
+        value = os.environ.get(var)
+        if not value or not value.strip():
+            missing.append(var)
+        else:
+            logger.info("%s: OK (%d chars)", var, len(value))
+
+    if missing:
+        print(f"ERROR: Missing or empty environment variable(s): {', '.join(missing)}")
+        print("  Set it in GitHub repo -> Settings -> Secrets -> Actions")
+        sys.exit(1)
 
     if not any(os.environ.get(var, "").strip() for var in CHANNEL_ENV_VARS):
         print(f"ERROR: Missing environment variable: {' or '.join(CHANNEL_ENV_VARS)}")

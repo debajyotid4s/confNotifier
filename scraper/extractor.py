@@ -107,12 +107,12 @@ class GoogleRateLimiter:
 # ── API key rotation — load all available keys ──
 
 _gemini_base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
-_api_keys = []
+_api_keys = []  # (env var name, key value) — name is the non-secret log label
 
 for _var in ["GOOGLE_AI_KEY", "GOOGLE_AI_KEY_2", "GOOGLE_AI_KEY_3"]:
     _val = os.environ.get(_var, "").strip()
     if _val:
-        _api_keys.append(_val)
+        _api_keys.append((_var, _val))
         logger.info("Loaded API key from %s", _var)
 
 if not _api_keys:
@@ -122,8 +122,8 @@ if not _api_keys:
 _clients = [
     {"client": OpenAI(api_key=k, base_url=_gemini_base_url, max_retries=0),
      "limiter": GoogleRateLimiter(),
-     "key_hint": k[:8]}
-    for k in _api_keys
+     "key_label": name}
+    for name, k in _api_keys
 ]
 
 _current_key_idx = 0
@@ -216,12 +216,12 @@ def _call_gemini(
         entry = _clients[key_idx]
         client = entry["client"]
         limiter = entry["limiter"]
-        key_hint = entry["key_hint"]
+        key_label = entry["key_label"]
 
         for attempt in range(1, max_attempts_per_key + 1):
             # Check if this key's daily quota is exhausted — skip to next key
             if limiter.daily_quota_exhausted():
-                logger.info("extractor: key %s daily quota exhausted, trying next key", key_hint)
+                logger.info("extractor: key %s daily quota exhausted, trying next key", key_label)
                 break
 
             try:
@@ -232,7 +232,7 @@ def _call_gemini(
             try:
                 logger.info(
                     "extractor: calling Gemini (key=%s) for %s (attempt %d, daily: %d/%d)",
-                    key_hint, source_url, attempt,
+                    key_label, source_url, attempt,
                     limiter._daily_count, limiter.RPD_LIMIT
                 )
 
@@ -272,7 +272,7 @@ def _call_gemini(
                     logger.warning(
                         "extractor: transient error (%s) on key %s for %s, rotating to next key",
                         "429" if "429" in err_str else "503",
-                        key_hint, source_url
+                        key_label, source_url
                     )
                     break  # break inner loop → try next key
 

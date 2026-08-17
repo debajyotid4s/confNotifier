@@ -193,6 +193,8 @@ def normalize_extraction(result: dict) -> dict:
       abstract_deadline_context -> context string (for Layer C validation only)
 
     Downstream code (save, notify, diff) sees the same flat fields as before.
+    Contract: everything outside extractor.py/schema.py must expect flat
+    YYYY-MM-DD strings, never {"date", "context"} dicts.
     """
     normalized = dict(result)
     for typ in DEADLINE_TYPES:
