@@ -16,24 +16,13 @@ import requests
 
 from scraper import db
 from scraper.schema import DEADLINE_TYPES, deadline_range_checks, deadline_select_columns
+from scraper.utils import escape_html, resolve_channel
 
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API = "https://api.telegram.org/bot{}/sendMessage"
 
 NOTIFY_WINDOW_DAYS = 30
-
-
-def _escape_html(s):
-    """Escape HTML special characters for safe Telegram HTML rendering."""
-    if s is None:
-        return ""
-    return (
-        str(s)
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
 
 
 def _make_hashtag(text):
@@ -53,16 +42,6 @@ def _format_date(date_str):
         return date_str
 
 
-def _resolve_channel() -> str | None:
-    """Resolve TELEGRAM_CHANNEL_ID / TELEGRAM_CHANNEL_LINK to an @handle or chat id."""
-    channel = os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get("TELEGRAM_CHANNEL_LINK", "")
-    if not channel:
-        return None
-    if "t.me/" in channel:
-        return "@" + channel.split("t.me/", 1)[1].rstrip("/")
-    return channel
-
-
 def _send_message(
     text: str,
     *,
@@ -71,7 +50,9 @@ def _send_message(
 ) -> bool:
     """Post a message to the configured Telegram channel. Returns True on success."""
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    channel = _resolve_channel()
+    channel = resolve_channel(
+        os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get("TELEGRAM_CHANNEL_LINK", "")
+    )
 
     if not token:
         logger.error("TELEGRAM_BOT_TOKEN not set")
@@ -115,9 +96,27 @@ def notify(conference):
     website = conference.get("website", "")
 
     if date_start == date_end or not conference.get("date_end"):
-        date_line = f"📅 {_escape_html(date_start)}"
+        date_line = f"📅 {escape_html(date_start)}"
     else:
-        date_line = f"📅 {_escape_html(date_start)} to {_escape_html(date_end)}"
+        date_line = f"📅 {escape_html(date_start)} to {escape_html(date_end)}"
+
+    # Deadline fields are flat YYYY-MM-DD strings (post-normalization); a nested
+    # {"date": ...} dict is also accepted defensively.
+    deadline_lines = []
+    for field, label in [
+        ("abstract_deadline", "Abstract"),
+        ("full_paper_deadline", "Full paper"),
+        ("camera_ready_deadline", "Camera-ready"),
+        ("registration_deadline", "Registration"),
+    ]:
+        entry = conference.get(field)
+        date_val = entry.get("date") if isinstance(entry, dict) else entry
+        if date_val:
+            deadline_lines.append(f"⏰ {label}: {_format_date(date_val)}")
+    if deadline_lines:
+        date_block = date_line + "\n" + "\n".join(deadline_lines)
+    else:
+        date_block = date_line
 
     short_title = title.split(",")[0].split("(")[0].split(":")[0].strip()
     title_tag = _make_hashtag(short_title)[:30]
@@ -128,12 +127,12 @@ def notify(conference):
 
     message = (
         f"\U0001F514 New International Conference \u2014 Bangladesh\n\n"
-        f"\U0001F4CC {_escape_html(title)}\n\n"
-        f"{date_line}\n"
-        f"\U0001F4CD {_escape_html(city)}, Bangladesh\n"
-        f"\U0001F3DB Organized by: {_escape_html(organizer)}\n"
-        f"\U0001F3F7 Category: {_escape_html(category)}\n\n"
-        f"\U0001F517 {_escape_html(website)}\n\n"
+        f"\U0001F4CC {escape_html(title)}\n\n"
+        f"{date_block}\n"
+        f"\U0001F4CD {escape_html(city)}, Bangladesh\n"
+        f"\U0001F3DB Organized by: {escape_html(organizer)}\n"
+        f"\U0001F3F7 Category: {escape_html(category)}\n\n"
+        f"\U0001F517 {escape_html(website)}\n\n"
         f"#{title_tag} #{cat_tag} #{city_tag} #{country_tag}"
     )
 
@@ -308,9 +307,9 @@ def send_deadline_change_notification(title, website, changes) -> None:
 
     message = (
         f"📢 <b>Deadline Updated</b>\n\n"
-        f"<b>{_escape_html(title)}</b>\n\n"
+        f"<b>{escape_html(title)}</b>\n\n"
         f"{updates_block}\n\n"
-        f"🔗 <a href=\"{_escape_html(website)}\">{_escape_html(website)}</a>"
+        f"🔗 <a href=\"{escape_html(website)}\">{escape_html(website)}</a>"
     )
 
     if _send_message(message):

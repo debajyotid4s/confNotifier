@@ -13,7 +13,7 @@ Three GitHub Actions workflows running on Neon free tier:
 | Workflow | When | What |
 |----------|------|------|
 | Main scraper | 00, 06, 12, 16, 18 UTC | Discovers URLs, runs LLM extraction, saves to DB, sends notifications |
-| Verification | 15 UTC daily | Re-extracts deadlines for upcoming conferences, flags changes |
+| Verification | 04 UTC daily + in-pipeline (≤8h guard) | Re-extracts deadlines for upcoming conferences, flags changes |
 | Daily reminder | 04 UTC daily | Posts a deadline summary with progress bars |
 
 ### To deploy your own
@@ -49,7 +49,7 @@ GitHub Actions → scraper/main.py
   ├─ Phase 3    requeue       — merge pending + retryable URLs from previous runs
   ├─ Phase 4    extract+save  — Gemini 2.5 Flash → parse JSON → dedup → write to Neon
   ├─ Phase 5    notify        — Telegram post (deadline within 30 days) + pending backlog flush
-  └─ Phase 6    verify        — scraper/verifier.py: once-daily deadline re-check
+  └─ Phase 6    verify        — scraper/verifier.py: interval-guarded re-check (≤ every 8h)
 ```
 
 `main.py` is a thin orchestrator — it only wires phases together. All persistence lives in `db.py`, all Telegram messaging in `notifier.py`, deadline re-verification in `verifier.py`. Every DB operation opens and closes its own connection (Neon idle timeout requirement).
@@ -93,6 +93,8 @@ Four named types instead of generic `submission_deadline` / `submission_deadline
 
 Each deadline stores `{"date": "YYYY-MM-DD", "context": "..."}`. The context is the raw surrounding text from the page, used to catch field swaps.
 
+**Shape contract:** Gemini returns each deadline as a `{"date", "context"}` object, but `normalize_extraction` (`schema.py`) flattens them *before* anything downstream sees them — by the time a result reaches `notify()`, `verifier.py`, or `db.py`, each deadline is a plain `YYYY-MM-DD` string under `{type}_deadline`, a deterministic label under `{type}_deadline_label`, and the context under `{type}_deadline_context`. Do not expect dicts outside `extractor.py`/`schema.py`; `notify()` tolerates both shapes defensively.
+
 ### Validation
 
 Three checks run before saving anything:
@@ -125,7 +127,7 @@ scraper/
 ├── db.py                # All persistence: conferences, seen_links DFS, dedup, task state
 ├── notifier.py          # Telegram: notify, pending flush, deadline-change alerts
 ├── send_reminders.py    # Daily deadline digest
-├── verify_deadlines.py  # Standalone entrypoint → verifier.py (15 UTC workflow)
+├── verify_deadlines.py  # Standalone entrypoint → verifier.py (daily 04 UTC workflow)
 ├── utils.py             # Shared utilities (SSRF protection, etc.)
 └── sources/
     ├── homepage_links.py
@@ -159,7 +161,15 @@ python scraper/main.py
 
 ## Tests
 
-None yet. The code gets tested by running it against the live DB. If you want to add tests, `validation.py` and `schema.py` are the most self-contained places to start.
+Pure unit tests in `tests/` — no DB, network, or API keys required:
+
+- `test_validation.py` — date parsing / two-way swap / chronology / context rules
+- `test_schema.py` — deadline column & range SQL, normalization flattening contract
+- `test_utils.py` — `escape_html`, `resolve_channel`
+- `test_notifier.py` — deadline rendering in `notify()` (send monkeypatched)
+
+Run locally: `pip install -e '.[dev]' && python -m pytest tests/ -q`. CI runs the
+same suite on every push/PR (see `.github/workflows/ci.yml`).
 
 ## Future: Go Scheduler
 

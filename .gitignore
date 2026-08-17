@@ -51,3 +51,6 @@ db/dedup.sql
 
 # Go migration
 go-migration/
+
+# Local tooling state
+.opencode/

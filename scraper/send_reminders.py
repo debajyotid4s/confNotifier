@@ -15,6 +15,7 @@ import requests
 from scraper import db
 from scraper.sources.crt_monitor import run as crt_monitor_run
 from scraper.schema import DEADLINE_TYPES
+from scraper.utils import escape_html, resolve_channel
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,18 +26,6 @@ logger = logging.getLogger("send_reminders")
 
 MAX_DAYS = 30
 BAR_LEN = 20
-
-
-def _escape_html(text: str) -> str:
-    """Escape HTML special characters."""
-    if not text:
-        return ""
-    return (
-        str(text)
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
 
 
 def _within_30_days(d) -> bool:
@@ -157,8 +146,8 @@ def send_deadline_reminders() -> None:
             bar = _progress_bar(pct)
             emoji = _urgency_emoji(days_left)
             date_str = dl.strftime("%b %d")
-            short_title = _escape_html(title.split(",")[0].split("(")[0].split(":")[0].strip())
-            link = f"<a href=\"{_escape_html(website)}\">{_escape_html(short_title)}</a>"
+            short_title = escape_html(title.split(",")[0].split("(")[0].split(":")[0].strip())
+            link = f"<a href=\"{escape_html(website)}\">{escape_html(short_title)}</a>"
 
             if is_updated and prev_dl:
                 old_str = prev_dl.strftime("%b %d")
@@ -181,6 +170,7 @@ def send_deadline_reminders() -> None:
         link_block = "\n".join(links)
 
         now_utc = datetime.now(timezone.utc).strftime("%H:%M")
+        hashtag = f"#Bangladesh{datetime.now().year}"
 
         message = (
             f"<b>📚 UPCOMING DEADLINES</b>\n"
@@ -191,14 +181,14 @@ def send_deadline_reminders() -> None:
             f"🔗 <b>Official Links</b>\n"
             f"{link_block}\n"
             f"</blockquote>\n\n"
-            f"#Bangladesh2026 #CallForPapers\n"
+            f"{hashtag} #CallForPapers\n"
             f"<i>Last synced: {now_utc} UTC</i>"
         )
 
         token = os.environ["TELEGRAM_BOT_TOKEN"]
-        channel = os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get("TELEGRAM_CHANNEL_LINK", "")
-        if channel.startswith("https://t.me/"):
-            channel = "@" + channel.split("https://t.me/")[1]
+        channel = resolve_channel(
+            os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get("TELEGRAM_CHANNEL_LINK", "")
+        )
 
         resp = requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",

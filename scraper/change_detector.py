@@ -20,8 +20,8 @@ from urllib.parse import urlparse
 
 from scraper import db
 from scraper.extractor import _call_gemini
-from scraper.notifier import _escape_html, _send_message
-from scraper.utils import is_safe_url
+from scraper.notifier import _send_message
+from scraper.utils import escape_html, is_safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -322,15 +322,15 @@ def _alert(domain: str, baseline: int, verdict: dict) -> None:
     lines = [
         "⚠️ <b>Homepage change detected</b>",
         "",
-        f"<b>{_escape_html(domain)}</b> — previously ~{baseline} conference link(s) on the homepage, now 0.",
-        f"Verdict: <b>{_escape_html(verdict.get('verdict', ''))}</b>",
+        f"<b>{escape_html(domain)}</b> — previously ~{baseline} conference link(s) on the homepage, now 0.",
+        f"Verdict: <b>{escape_html(verdict.get('verdict', ''))}</b>",
     ]
     if verdict.get("reason"):
-        lines.append(f"Reason: {_escape_html(verdict['reason'])}")
+        lines.append(f"Reason: {escape_html(verdict['reason'])}")
     if new_links:
         lines.append("")
         lines.append("New conference links found:")
-        lines.extend(f"  • {_escape_html(u)}" for u in new_links[:5])
+        lines.extend(f"  • {escape_html(u)}" for u in new_links[:5])
 
     if _send_message("\n".join(lines)):
         logger.info("change_detector: alerted for %s", domain)
