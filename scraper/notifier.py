@@ -274,7 +274,7 @@ def notify_pending(notify_fn) -> int:
     return notified_count
 
 
-# ── Deadline change alerts (from weekly verification) ──
+# ── Deadline change alerts (from verification) ──
 
 
 def send_deadline_change_notification(title, website, changes) -> None:

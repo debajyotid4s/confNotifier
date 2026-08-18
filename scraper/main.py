@@ -6,7 +6,7 @@ Discover, extract, deduplicate, notify, and verify conference deadlines:
     Phase 3    requeue    — merge pending/retryable URLs from previous runs
     Phase 4    extract    — LLM extraction with dedup pre-checks and validation
     Phase 5    notify     — Telegram push for deadlines within 30 days
-    Phase 6    verify     — weekly deadline re-check (see verifier.py)
+    Phase 6    verify     — interval-guarded deadline re-check (see verifier.py)
 
 Every DB operation opens and closes its own connection — no long-lived
 connection is held during source scanning or LLM extraction (Neon idle
