@@ -1,7 +1,7 @@
 """Stand-alone deadline verification entry point.
 
 Runs verify_deadlines with a fresh PlaywrightManager.
-Used by the separate GHA workflow at 15:00 UTC (9pm Bangladesh).
+Used by the daily_reminder workflow at 04:00 UTC (10am Bangladesh).
 """
 import logging
 import os

@@ -112,7 +112,7 @@ Three checks run before saving anything:
 | `certspotter_cursor` | Per-domain cursor so certspotter doesn't re-scan old entries |
 | `domain_strategies` | Remembers which fetch strategy worked for each domain |
 | `special_path_cache` | Cached path patterns for special sources |
-| `daily_tasks` | Guards the weekly verification from running too often |
+| `daily_tasks` | Guards verification runs from happening too often (8h interval) |
 
 ## File Layout
 
@@ -184,6 +184,25 @@ conf-notifier serve
 ```
 
 Drops GitHub Actions dependency entirely — deploy as a systemd service or Docker container on a $5 VPS.
+
+## Future: TypeScript web-fetch bridge
+
+Replace `scraper/browser.py` (PlaywrightManager) with a small Node service using
+`playwright-extra` + `playwright-extra-stealth` (the upstream, actively-maintained
+stealth plugin — the Python `playwright-stealth` port lags behind it).
+
+- **Scope**: only the browser tier (`fetch_page_text` / `fetch_page_html`); Python
+  keeps orchestration, Gemini, DB, Telegram. All 6 call sites keep identical
+  signatures via a thin subprocess client in `browser.py`.
+- **Pattern**: JSON over stdin/stdout subprocess bridge now; becomes an HTTP
+  sidecar when the Go scheduler lands (Go consumes the same API over localhost).
+- **Resilience**: browser is already the last-resort fetch tier
+  (`requests → curl → playwright`) — a dead bridge degrades gracefully.
+- **CI impact**: `setup-node` + `npm ci`; cache key and browser-launch check switch
+  from Python to Node; the `python scraper/main.py` run step stays unchanged.
+- **Deps**: remove `playwright==1.62.0` + `playwright-stealth` from pyproject.
+- **Status**: deferred. Conference sites are not currently blocking fetches, so the
+  payoff is marginal until the Go scheduler work begins — evaluate then.
 
 ## Future: Mobile Apps
 
