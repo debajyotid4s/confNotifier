@@ -194,7 +194,7 @@ class PlaywrightManager:
                 try:
                     self._page.goto(url, timeout=30000, wait_until=wait_until)
                     self._human_like_scroll()
-                    text = self._page.evaluate("document.body.innerText")
+                    text = self._page.evaluate("document.body ? document.body.innerText : ''")
                     if not text or len(text.strip()) < 100:
                         return None
                     return text[:8000]
@@ -215,7 +215,7 @@ class PlaywrightManager:
                         logger.warning("PlaywrightManager: page navigated after load on %s, retrying", url)
                         try:
                             self._page.wait_for_load_state("networkidle", timeout=15000)
-                            text = self._page.evaluate("document.body.innerText")
+                            text = self._page.evaluate("document.body ? document.body.innerText : ''")
                             if text and len(text.strip()) >= 100:
                                 return text[:8000]
                         except Exception:

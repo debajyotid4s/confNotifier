@@ -39,6 +39,10 @@ def _check_deadline_swap(new_values: dict, stored_values: dict) -> set:
             new2 = new_values.get(typ2)
             if new2 is None:
                 continue
+            if new1 == new2:
+                # Equal dates: a "swap" is a semantic no-op — nothing to repair,
+                # nothing to warn about (camera_ready == registration is common).
+                continue
             if new1 == stored_values.get(typ2) and new2 == stored_values.get(typ1):
                 swapped.update((typ1, typ2))
                 logger.warning(

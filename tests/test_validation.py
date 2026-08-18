@@ -35,6 +35,14 @@ def test_one_way_match_not_flagged():
     assert _check_deadline_swap(new_values, stored) == set()
 
 
+def test_equal_dates_not_flagged_as_swap():
+    # camera_ready == registration is common (same deadline); a "swap" of
+    # identical values is a no-op and must not warn or block updates.
+    new_values = {"camera_ready": date(2026, 8, 30), "registration": date(2026, 8, 30)}
+    stored = {"camera_ready": date(2026, 8, 30), "registration": date(2026, 8, 30)}
+    assert _check_deadline_swap(new_values, stored) == set()
+
+
 def test_chronological_violation_flagged():
     new_values = {"abstract": date(2026, 8, 15), "full_paper": date(2026, 8, 1)}
     assert _check_chronological_order(new_values, None) is False
