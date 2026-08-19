@@ -14,6 +14,7 @@ def test_select_columns_exact():
     expected = [
         "abstract_deadline", "abstract_deadline_label",
         "full_paper_deadline", "full_paper_deadline_label",
+        "notification_of_acceptance_deadline", "notification_of_acceptance_deadline_label",
         "camera_ready_deadline", "camera_ready_deadline_label",
         "registration_deadline", "registration_deadline_label",
     ]
@@ -22,14 +23,15 @@ def test_select_columns_exact():
 
 def test_select_columns_with_previous():
     cols = deadline_select_columns(include_previous=True)
-    assert len(cols) == 12
+    assert len(cols) == 15
     assert cols[2] == "abstract_deadline_previous"
     assert cols[5] == "full_paper_deadline_previous"
+    assert cols[8] == "notification_of_acceptance_deadline_previous"
 
 
 def test_range_checks_exact_string():
     checks = deadline_range_checks(30, past_days=30)
-    assert len(checks) == 4
+    assert len(checks) == 5
     assert checks[0] == (
         "(abstract_deadline IS NOT NULL"
         " AND abstract_deadline >= CURRENT_DATE - INTERVAL '30 days'"
@@ -39,7 +41,7 @@ def test_range_checks_exact_string():
 
 def test_range_checks_legacy_included():
     checks = deadline_range_checks(30, include_legacy=True)
-    assert len(checks) == 6
+    assert len(checks) == 7
     assert any("submission_deadline IS NOT NULL" in c for c in checks)
 
 

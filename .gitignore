@@ -47,8 +47,19 @@ REPORT_gemini_rate_limits.md
 application_plan.md
 go_cli_plan.md
 
-# Database scripts
-db/dedup.sql
+# Database scripts — DB schema lives on the server, not in git
+db/
+
+# Sensitive information — never commit keys, tokens, or credentials
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.jks
+secrets*
+credentials*
+service-account*.json
 
 # Go migration
 go-migration/

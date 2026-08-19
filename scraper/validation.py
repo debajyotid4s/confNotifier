@@ -53,11 +53,11 @@ def _check_deadline_swap(new_values: dict, stored_values: dict) -> set:
 
 
 def _check_chronological_order(new_values: dict, conference_start: date | None) -> bool:
-    """Layer B: enforce abstract ≤ full_paper ≤ camera_ready ≤ registration ≤ conference_start.
+    """Layer B: enforce abstract ≤ full_paper ≤ acceptance ≤ camera_ready ≤ registration ≤ conference_start.
 
     null values are skipped (no constraint). Returns True if ordering is valid.
     """
-    ordered_types = ["abstract", "full_paper", "camera_ready", "registration"]
+    ordered_types = ["abstract", "full_paper", "notification_of_acceptance", "camera_ready", "registration"]
     dates = [new_values.get(t) for t in ordered_types]
     dates.append(conference_start)
     labels = list(ordered_types) + ["conference_start"]

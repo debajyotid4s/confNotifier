@@ -201,7 +201,7 @@ def normalize_website(url: str) -> str:
 
 
 def _deadline_columns(conf: dict) -> tuple[list[str], list]:
-    """Build column names and values for the 4 named deadline types from extraction result.
+    """Build column names and values for the named deadline types from extraction result.
 
     Each deadline type has 2 columns: {type}_deadline (DATE) and {type}_deadline_label (TEXT).
     The _previous columns are omitted here — they are only set during verification.
@@ -218,7 +218,7 @@ def _deadline_columns(conf: dict) -> tuple[list[str], list]:
 
 
 def _deadline_set_clause() -> str:
-    """Build the ON CONFLICT DO UPDATE SET clause for all 4 deadline types."""
+    """Build the ON CONFLICT DO UPDATE SET clause for all named deadline types."""
     set_parts = []
     for typ in DEADLINE_TYPES:
         for suffix in ["", "_label"]:
