@@ -2,10 +2,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-DEADLINE_TYPES = ["abstract", "full_paper", "camera_ready", "registration"]
+DEADLINE_TYPES = ["abstract", "full_paper", "notification_of_acceptance", "camera_ready", "registration"]
 DEADLINE_LABELS = {
     "abstract": "Abstract Submission",
     "full_paper": "Full Paper Submission",
+    "notification_of_acceptance": "Notification of Acceptance",
     "camera_ready": "Camera Ready",
     "registration": "Registration",
 }
@@ -69,6 +70,7 @@ def deadline_range_checks(
 FIELD_KEYWORDS = {
     "abstract":     ["abstract", "extended abstract", "short paper", "summary", "proposal submission"],
     "full_paper":   ["full paper", "final paper", "manuscript", "full-length", "complete paper", "paper submission"],
+    "notification_of_acceptance": ["notification of acceptance", "acceptance notification", "notification of results", "paper acceptance"],
     "camera_ready": ["camera ready", "camera-ready", "final version", "crc", "camera-ready submission"],
     "registration": ["registration", "early bird", "sign up", "register", "registration fee"],
 }
@@ -168,19 +170,21 @@ or "Camera-ready papers due by July 1, 2026"). Return null if not found.
 
   abstract_deadline:      { date, context } — deadline for abstract/short paper submission
   full_paper_deadline:    { date, context } — deadline for full paper/manuscript submission
+  notification_of_acceptance_deadline: { date, context } — deadline for notification of acceptance
   camera_ready_deadline:  { date, context } — deadline for camera-ready/final version (post-acceptance)
   registration_deadline:  { date, context } — deadline for author/early-bird registration
 
 Look for phrases like "submission deadline", "paper due", "last date of submission",
-"abstract submission", "full paper due", "call for papers", "camera ready", "registration".
-Scan the full text for date patterns like "Month DD, YYYY" and match each date to its
-nearby label by proximity. Dates may appear in visual timelines, infographics, or bullet
-lists — the date and its label might be on separate lines. Match dates to nearby labels
-by proximity.
+"abstract submission", "full paper due", "call for papers", "camera ready", "registration",
+"notification of acceptance". Scan the full text for date patterns like "Month DD, YYYY"
+and match each date to its nearby label by proximity. Dates may appear in visual timelines,
+infographics, or bullet lists — the date and its label might be on separate lines. Match
+dates to nearby labels by proximity.
 
-IMPORTANT: Do NOT put a registration or camera-ready date into abstract_deadline
-or full_paper_deadline. Each deadline type goes into its own field — no guessing.
-The context text is critical — include the full surrounding phrase verbatim."""
+IMPORTANT: Do NOT put a registration, camera-ready, or notification-of-acceptance date
+into abstract_deadline or full_paper_deadline. Each deadline type goes into its own field
+— no guessing. Only extract a deadline that is actually stated on the page; never invent
+one. The context text is critical — include the full surrounding phrase verbatim."""
 
 
 def normalize_extraction(result: dict) -> dict:

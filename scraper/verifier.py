@@ -28,6 +28,11 @@ from scraper.validation import (
 
 logger = logging.getLogger(__name__)
 
+# Only submission deadlines (abstract/full paper) trigger Telegram change
+# notifications. Camera ready / registration changes are still saved to the DB
+# (via updates) but are not broadcast to users.
+NOTIFY_TYPES = {"abstract", "full_paper"}
+
 VERIFY_WINDOW_DAYS = 30
 # Interval (hours) between re-verification runs. The main scraper runs 5x/day
 # and calls verify_deadlines at the end of each run; this guard lets updates
@@ -156,8 +161,8 @@ def _diff_deadlines(result: dict, old_values: dict, swapped_fields: set, context
 
     Returns (updates, notify_changes):
     - updates: list of (field, label_field, previous_field, new_date, new_label)
-    - notify_changes: list of {"old", "new", "label"} — only real changes,
-      not first-time discoveries.
+    - notify_changes: list of {"old", "new", "label"} — only real changes to
+      submission deadlines (NOTIFY_TYPES), not first-time discoveries.
     """
     updates = []
     notify_changes = []
@@ -218,9 +223,15 @@ def _diff_deadlines(result: dict, old_values: dict, swapped_fields: set, context
                 continue
 
         updates.append((f"{typ}_deadline", f"{typ}_deadline_label", f"{typ}_deadline_previous", new_dl, new_label))
-        if old_dl is not None:
+        if old_dl is not None and typ in NOTIFY_TYPES:
             notify_changes.append({"old": old_dl, "new": new_dl,
                                    "label": new_label})
+        elif old_dl is not None:
+            logger.info(
+                "deadline_verification: %s — %s changed %s → %s, saved without "
+                "notification (non-submission type)",
+                website, typ, old_dl, new_dl
+            )
         else:
             logger.info(
                 "deadline_verification: %s — first %s found: %s",
