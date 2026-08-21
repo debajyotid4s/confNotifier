@@ -81,5 +81,17 @@ api/__pycache__/
 api/.venv/
 api/venv/
 
+# Gradle cache (root)
+.gradle/
+
+# Skills / local AI state (not part of repo)
+Call4Paper/.agents/
+Call4Paper/skills-lock.json
+skills-lock.json
+
+# Reports (local only)
+Project_Report.pdf
+Project_Report.tex
+
 # Local tooling state
 .opencode/

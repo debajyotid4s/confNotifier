@@ -15,7 +15,7 @@ from datetime import datetime
 import requests
 
 from scraper import db
-from scraper.schema import DEADLINE_TYPES, SUBMISSION_TYPES, deadline_range_checks, deadline_select_columns
+from scraper.schema import SUBMISSION_TYPES
 from scraper.utils import escape_html, resolve_channel
 
 logger = logging.getLogger(__name__)
