@@ -3,6 +3,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 DEADLINE_TYPES = ["abstract", "full_paper", "notification_of_acceptance", "camera_ready", "registration"]
+# Only submission deadlines drive notifications; other types are stored for future use.
+SUBMISSION_TYPES = ["abstract", "full_paper"]
 DEADLINE_LABELS = {
     "abstract": "Abstract Submission",
     "full_paper": "Full Paper Submission",

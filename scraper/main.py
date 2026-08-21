@@ -30,13 +30,9 @@ from scraper import db
 from scraper.browser import PlaywrightManager
 from scraper.extractor import extract, daily_quota_exhausted, total_requests_today
 from scraper.notifier import notify, notify_pending
-from scraper.schema import DEADLINE_TYPES
+from scraper.schema import SUBMISSION_TYPES
 from scraper.sources import homepage_links, special
-from scraper.validation import (
-    _parse_date_safe,
-    _check_chronological_order,
-    _check_deadline_context,
-)
+from scraper.validation import _check_deadline_context
 from scraper.verifier import verify_deadlines
 
 logging.basicConfig(
@@ -220,17 +216,21 @@ def _parse_root_year_tag(url: str) -> tuple[str, tuple[str, int] | None]:
 def _has_past_year_in_hostname(url: str, now: datetime) -> bool:
     """True when the hostname embeds a year before the current one.
 
-    (e.g. icap2025.sust.edu when current year is 2026)
+    Finds all year-like substrings (20xx) in the hostname and checks the
+    latest edition year. e.g. icap2025.sust.edu when current year is 2026 → True.
     """
     hostname = urlparse(url).hostname or ""
-    match = re.search(r"(\d{4})", hostname)
-    return bool(match and int(match.group(1)) < now.year)
+    years = re.findall(r"20\d{2}", hostname)
+    if not years:
+        return False
+    latest_year = max(int(y) for y in years)
+    return latest_year < now.year
 
 
 def _has_deadline_within_days(result: dict, days: int) -> bool:
     """True if any extracted deadline falls within the next `days` days."""
     today = datetime.now().date()
-    for typ in DEADLINE_TYPES:
+    for typ in SUBMISSION_TYPES:
         deadline = result.get(f"{typ}_deadline")
         if not deadline:
             continue
@@ -272,22 +272,10 @@ def _extract_candidate(url: str, playwright, stats: RunStats) -> dict | None:
 
 
 def _validate_result(result: dict) -> str | None:
-    """Run validation layers; return a reason string when invalid, else None."""
-    conf_start = _parse_date_safe(result.get("date_start"))
-    new_values = {
-        typ: _parse_date_safe(result.get(f"{typ}_deadline"))
-        for typ in DEADLINE_TYPES
-    }
-
-    # Layer B: chronological order constraint
-    if not _check_chronological_order(new_values, conf_start):
-        return "Chronological order violated"
-
-    # Layer C: context keyword validation
+    """Run submission context validation; return reason when invalid, else None."""
     mismatches = _check_deadline_context(result)
     if mismatches:
         return f"Context mismatch for fields {mismatches}"
-
     return None
 
 

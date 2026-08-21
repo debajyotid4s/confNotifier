@@ -15,7 +15,7 @@ from datetime import datetime
 import requests
 
 from scraper import db
-from scraper.schema import DEADLINE_TYPES, deadline_range_checks, deadline_select_columns
+from scraper.schema import DEADLINE_TYPES, SUBMISSION_TYPES, deadline_range_checks, deadline_select_columns
 from scraper.utils import escape_html, resolve_channel
 
 logger = logging.getLogger(__name__)
@@ -47,8 +47,12 @@ def _send_message(
     *,
     parse_mode: str = "HTML",
     disable_web_page_preview: bool = True,
-) -> bool:
-    """Post a message to the configured Telegram channel. Returns True on success."""
+) -> int | bool:
+    """Post a message to the configured Telegram channel.
+
+    Returns message_id (int) on success, False on failure.
+    Returned int is truthy, so `if _send_message(...):` still works.
+    """
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     channel = resolve_channel(
         os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get("TELEGRAM_CHANNEL_LINK", "")
@@ -72,9 +76,49 @@ def _send_message(
         return False
 
     if resp.status_code == 200:
+        try:
+            data = resp.json()
+            msg_id = data.get("result", {}).get("message_id")
+            if msg_id:
+                return int(msg_id)
+        except Exception:
+            pass
         return True
     logger.error("Telegram send failed (%d): %s", resp.status_code, resp.text)
     return False
+
+
+def delete_message(message_id: int) -> bool:
+    """Delete a Telegram message by its message_id. Returns True on success."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    channel = resolve_channel(
+        os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get("TELEGRAM_CHANNEL_LINK", "")
+    )
+    if not token or not channel or not message_id:
+        return False
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{token}/deleteMessage",
+            json={"chat_id": channel, "message_id": int(message_id)},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            logger.info("Telegram message %d deleted", message_id)
+            return True
+        logger.warning("Telegram delete failed (%d): %s", resp.status_code, resp.text)
+        return False
+    except requests.RequestException as e:
+        logger.error("Telegram delete error for %d: %s", message_id, e)
+        return False
+
+
+def delete_last_message_for_website(website: str, message_type: str | None = None) -> bool:
+    """Auto-delete the last notification for a website (for false alerts)."""
+    msg_id = db.get_last_telegram_message(website, message_type)
+    if not msg_id:
+        logger.warning("No stored message_id for %s (%s)", website, message_type)
+        return False
+    return delete_message(msg_id)
 
 
 def notify(conference):
@@ -100,14 +144,11 @@ def notify(conference):
     else:
         date_line = f"📅 {escape_html(date_start)} to {escape_html(date_end)}"
 
-    # Deadline fields are flat YYYY-MM-DD strings (post-normalization); a nested
-    # {"date": ...} dict is also accepted defensively.
+    # Submission deadlines only — other types are stored but not announced
     deadline_lines = []
     for field, label in [
         ("abstract_deadline", "Abstract"),
         ("full_paper_deadline", "Full paper"),
-        ("camera_ready_deadline", "Camera-ready"),
-        ("registration_deadline", "Registration"),
     ]:
         entry = conference.get(field)
         date_val = entry.get("date") if isinstance(entry, dict) else entry
@@ -136,8 +177,18 @@ def notify(conference):
         f"#{title_tag} #{cat_tag} #{city_tag} #{country_tag}"
     )
 
-    if _send_message(message):
-        logger.info("Notification sent for: %s", title)
+    msg_id = _send_message(message)
+    if msg_id:
+        try:
+            db.ensure_telegram_messages_table()
+            channel = resolve_channel(
+                os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get("TELEGRAM_CHANNEL_LINK", "")
+            )
+            if isinstance(msg_id, int):
+                db.save_telegram_message(website, msg_id, "conference", channel)
+        except Exception:
+            pass
+        logger.info("Notification sent for: %s (msg_id=%s)", title, msg_id)
         return True
     return False
 
@@ -183,10 +234,21 @@ def notify_pending(notify_fn) -> int:
     """
     _mark_past_conferences_notified()
 
-    select_dl = ", ".join(deadline_select_columns())
-    date_or_clause = " OR ".join(
-        deadline_range_checks(NOTIFY_WINDOW_DAYS, include_legacy=True)
+    # Submission deadlines only
+    select_dl = ", ".join(f"{typ}_deadline, {typ}_deadline_label" for typ in SUBMISSION_TYPES)
+    sub_checks = " OR ".join(
+        f"({typ}_deadline IS NOT NULL"
+        f" AND {typ}_deadline >= CURRENT_DATE"
+        f" AND {typ}_deadline <= CURRENT_DATE + INTERVAL '{NOTIFY_WINDOW_DAYS} days')"
+        for typ in SUBMISSION_TYPES
     )
+    legacy_checks = " OR ".join(
+        f"({col} IS NOT NULL"
+        f" AND {col} >= CURRENT_DATE"
+        f" AND {col} <= CURRENT_DATE + INTERVAL '{NOTIFY_WINDOW_DAYS} days')"
+        for col in ("submission_deadline", "submission_deadline_2")
+    )
+    date_or_clause = f"({sub_checks} OR {legacy_checks})" if sub_checks else f"({legacy_checks})"
 
     notified_count = 0
     conn = None
@@ -230,9 +292,9 @@ def notify_pending(notify_fn) -> int:
                 "category":   row[7],
                 "confidence": row[8],
             }
-            # Deadline fields: date + label per type, in DEADLINE_TYPES order.
+            # Submission deadlines only
             dl_offset = 9
-            for i, typ in enumerate(DEADLINE_TYPES):
+            for i, typ in enumerate(SUBMISSION_TYPES):
                 date_col_idx = dl_offset + i * 2
                 label_col_idx = dl_offset + i * 2 + 1
                 conf[f"{typ}_deadline"] = str(row[date_col_idx]) if row[date_col_idx] else None
@@ -312,7 +374,17 @@ def send_deadline_change_notification(title, website, changes) -> None:
         f"🔗 <a href=\"{escape_html(website)}\">{escape_html(website)}</a>"
     )
 
-    if _send_message(message):
+    msg_id = _send_message(message)
+    if msg_id:
+        try:
+            db.ensure_telegram_messages_table()
+            channel = resolve_channel(
+                os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get("TELEGRAM_CHANNEL_LINK", "")
+            )
+            if isinstance(msg_id, int):
+                db.save_telegram_message(website, msg_id, "deadline_change", channel)
+        except Exception:
+            pass
         logger.info(
-            "deadline_verification: sent change notification for %s", title
+            "deadline_verification: sent change notification for %s (msg_id=%s)", title, msg_id
         )

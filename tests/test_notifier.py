@@ -45,8 +45,11 @@ def test_notify_renders_all_four_deadlines(monkeypatch):
         registration_deadline="2026-10-15",
     )
     notifier.notify(conf)
-    for label in ("Abstract", "Full paper", "Camera-ready", "Registration"):
+    # submission deadlines only — other types are stored but not announced
+    for label in ("Abstract", "Full paper"):
         assert f"⏰ {label}:" in captured["text"]
+    for label in ("Camera-ready", "Registration"):
+        assert f"⏰ {label}:" not in captured["text"]
 
 
 def test_notify_no_deadlines_identical_to_absent(monkeypatch):

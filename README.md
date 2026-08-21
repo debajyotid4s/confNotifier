@@ -1,209 +1,128 @@
-# BD Conference Bot
+# BD Conference Bot — Scraper + API + Android
 
-Keeps track of academic conference deadlines from Bangladeshi universities so I don't have to check 80+ websites manually. Scrapes homepages, cert logs, and some hardcoded sources, feeds pages to Gemini 2.5 Flash, stores whatever it finds in Postgres, and posts reminders to a Telegram channel.
+Keeps track of Bangladeshi academic conference deadlines. Scrapes 80+ university homepages, cert logs and curated sources, extracts via Gemini 2.5 Flash, stores in Neon Postgres, and notifies via Telegram + Android push.
+
+## Repo Layout
+
+```
+scraper/        # Pipeline (GitHub Actions, 5×/day) — Playwright + Gemini
+api/            # FastAPI backend for the app (Render) — same Neon DB
+Call4Paper/     # Android app (Kotlin/Compose, minSdk 24, target 35)
+config/         # universities.json, special_sources.json
+db/             # schema.sql / migration.sql — now .gitignored, lives on Neon
+```
 
 ## Live Demo
 
-Private Telegram channel. Ask me for access.
+- **Telegram:** private channel (ask for invite)
+- **API:** `https://api.call4paper.app` (after `api/` is deployed)
+- **Android:** `Call4Paper/app/build/outputs/apk/debug/app-debug.apk`
 
 ## Deployment
 
-Three GitHub Actions workflows running on Neon free tier:
+| Service | Where | What |
+|---------|-------|------|
+| Scraper | GitHub Actions (`scraper.yml` 00,06,12,16,18 UTC, `verification` 04 UTC, `daily_reminder` 04 UTC) | `scraper/main.py` → Neon |
+| API | Render (`api/` rootDir) | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
+| App | Play Store / APK | Retrofit → API, FCM |
 
-| Workflow | When | What |
-|----------|------|------|
-| Main scraper | 00, 06, 12, 16, 18 UTC | Discovers URLs, runs LLM extraction, saves to DB, sends notifications |
-| Verification | 04 UTC daily + in-pipeline (≤8h guard) | Re-extracts deadlines for upcoming conferences, flags changes |
-| Daily reminder | 04 UTC daily | Posts a deadline summary with progress bars |
+### Deploy your own — Scraper (GitHub)
 
-### To deploy your own
+1. Fork, set secrets: `DATABASE_URL` (Neon), `GOOGLE_AI_KEY`×3 (aistudio), `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHANNEL_ID`, `CERTSPOTTER_API_KEY`.
+2. `psql "$DATABASE_URL" -f api/migration_001_users.sql` (additive, never touches `conferences`).
 
-1. Fork the repo.
-2. Set these secrets in GitHub (Settings → Secrets → Actions):
+### Deploy your own — API (Render)
 
-   | Secret | Get it from |
-   |--------|-------------|
-   | `DATABASE_URL` | [Neon](https://neon.tech) (free tier is enough) |
-   | `GOOGLE_AI_KEY` / `_2` / `_3` | [Google AI Studio](https://aistudio.google.com) — 3 keys gives 60 extracts/day |
-   | `TELEGRAM_BOT_TOKEN` | [@BotFather](https://t.me/BotFather) |
-   | `TELEGRAM_CHANNEL_ID` or `TELEGRAM_CHANNEL_LINK` | Your Telegram channel |
-   | `CERTSPOTTER_API_KEY` | [SSLMate CertSpotter](https://sslmate.com/certspotter) |
+1. Import repo to Render → **Root Directory: `api`** → Build `pip install -r requirements.txt` → Start `uvicorn main:app --host 0.0.0.0 --port $PORT` (see `render.yaml`).
+2. Env: `DATABASE_URL`, `JWT_SECRET` (generate), `NOTIFY_SECRET` (for `POST /internal/notify-scraper-run`), `GOOGLE_AUTH_DISABLE=0`.
+3. DB: same Neon as scraper — per-operation `psycopg2` (no pool, Neon idle-kill safe).
 
-3. Apply the schema:
-   ```bash
-   psql "$DATABASE_URL" -f db/schema.sql
-   psql "$DATABASE_URL" -f db/migration.sql
-   ```
-4. In your GitHub Actions workflow, install the package before running:
-   ```bash
-   pip install -e .
-   python scraper/main.py
-   ```
-5. Push. Workflows run on cron; you can trigger them manually from the Actions tab.
+### Deploy your own — Android
+
+1. `Call4Paper/app/google-services.json` from Firebase (project `call4paper`, package `com.call4paper.app`, SHA-1 added).
+2. `WEB_CLIENT_ID` in `feature/auth/GoogleAuth.kt:9` = Web client from Cloud Console.
+3. `gradle/libs.versions.toml` is the single source for AGP/Kotlin/Compose versions — run `./gradlew --refresh-dependencies && ./gradlew installDebug` (Gradle JDK **21**, `gradle-wrapper.properties` 8.11.1).
 
 ## How It Works
 
 ```
-GitHub Actions → scraper/main.py
-  ├─ Phase 1-2  discovery     — homepage_links (80+ .ac.bd homepages) + special (crt, probes)
-  ├─ Phase 3    requeue       — merge pending + retryable URLs from previous runs
-  ├─ Phase 4    extract+save  — Gemini 2.5 Flash → parse JSON → dedup → write to Neon
-  ├─ Phase 5    notify        — Telegram post (deadline within 30 days) + pending backlog flush
-  └─ Phase 6    verify        — scraper/verifier.py: interval-guarded re-check (≤ every 8h)
+GitHub Actions → scraper/main.py (per-op DB open/close)
+  ├─ discovery — homepage_links (requests→curl→Playwright stealth) + special + crt_monitor
+  ├─ requeue   — seen_links pending + failed_transient (6h/24h/72h)
+  ├─ extract   — Gemini (8000 chars, 3 keys 5 RPM/20/day, confidence ≥0.75)
+  ├─ save      — ON CONFLICT (website,date_start) + _previous preserves original
+  ├─ notify    — submission-only (abstract/full_paper) within 30d
+  └─ verify    — verifier.py every ≤8h, re-extracts raw_source→website, swap+context
+
+Neon ←→ FastAPI (same DB) ←→ Android (Retrofit, Room cache, DataStore JWT, FCM)
+                                   └── Telegram bot (Koyeb) also reads same DB
 ```
 
-`main.py` is a thin orchestrator — it only wires phases together. All persistence lives in `db.py`, all Telegram messaging in `notifier.py`, deadline re-verification in `verifier.py`. Every DB operation opens and closes its own connection (Neon idle timeout requirement).
+### Deadline Fields — 5 types, submission-only notifications
 
-### State Machine
+| Column | Label | Notified? |
+|--------|-------|-----------|
+| `abstract_deadline` | Abstract Submission | **yes** (`SUBMISSION_TYPES`) |
+| `full_paper_deadline` | Full Paper Submission | **yes** |
+| `notification_of_acceptance_deadline` | Notification of Acceptance | stored only |
+| `camera_ready_deadline` | Camera Ready | stored only |
+| `registration_deadline` | Registration | stored only |
 
-```
-pending → extracted | not_conference | low_confidence | failed_permanent
-           ↑
-           └── failed_transient → [6h / 24h / 72h] → failed_permanent
-```
+`schema.py:SUBMISSION_TYPES = [abstract, full_paper]` drives `notifier.py`, `main.py:_has_deadline_within_days`, `send_reminders.py`, `verifier.NOTIFY_TYPES`. Other types are stored for future use. Gemini returns `{"date","context"}` per type, `normalize_extraction` flattens to `YYYY-MM-DD` + label + context before `db.py`/`verifier`.
 
-URLs start as `pending`. Once terminal, never revisited. Transient failures get 3 retries with widening backoff, then demoted to permanent.
+### Validation (submission-only, simple)
 
-### Sources
+1. **Swap** `validation.py:19` — two-way `abstract ↔ full_paper` only (`SUBMISSION_TYPES`, index loop, not string compare).
+2. **Context** `validation.py:46` — `FIELD_KEYWORDS` must match own field, otherwise skip.
 
-| Source | How | What it covers |
-|--------|-----|----------------|
-| Homepages | requests → curl → Playwright (stealth) | 82 university domains from `config/universities.json` |
-| Cert logs | CertSpotter + crt.sh | All `.ac.bd` subdomains, cursor-based so it doesn't re-scan |
-| Special | Hardcoded paths, root-year detection, DNS probes | ICCIT, QPAIN, SUST/KUET/RUET, conf.info.bd |
-
-### LLM Extraction
-
-- Gemini 2.5 Flash via the OpenAI-compatible endpoint
-- 3 API keys, round-robin. Each key: 5 req/min, 20 req/day
-- Page text (first 8000 chars) via Playwright
-- Returns JSON with title, dates, deadlines, confidence score
-- Confidence under 0.75 → `low_confidence`, skipped permanently
-
-### Deadline Fields
-
-Four named types instead of generic `submission_deadline` / `submission_deadline_2`:
-
-| Column | What |
-|--------|------|
-| `abstract_deadline` | Abstract / short paper due |
-| `full_paper_deadline` | Full paper / manuscript due |
-| `camera_ready_deadline` | Camera-ready / final version |
-| `registration_deadline` | Author / early-bird registration |
-
-Each deadline stores `{"date": "YYYY-MM-DD", "context": "..."}`. The context is the raw surrounding text from the page, used to catch field swaps.
-
-**Shape contract:** Gemini returns each deadline as a `{"date", "context"}` object, but `normalize_extraction` (`schema.py`) flattens them *before* anything downstream sees them — by the time a result reaches `notify()`, `verifier.py`, or `db.py`, each deadline is a plain `YYYY-MM-DD` string under `{type}_deadline`, a deterministic label under `{type}_deadline_label`, and the context under `{type}_deadline_context`. Do not expect dicts outside `extractor.py`/`schema.py`; `notify()` tolerates both shapes defensively.
-
-### Validation
-
-Three checks run before saving anything:
-
-1. **Swap detection** — new value matches a *different* field's stored value → probably Gemini mixed them up
-2. **Chronological order** — abstract ≤ full_paper ≤ camera_ready ≤ registration ≤ conference start
-3. **Context keywords** — the context text must contain keywords for its own field, not another's
+Chronological check removed — site order is authoritative.
 
 ## Database
 
 | Table | Purpose |
 |-------|---------|
-| `conferences` | All extracted data, unique on `(website, date_start)` |
-| `seen_links` | URL state machine with retry bookkeeping |
-| `certspotter_cursor` | Per-domain cursor so certspotter doesn't re-scan old entries |
-| `domain_strategies` | Remembers which fetch strategy worked for each domain |
-| `special_path_cache` | Cached path patterns for special sources |
-| `daily_tasks` | Guards verification runs from happening too often (8h interval) |
+| `conferences` | unique `(website,date_start)`, 5×3 deadlines + legacy + `telegram_messages` |
+| `seen_links` | `pending → extracted/not_conference/low_confidence/failed_permanent` + retry |
+| `users` / `bookmarks` / `device_tokens` | app-owned (additive migration `api/migration_001_users.sql`) |
+| `telegram_messages` | `website, message_id` for auto-deletion of false alerts |
+| `domain_stats`, `certspotter_cursor` | scraper state |
 
-## File Layout
+## API (FastAPI, `api/`)
 
-```
-scraper/
-├── main.py              # Pipeline orchestrator — phases 1-6, no business logic
-├── extractor.py         # Gemini client, rate limiter
-├── schema.py            # Deadline definitions, JSON schema, SQL builders, system prompt
-├── validation.py        # Three validation layers
-├── verifier.py          # Deadline re-verification: once-per-day guard, diff, apply, notify
-├── browser.py           # Playwright singleton with crash recovery
-├── db.py                # All persistence: conferences, seen_links DFS, dedup, task state
-├── notifier.py          # Telegram: notify, pending flush, deadline-change alerts
-├── send_reminders.py    # Daily deadline digest
-├── verify_deadlines.py  # Standalone entrypoint → verifier.py (daily 04 UTC workflow)
-├── utils.py             # Shared utilities (SSRF protection, etc.)
-└── sources/
-    ├── homepage_links.py
-    ├── special.py
-    ├── crt_monitor.py
-    └── __init__.py
-config/
-├── universities.json
-└── special_sources.json
-db/
-├── schema.sql
-└── migration.sql
-pyproject.toml           # Package definition (pip install -e .)
-```
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| POST | `/auth/google` | — | Google `id_token` → JWT (loop on UNIQUE username) |
+| POST | `/auth/logout` | Bearer | stateless |
+| GET/DELETE | `/me` | Bearer | profile / cascade delete |
+| GET | `/conferences/calendar?month=YYYY-MM` | — | overlap month |
+| GET | `/conferences/upcoming?limit=30` | — | soonest |
+| GET | `/conferences/{id}` | — | detail |
+| GET/POST/DELETE | `/me/bookmarks…` | Bearer | idempotent |
+| POST/DELETE | `/me/devices` | Bearer | FCM token upsert |
+| POST | `/internal/notify-scraper-run` | `X-Notify-Secret` | workflow hook → daily digest |
+| GET | `/health` | — | |
+
+`GET /conferences/*` are read-only against scraper-populated `conferences`.
+
+## Android (`Call4Paper/`)
+
+Kotlin 2.0.21, AGP 8.7.3, Compose BOM 2024.09.03, Hilt, Room, Retrofit+OkHttp, DataStore, WorkManager, Credential Manager, FCM, SplashScreen. `compileSdk/targetSdk 35`, `minSdk 24`, edge-to-edge + `WindowSizeClass` (Compact <600dp / Medium 600–840dp / Expanded >840dp), `dp`/`sp` only, vectors, `BoxWithConstraints`/`LazyColumn`.
+
+Flow: `Splash (TokenManager peek) → Login (Continue with Google → POST /auth/google → DataStore JWT) → Calendar (Room single source, `refreshCalendar` on month change) → Upcoming/Conference/Account/Bookmarks` + bottom nav, `POST_NOTIFICATIONS` after login, `FCM → POST /me/devices`.
 
 ## Running Locally
 
 ```bash
 python -m venv venv && source venv/bin/activate
-pip install -e .
-playwright install --with-deps chromium
-
-export DATABASE_URL="postgresql://..."
-export GOOGLE_AI_KEY="..."
-export TELEGRAM_BOT_TOKEN="..."
-export TELEGRAM_CHANNEL_ID="@channel"
-
+pip install -e . && playwright install --with-deps chromium
+export DATABASE_URL="postgresql://..." GOOGLE_AI_KEY="..." TELEGRAM_BOT_TOKEN="..."
 python scraper/main.py
+
+# API
+cd api && DATABASE_URL="..." JWT_SECRET="dev" GOOGLE_AUTH_DISABLE=1 uvicorn main:app --host 0.0.0.0 --port 8000
+# App: adb reverse tcp:8000 tcp:8000, then http://127.0.0.1:8000 in RetrofitModule
 ```
 
 ## Tests
 
-Pure unit tests in `tests/` — no DB, network, or API keys required:
-
-- `test_validation.py` — date parsing / two-way swap / chronology / context rules
-- `test_schema.py` — deadline column & range SQL, normalization flattening contract
-- `test_utils.py` — `escape_html`, `resolve_channel`
-- `test_notifier.py` — deadline rendering in `notify()` (send monkeypatched)
-
-Run locally: `pip install -e '.[dev]' && python -m pytest tests/ -q`. CI runs the
-same suite on every push/PR (see `.github/workflows/ci.yml`).
-
-## Future: Go Scheduler
-
-A single Go binary that replaces the three GitHub Actions workflows:
-
-```
-conf-notifier serve
-  ├── scheduler         — in-process cron (6h scrape, 24h verify, 24h reminder)
-  ├── scraper           — homepage fetcher + special sources + certspotter
-  ├── extractor         — Gemini LLM extraction
-  ├── notifier          — Telegram push
-  └── db                — pgx pool (no more open/close per op)
-```
-
-Drops GitHub Actions dependency entirely — deploy as a systemd service or Docker container on a $5 VPS.
-
-## Future: TypeScript web-fetch bridge
-
-Replace `scraper/browser.py` (PlaywrightManager) with a small Node service using
-`playwright-extra` + `playwright-extra-stealth` (the upstream, actively-maintained
-stealth plugin — the Python `playwright-stealth` port lags behind it).
-
-- **Scope**: only the browser tier (`fetch_page_text` / `fetch_page_html`); Python
-  keeps orchestration, Gemini, DB, Telegram. All 6 call sites keep identical
-  signatures via a thin subprocess client in `browser.py`.
-- **Pattern**: JSON over stdin/stdout subprocess bridge now; becomes an HTTP
-  sidecar when the Go scheduler lands (Go consumes the same API over localhost).
-- **Resilience**: browser is already the last-resort fetch tier
-  (`requests → curl → playwright`) — a dead bridge degrades gracefully.
-- **CI impact**: `setup-node` + `npm ci`; cache key and browser-launch check switch
-  from Python to Node; the `python scraper/main.py` run step stays unchanged.
-- **Deps**: remove `playwright==1.62.0` + `playwright-stealth` from pyproject.
-- **Status**: deferred. Conference sites are not currently blocking fetches, so the
-  payoff is marginal until the Go scheduler work begins — evaluate then.
-
-## Future: Mobile Apps
-
-Flutter app reading from the same DB — browse conferences, bookmark deadlines, get push notifications. Nothing built yet.
+`tests/` — no DB/network: `test_validation` (swap/context), `test_schema` (columns/ranges), `test_utils`, `test_notifier` (now asserts submission-only). `pip install -e '.[dev]' && pytest -q` (29 passed) + `ci.yml`.
