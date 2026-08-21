@@ -83,11 +83,14 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
             .mapNotNull { runCatching { LocalDate.parse(it) }.getOrNull() }.toSet()
     }
     val listState = rememberLazyListState()
-    // Fade + parallax: as first item scrolls off, alpha 1→0 and translation
+    // Professional collapse: eased fade + subtle scale + parallax
     val firstOffset = if (listState.firstVisibleItemIndex == 0) listState.firstVisibleItemScrollOffset else 9999
-    val collapseProgress = (firstOffset / 400f).coerceIn(0f, 1f)
-    val calendarAlpha = 1f - collapseProgress
-    val calendarOffset = -(firstOffset * 0.3f)
+    val rawProgress = (firstOffset / 380f).coerceIn(0f, 1f)
+    val eased = androidx.compose.animation.core.FastOutSlowInEasing.transform(rawProgress)
+    val calendarAlpha = (1f - eased * 0.85f).coerceIn(0.15f, 1f)
+    val calendarScale = 1f - eased * 0.02f
+    val calendarOffset = -(firstOffset * 0.18f)
+    val cardElevation = (8 * (1f - eased * 0.7f)).dp
 
     // All deadlines for this month, sorted
     val allDeadlines = remember(s.items) {
@@ -106,16 +109,21 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
         modifier = Modifier.fillMaxSize().background(Color(0xFFF8F8FF)),
         contentPadding = PaddingValues(bottom = 16.dp)
     ) {
-        // Calendar card — collapses and fades on scroll
+        // Calendar card — polished collapse: eased alpha + scale + parallax
         item {
             Box(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 16.dp)
-                    .graphicsLayer { alpha = calendarAlpha; translationY = calendarOffset }
+                    .graphicsLayer {
+                        alpha = calendarAlpha
+                        translationY = calendarOffset
+                        scaleX = calendarScale
+                        scaleY = calendarScale
+                    }
             ) {
                 Card(
                     shape = RoundedCornerShape(20.dp),
                     colors = CardDefaults.cardColors(containerColor = CardBg),
-                    modifier = Modifier.fillMaxWidth().shadow(8.dp, RoundedCornerShape(20.dp))
+                    modifier = Modifier.fillMaxWidth().shadow(cardElevation, RoundedCornerShape(20.dp))
                 ) {
                     Column(Modifier.padding(16.dp)) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
