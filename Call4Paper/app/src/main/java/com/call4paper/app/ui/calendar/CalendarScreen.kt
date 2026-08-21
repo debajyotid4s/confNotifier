@@ -189,31 +189,36 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
         if (s.loading) item { LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) }
         s.error?.let { item { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp)) } }
 
-        // Selected day agenda
+        // Selected day agenda — only deadlines on the selected date, not all month
         item {
             Column(Modifier.padding(horizontal = 16.dp)) {
                 if (forDay.isNotEmpty()) {
                     Text("Deadlines on ${s.selected} — ${forDay.size} conference(s)", fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 8.dp))
                 } else {
                     Text("No submission deadlines on ${s.selected}", fontSize = 13.sp, color = Color.Gray, modifier = Modifier.padding(vertical = 8.dp))
-                    Text("Scroll to see all ${allDeadlines.size} deadlines this month ↓", fontSize = 12.sp, color = Color.Gray)
                 }
             }
         }
-        // For selected day: show its conferences; if none, show all month's deadlines as scrollable list that pushes calendar away
-        val toShow = if (forDay.isNotEmpty()) forDay else allDeadlines
-        items(toShow, key = { it.second.id to it.first }) { (dl, c, label) ->
-            Card(
-                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).clickable { onConference(c.id) },
-                colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-            ) {
-                Column(Modifier.padding(12.dp)) {
-                    Text(c.title, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 2)
-                    Spacer(Modifier.height(4.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("⏰ $label: $dl", fontSize = 12.sp, color = Red, fontWeight = FontWeight.Bold)
+        if (forDay.isNotEmpty()) {
+            items(forDay, key = { it.second.id to it.first }) { (dl, c, label) ->
+                Card(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).clickable { onConference(c.id) },
+                    colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(c.title, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 2)
+                        Spacer(Modifier.height(4.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("⏰ $label: $dl", fontSize = 12.sp, color = Red, fontWeight = FontWeight.Bold)
+                        }
+                        Text(c.website ?: "", fontSize = 11.sp, color = Color.Gray, maxLines = 1)
                     }
-                    Text(c.website ?: "", fontSize = 11.sp, color = Color.Gray, maxLines = 1)
+                }
+            }
+        } else {
+            item {
+                Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                    Text("Tap a red-dotted date to see its deadlines", fontSize = 13.sp, color = Color(0xFF9E9EB8))
                 }
             }
         }
