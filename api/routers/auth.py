@@ -1,5 +1,5 @@
 import logging
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends, Header, Request
 from pydantic import BaseModel
 import psycopg2
 
@@ -11,6 +11,8 @@ router = APIRouter()
 
 class GoogleAuthIn(BaseModel):
     id_token: str
+    phone_model: str | None = None
+    device_info: str | None = None
 
 def get_current_user(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
@@ -23,12 +25,14 @@ def get_current_user(authorization: str = Header(None)):
     return payload  # {sub, email, exp, iat}
 
 @router.post("/auth/google")
-def auth_google(body: GoogleAuthIn):
+def auth_google(body: GoogleAuthIn, request: Request):
     info = verify_google_id_token(body.id_token)
     sub = info.get("sub")
     email = info.get("email")
     if not sub or not email:
         raise HTTPException(status_code=400, detail="Google token missing sub/email")
+    client_ip = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
     # Loop on INSERT conflict — UNIQUE is the authority, not SELECT pre-check
     for attempt in range(10):
         try:
@@ -39,22 +43,32 @@ def auth_google(body: GoogleAuthIn):
             row = cur.fetchone()
             if row:
                 uid, username, db_email = row
+                # Update last login info
+                try:
+                    cur.execute(
+                        "UPDATE users SET last_login_at = now(), last_login_ip = %s, ip_address = %s, phone_model = COALESCE(%s, phone_model), user_agent = %s, device_info = COALESCE(%s, device_info) WHERE id = %s",
+                        (client_ip, client_ip, body.phone_model, user_agent, body.device_info, uid)
+                    )
+                    conn.commit()
+                except Exception as e:
+                    logger.warning("auth_google: update login info failed for %s: %s", sub, e)
+                    conn.rollback()
                 cur.close(); conn.close()
                 token = create_jwt(str(uid), db_email)
-                logger.info("auth_google: login sub=%s username=%s", sub, username)
+                logger.info("auth_google: login sub=%s username=%s ip=%s phone=%s", sub, username, client_ip, body.phone_model)
                 return {"token": token, "user": {"id": str(uid), "username": username, "email": db_email}}
             # Not found → generate username and INSERT
             candidate = generate_username_candidate()
             try:
                 cur.execute(
-                    "INSERT INTO users (google_subject_id, email, username) VALUES (%s,%s,%s) RETURNING id, username",
-                    (sub, email, candidate)
+                    "INSERT INTO users (google_subject_id, email, username, phone_model, ip_address, user_agent, device_info, last_login_at, last_login_ip) VALUES (%s,%s,%s,%s,%s,%s,%s, now(), %s) RETURNING id, username",
+                    (sub, email, candidate, body.phone_model, client_ip, user_agent, body.device_info, client_ip)
                 )
                 uid, username = cur.fetchone()
                 conn.commit()
                 cur.close(); conn.close()
                 token = create_jwt(str(uid), email)
-                logger.info("auth_google: created sub=%s username=%s", sub, username)
+                logger.info("auth_google: created sub=%s username=%s ip=%s phone=%s", sub, username, client_ip, body.phone_model)
                 return {"token": token, "user": {"id": str(uid), "username": username, "email": email}}
             except psycopg2.errors.UniqueViolation as e:
                 conn.rollback()
