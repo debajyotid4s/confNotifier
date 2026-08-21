@@ -10,11 +10,11 @@ def _row_to_dict(row, cols):
 
 @router.get("/conferences/calendar")
 def calendar(month: str = Query(..., pattern=r"^\d{4}-\d{2}$")):
-    # month=YYYY-MM, return conferences overlapping that month
+    # month=YYYY-MM, return conferences whose *submission deadline* falls in that month
+    # (legacy submission_deadline* coalesced with new abstract/full_paper for messy data)
     try:
         y, m = map(int, month.split("-"))
         start = date(y, m, 1)
-        # next month start
         if m == 12:
             end = date(y+1, 1, 1)
         else:
@@ -26,28 +26,38 @@ def calendar(month: str = Query(..., pattern=r"^\d{4}-\d{2}$")):
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT id, title, date_start, date_end, website, city, category
+            SELECT id, title, date_start, date_end, website, city, category,
+                   abstract_deadline, full_paper_deadline,
+                   submission_deadline, submission_deadline_2
             FROM conferences
-            WHERE date_start IS NOT NULL
-              AND date_start < %s
-              AND COALESCE(date_end, date_start) >= %s
-            ORDER BY date_start ASC
+            WHERE (abstract_deadline >= %s AND abstract_deadline < %s)
+               OR (full_paper_deadline >= %s AND full_paper_deadline < %s)
+               OR (submission_deadline >= %s AND submission_deadline < %s)
+               OR (submission_deadline_2 >= %s AND submission_deadline_2 < %s)
+            ORDER BY COALESCE(abstract_deadline, full_paper_deadline, submission_deadline) ASC
             """,
-            (end, start)
+            (start, end, start, end, start, end, start, end)
         )
         rows = cur.fetchall()
         cur.close()
         result = []
         for r in rows:
+            # Prefer new columns, fallback to legacy
+            abs_dl = r[7] or r[9]
+            full_dl = r[8] or r[10]
+            # Use the deadline that actually falls in this month for status/sorting
+            dl = abs_dl if abs_dl and start <= abs_dl < end else full_dl
             result.append({
                 "id": r[0],
                 "name": r[1],
                 "acronym": None,
                 "start_date": r[2].isoformat() if r[2] else None,
                 "end_date": r[3].isoformat() if r[3] else None,
-                "status": "upcoming" if r[2] and r[2] >= date.today() else "past",
+                "status": "upcoming" if dl and dl >= date.today() else "past",
                 "website": r[4],
                 "location": r[5],
+                "abstract_deadline": abs_dl.isoformat() if abs_dl else None,
+                "full_paper_deadline": full_dl.isoformat() if full_dl else None,
             })
         return result
     finally:
