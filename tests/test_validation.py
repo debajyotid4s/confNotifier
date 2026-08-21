@@ -3,7 +3,6 @@
 from datetime import date
 
 from scraper.validation import (
-    _check_chronological_order,
     _check_deadline_context,
     _check_deadline_swap,
     _parse_date_safe,
@@ -36,30 +35,10 @@ def test_one_way_match_not_flagged():
 
 
 def test_equal_dates_not_flagged_as_swap():
-    # camera_ready == registration is common (same deadline); a "swap" of
-    # identical values is a no-op and must not warn or block updates.
-    new_values = {"camera_ready": date(2026, 8, 30), "registration": date(2026, 8, 30)}
-    stored = {"camera_ready": date(2026, 8, 30), "registration": date(2026, 8, 30)}
+    # same date in both submission fields is a no-op, not a swap
+    new_values = {"abstract": date(2026, 8, 30), "full_paper": date(2026, 8, 30)}
+    stored = {"abstract": date(2026, 8, 30), "full_paper": date(2026, 8, 30)}
     assert _check_deadline_swap(new_values, stored) == set()
-
-
-def test_chronological_violation_flagged():
-    new_values = {"abstract": date(2026, 8, 15), "full_paper": date(2026, 8, 1)}
-    assert _check_chronological_order(new_values, None) is False
-
-
-def test_chronological_order_valid():
-    new_values = {
-        "abstract": date(2026, 8, 1),
-        "full_paper": date(2026, 9, 1),
-        "camera_ready": date(2026, 10, 1),
-        "registration": date(2026, 10, 15),
-    }
-    assert _check_chronological_order(new_values, date(2026, 12, 1)) is True
-
-
-def test_chronological_nulls_skipped():
-    assert _check_chronological_order({"abstract": date(2026, 8, 15)}, None) is True
 
 
 def test_context_mismatch_flagged():

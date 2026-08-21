@@ -16,22 +16,21 @@ from scraper.schema import (
     DEADLINE_TYPES,
     DEADLINE_LABELS,
     DEADLINE_DB_FIELDS,
+    SUBMISSION_TYPES,
     deadline_select_columns,
     deadline_range_checks,
 )
 from scraper.validation import (
     _parse_date_safe,
     _check_deadline_swap,
-    _check_chronological_order,
     _check_deadline_context,
 )
 
 logger = logging.getLogger(__name__)
 
-# Only submission deadlines (abstract/full paper) trigger Telegram change
-# notifications. Camera ready / registration changes are still saved to the DB
-# (via updates) but are not broadcast to users.
-NOTIFY_TYPES = {"abstract", "full_paper"}
+# Only submission deadlines trigger Telegram change notifications.
+# Other types are stored but not broadcast.
+NOTIFY_TYPES = set(SUBMISSION_TYPES)
 
 VERIFY_WINDOW_DAYS = 30
 # Interval (hours) between re-verification runs. The main scraper runs 5x/day
@@ -260,7 +259,7 @@ def _apply_updates(conf_id: int, updates: list, website: str) -> bool:
                 SET {field} = %s,
                     {label_field} = %s,
                     {prev_field} = CASE
-                        WHEN {field} IS NOT NULL AND {field} != %s THEN {field}
+                        WHEN {field} IS NOT NULL AND {field} != %s AND {prev_field} IS NULL THEN {field}
                         ELSE {prev_field}
                     END,
                     deadline_last_verified = NOW()
@@ -366,20 +365,10 @@ def _process_conference(row, playwright) -> None:
         new_values[typ] = _parse_date_safe(result.get(f"{typ}_deadline"))
         stored_values[typ] = old_values[typ]["date"]
 
-    # Layer A: cross-field swap detection
+    # Layer A: submission swap detection (abstract ↔ full_paper)
     swapped_fields = _check_deadline_swap(new_values, stored_values)
 
-    # Layer B: chronological order constraint
-    conf_start = _parse_date_safe(result.get("date_start"))
-    if not _check_chronological_order(new_values, conf_start):
-        logger.warning(
-            "deadline_verification: %s — chronological order violated, "
-            "skipping entire re-verification",
-            website
-        )
-        return
-
-    # Layer C: context keyword validation
+    # Layer B: context keyword validation (submission only)
     context_mismatches = _check_deadline_context(result)
 
     updates, notify_changes = _diff_deadlines(

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 7"+ tablets / foldables / landscape (600-840dp) -->
+    <dimen name="horizontal_padding">24dp</dimen>
+    <dimen name="card_corner">16dp</dimen>
+    <dimen name="card_elevation">4dp</dimen>
+    <dimen name="title_text">32sp</dimen>
+    <dimen name="body_text">16sp</dimen>
+</resources>

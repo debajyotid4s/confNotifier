@@ -227,6 +227,29 @@ def _deadline_set_clause() -> str:
     return ", ".join(set_parts)
 
 
+def _deadline_previous_set_clause() -> str:
+    """Build SET clause for _previous columns — keep the original value.
+
+    Only sets _previous when it is currently NULL and the deadline actually
+    changed (new != old). This preserves the very first deadline forever,
+    so future comparisons are always against the original.
+    """
+    parts = []
+    for typ in DEADLINE_TYPES:
+        field = f"{typ}_deadline"
+        prev = f"{typ}_deadline_previous"
+        parts.append(
+            f"{prev} = CASE "
+            f"WHEN EXCLUDED.{field} IS NOT NULL "
+            f"AND conferences.{field} IS NOT NULL "
+            f"AND EXCLUDED.{field} != conferences.{field} "
+            f"AND conferences.{prev} IS NULL "
+            f"THEN conferences.{field} "
+            f"ELSE conferences.{prev} END"
+        )
+    return ", ".join(parts)
+
+
 def save_conference(conf: dict) -> tuple[bool, bool, int | None]:
     """Open a fresh DB connection, save conference, close immediately.
 
@@ -243,6 +266,7 @@ def save_conference(conf: dict) -> tuple[bool, bool, int | None]:
         website = normalize_website(conf.get("website", ""))
         dl_cols, dl_vals = _deadline_columns(conf)
         dl_set = _deadline_set_clause()
+        prev_set = _deadline_previous_set_clause()
 
         base_cols = ["title", "date_start", "date_end", "city", "country",
                      "website", "organizer", "category", "confidence", "raw_source", "is_notified"]
@@ -255,6 +279,7 @@ def save_conference(conf: dict) -> tuple[bool, bool, int | None]:
             VALUES ({placeholders})
             ON CONFLICT (website, date_start) DO UPDATE SET
                 {dl_set},
+                {prev_set},
                 submission_deadline = NULL,
                 submission_deadline_label = NULL,
                 submission_deadline_2 = NULL,
@@ -525,6 +550,98 @@ def mark_verification_done() -> None:
         cur.close()
     except Exception as e:
         logger.error("mark_verification_done error: %s", e)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# ── Telegram message tracking (for auto-deletion of false notifications) ──
+
+
+def ensure_telegram_messages_table() -> None:
+    """Create telegram_messages table if it doesn't exist."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS telegram_messages (
+                id SERIAL PRIMARY KEY,
+                website TEXT NOT NULL,
+                message_id BIGINT NOT NULL,
+                message_type TEXT NOT NULL,
+                chat_id TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE(website, message_id)
+            )
+            """
+        )
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        logger.error("ensure_telegram_messages_table error: %s", e)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def save_telegram_message(website: str, message_id: int, message_type: str, chat_id: str | None = None) -> None:
+    """Store a Telegram message_id for later deletion."""
+    if not website or not message_id:
+        return
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO telegram_messages (website, message_id, message_type, chat_id)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (website, message_id) DO NOTHING
+            """,
+            (normalize_website(website), int(message_id), message_type, chat_id),
+        )
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        logger.error("save_telegram_message error for %s: %s", website, e)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def get_last_telegram_message(website: str, message_type: str | None = None) -> int | None:
+    """Return the most recent message_id for a website/type, or None."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        if message_type:
+            cur.execute(
+                "SELECT message_id FROM telegram_messages WHERE website = %s AND message_type = %s ORDER BY created_at DESC LIMIT 1",
+                (normalize_website(website), message_type),
+            )
+        else:
+            cur.execute(
+                "SELECT message_id FROM telegram_messages WHERE website = %s ORDER BY created_at DESC LIMIT 1",
+                (normalize_website(website),),
+            )
+        row = cur.fetchone()
+        cur.close()
+        return int(row[0]) if row else None
+    except Exception as e:
+        logger.error("get_last_telegram_message error for %s: %s", website, e)
+        return None
     finally:
         if conn:
             try:

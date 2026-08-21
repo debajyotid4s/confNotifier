@@ -14,7 +14,7 @@ import requests
 
 from scraper import db
 from scraper.sources.crt_monitor import run as crt_monitor_run
-from scraper.schema import DEADLINE_TYPES
+from scraper.schema import SUBMISSION_TYPES
 from scraper.utils import escape_html, resolve_channel
 
 logging.basicConfig(
@@ -55,9 +55,10 @@ def _urgency_emoji(days_left: int) -> str:
 
 
 def send_deadline_reminders() -> None:
+    # Submission deadlines only
     dl_select_cols = []
     dl_date_checks = []
-    for typ in DEADLINE_TYPES:
+    for typ in SUBMISSION_TYPES:
         dl_select_cols.append(f"{typ}_deadline")
         dl_select_cols.append(f"{typ}_deadline_previous")
         dl_date_checks.append(
@@ -110,9 +111,9 @@ def send_deadline_reminders() -> None:
             leg_dl1_prev = row[4]
             leg_dl2_prev = row[5]
 
-            # Check each named deadline type first
+            # Submission deadlines only
             dl_offset = 6
-            has_new_deadline = any(row[dl_offset + i * 2] is not None for i in range(len(DEADLINE_TYPES)))
+            has_new_deadline = any(row[dl_offset + i * 2] is not None for i in range(len(SUBMISSION_TYPES)))
 
             # Legacy columns are only used when no new-schema deadline exists yet
             if not has_new_deadline:
@@ -123,7 +124,7 @@ def send_deadline_reminders() -> None:
                     is_updated = leg_dl2_prev is not None and leg_dl2_prev != leg_dl2
                     entries.append((leg_dl2, website, title, is_updated, leg_dl2_prev if is_updated else None))
 
-            for i, typ in enumerate(DEADLINE_TYPES):
+            for i, typ in enumerate(SUBMISSION_TYPES):
                 dl = row[dl_offset + i * 2]
                 dl_prev = row[dl_offset + i * 2 + 1]
                 if _within_30_days(dl):

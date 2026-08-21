@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base (phones <600dp) — all dp, never px -->
+    <dimen name="horizontal_padding">16dp</dimen>
+    <dimen name="card_corner">12dp</dimen>
+    <dimen name="card_elevation">2dp</dimen>
+    <dimen name="title_text">28sp</dimen>
+    <dimen name="body_text">14sp</dimen>
+</resources>

@@ -6,6 +6,7 @@ import time
 from datetime import datetime
 
 import requests
+from urllib.parse import urlparse
 
 from scraper.db import get_connection
 
@@ -87,16 +88,25 @@ def _save_cursor(domain: str, last_id: int) -> None:
 
 
 def _load_seen_urls() -> set[str]:
+    """Return set of hostnames already seen (for dedup)."""
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute(
             "SELECT url FROM seen_links WHERE status IN "
-            "('pending', 'not_conference', 'low_confidence', 'extracted')"
+            "('pending', 'not_conference', 'low_confidence', 'extracted', "
+            "'failed_transient', 'failed_permanent')"
         )
-        result = {row[0].replace("https://", "").replace("http://", "") for row in cur.fetchall()}
+        hostnames = set()
+        for (url,) in cur.fetchall():
+            try:
+                host = (urlparse(url).hostname or "").lower()
+                if host:
+                    hostnames.add(host)
+            except Exception:
+                continue
         cur.close()
-        return result
+        return hostnames
     finally:
         conn.close()
 
