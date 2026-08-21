@@ -1,6 +1,11 @@
 package com.call4paper.app.ui.account
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -38,12 +43,61 @@ class AccountViewModel @Inject constructor(private val api: ApiService, private 
 fun AccountScreen(onLogout: () -> Unit, onBookmarks: () -> Unit, vm: AccountViewModel = hiltViewModel()) {
     val u by vm.user.collectAsState()
     LaunchedEffect(Unit) { vm.load() }
-    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Account", style = MaterialTheme.typography.titleLarge, fontSize = 20.sp)
-        Text("Username: ${u.first}", fontSize = 14.sp)
-        Text("Email: ${u.second}", fontSize = 14.sp)
-        Button(onClick = onBookmarks, modifier = Modifier.fillMaxWidth()) { Text("Bookmarks", fontSize = 14.sp) }
-        OutlinedButton(onClick = { vm.logout(onLogout) }, modifier = Modifier.fillMaxWidth()) { Text("Logout", fontSize = 14.sp) }
-        Button(onClick = { vm.deleteAccount(onLogout) }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error), modifier = Modifier.fillMaxWidth()) { Text("Delete Account", fontSize = 14.sp) }
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Text("Account", style = MaterialTheme.typography.headlineSmall, fontSize = 24.sp)
+        // Profile card
+        Card(
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Box(
+                    Modifier.size(56.dp).background(MaterialTheme.colorScheme.primary, shape = androidx.compose.foundation.shape.CircleShape),
+                    contentAlignment = androidx.compose.ui.Alignment.Center
+                ) {
+                    Text(u.first.take(1).uppercase().ifEmpty { "U" }, color = MaterialTheme.colorScheme.onPrimary, fontSize = 24.sp)
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(u.first.ifEmpty { "Loading..." }, style = MaterialTheme.typography.titleMedium, fontSize = 16.sp)
+                    Text(u.second.ifEmpty { "—" }, style = MaterialTheme.typography.bodySmall, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    u.third?.let { Text("Joined ${it.take(10)}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                }
+            }
+        }
+        // My Conferences section
+        Text("My Conferences", style = MaterialTheme.typography.titleSmall, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
+        Card(Modifier.fillMaxWidth(), shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)) {
+            Column {
+                ListItem(headlineContent = { Text("Bookmarks", fontSize = 15.sp) }, supportingContent = { Text("Saved conferences", fontSize = 12.sp) }, modifier = Modifier.clickable { onBookmarks() })
+                Divider()
+                ListItem(headlineContent = { Text("Submission deadlines", fontSize = 15.sp) }, supportingContent = { Text("Track your followed deadlines", fontSize = 12.sp) })
+            }
+        }
+        // Settings section
+        Text("Settings", style = MaterialTheme.typography.titleSmall, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
+        Card(Modifier.fillMaxWidth(), shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)) {
+            Column {
+                ListItem(headlineContent = { Text("Notifications", fontSize = 15.sp) }, supportingContent = { Text("Manage push preferences", fontSize = 12.sp) }, trailingContent = { Switch(checked = true, onCheckedChange = {}) })
+                Divider()
+                ListItem(headlineContent = { Text("Logout", fontSize = 15.sp) }, modifier = Modifier.clickable { vm.logout(onLogout) })
+            }
+        }
+        // Danger zone
+        Card(
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            ListItem(
+                headlineContent = { Text("Delete Account", color = MaterialTheme.colorScheme.error, fontSize = 15.sp) },
+                supportingContent = { Text("Permanently delete your data", fontSize = 12.sp, color = MaterialTheme.colorScheme.error) },
+                modifier = Modifier.clickable { vm.deleteAccount(onLogout) }
+            )
+        }
+        Spacer(Modifier.height(16.dp))
     }
 }

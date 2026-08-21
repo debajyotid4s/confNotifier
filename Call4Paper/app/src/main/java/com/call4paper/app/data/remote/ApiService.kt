@@ -4,7 +4,11 @@ import kotlinx.serialization.Serializable
 import retrofit2.http.*
 
 @Serializable
-data class GoogleAuthRequest(val id_token: String)
+data class GoogleAuthRequest(
+    val id_token: String,
+    val phone_model: String? = null,
+    val device_info: String? = null
+)
 
 @Serializable
 data class AuthResponse(val token: String, val user: UserDto)

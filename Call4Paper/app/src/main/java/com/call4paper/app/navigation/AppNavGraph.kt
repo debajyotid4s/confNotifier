@@ -3,6 +3,7 @@ package com.call4paper.app.navigation
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.material.icons.Icons
@@ -61,7 +62,11 @@ fun AppNavGraph() {
             }
         }
     ) { padding ->
-        NavHost(navController = nav, startDestination = Route.Splash.route) {
+        NavHost(
+            navController = nav,
+            startDestination = Route.Splash.route,
+            modifier = androidx.compose.ui.Modifier.padding(padding)
+        ) {
             composable(Route.Splash.route) {
                 SplashScreen(
                     onAuth = { nav.navigate(Route.Calendar.route) { popUpTo(Route.Splash.route) { inclusive = true } } },

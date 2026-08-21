@@ -9,11 +9,44 @@ import androidx.core.app.NotificationCompat
 import com.call4paper.app.MainActivity
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.launch
 
 class Call4PaperMessagingService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
-        // TODO: POST /devices { fcmToken: token } with Firebase ID token
+        android.util.Log.d("FCM", "onNewToken: ${token.take(12)}...")
+        // Try to register with backend if user is logged in (JWT exists)
+        // Uses EntryPoint to get TokenManager and ApiService without Hilt injection in Service
+        try {
+            val entry = dagger.hilt.android.EntryPointAccessors.fromApplication(
+                applicationContext, MessagingEntryPoint::class.java
+            )
+            val tokenManager = entry.tokenManager()
+            val api = entry.apiService()
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                try {
+                    val jwt = tokenManager.tokenFlow.firstOrNull()
+                    if (jwt != null) {
+                        api.postDevice(mapOf("fcm_token" to token))
+                        android.util.Log.i("FCM", "onNewToken registered with backend")
+                    } else {
+                        android.util.Log.w("FCM", "onNewToken: no JWT, will register after login")
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("FCM", "onNewToken post failed", e)
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("FCM", "onNewToken entry point failed", e)
+        }
+    }
+
+    @dagger.hilt.EntryPoint
+    @dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
+    interface MessagingEntryPoint {
+        fun tokenManager(): com.call4paper.app.data.local.TokenManager
+        fun apiService(): com.call4paper.app.data.remote.ApiService
     }
 
     override fun onMessageReceived(msg: RemoteMessage) {

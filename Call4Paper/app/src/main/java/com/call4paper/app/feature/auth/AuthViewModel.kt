@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import javax.inject.Inject
 
 private const val TAG = "AuthViewModel"
@@ -97,10 +98,20 @@ class AuthViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
             Log.d(TAG, "signInWithGoogle: verifying via backend")
             try {
-                val resp = api.authGoogle(GoogleAuthRequest(idToken))
+                val phoneModel = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}".trim()
+                val deviceInfo = "Android ${android.os.Build.VERSION.RELEASE} (${android.os.Build.DEVICE})"
+                val resp = api.authGoogle(GoogleAuthRequest(idToken, phoneModel, deviceInfo))
                 // Do not log token
                 tokens.save(resp.token)
                 Log.i(TAG, "signInWithGoogle: success user=${resp.user.username}")
+                // Send FCM token for push notifications
+                try {
+                    val fcmToken = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
+                    api.postDevice(mapOf("fcm_token" to fcmToken))
+                    Log.d(TAG, "FCM token registered: ${fcmToken.take(12)}...")
+                } catch (e: Exception) {
+                    Log.w(TAG, "FCM token post failed (will retry on token refresh)", e)
+                }
                 _uiState.value = _uiState.value.copy(isLoading = false, isLoggedIn = true)
                 onSuccess()
             } catch (e: Exception) {
