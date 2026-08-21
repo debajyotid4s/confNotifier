@@ -37,9 +37,8 @@ object NetworkModule {
 
     @Provides @Singleton
     fun provideRetrofit(okHttp: OkHttpClient): Retrofit {
-        // Dev: phone via USB uses adb reverse → http://127.0.0.1:8000
-        // Emulator uses http://10.0.2.2:8000 — change via BuildConfig or adb shell setprop
-        val baseUrl = "http://127.0.0.1:8000/"
+        // Prod: live Render backend — https://confnotifier.onrender.com
+        val baseUrl = "https://confnotifier.onrender.com/"
         val url = System.getProperty("apiBaseUrl") ?: baseUrl
         return Retrofit.Builder()
             .baseUrl(url)
