@@ -61,8 +61,6 @@ class CalendarViewModel @Inject constructor(private val repo: ConferenceReposito
         }
         viewModelScope.launch { _month.collect { refresh(it) } }
     }
-        viewModelScope.launch { _month.collect { refresh(it) } }
-    }
     fun setMonth(m: YearMonth) { _month.value = m }
     fun select(date: LocalDate) { _selected.value = date }
     fun prev() { _month.value = _month.value.minusMonths(1) }
