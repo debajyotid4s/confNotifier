@@ -64,7 +64,7 @@ def calendar(month: str = Query(..., pattern=r"^\d{4}-\d{2}$")):
         conn.close()
 
 @router.get("/conferences/upcoming")
-def upcoming(limit: int = Query(30, ge=1, le=100)):
+def upcoming(limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0)):
     conn = get_conn()
     try:
         cur = conn.cursor()
@@ -75,9 +75,9 @@ def upcoming(limit: int = Query(30, ge=1, le=100)):
             FROM conferences
             WHERE date_start IS NOT NULL AND date_start >= CURRENT_DATE
             ORDER BY date_start ASC
-            LIMIT %s
+            LIMIT %s OFFSET %s
             """,
-            (limit,)
+            (limit, offset)
         )
         rows = cur.fetchall()
         cur.close()

@@ -11,7 +11,7 @@ def list_bookmarks(user=Depends(get_current_user)):
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT c.id, c.title, c.date_start, c.date_end, c.website, c.city, c.category,
+            SELECT c.id, c.title, c.date_start, c.date_end, c.website, c.city, c.organizer, c.category,
                    c.abstract_deadline, c.full_paper_deadline
             FROM bookmarks b JOIN conferences c ON c.id = b.conference_id
             WHERE b.user_id = %s ORDER BY c.date_start ASC
@@ -21,7 +21,7 @@ def list_bookmarks(user=Depends(get_current_user)):
         rows = cur.fetchall()
         cur.close()
         return [
-            {"id": r[0], "name": r[1], "start_date": r[2].isoformat() if r[2] else None, "end_date": r[3].isoformat() if r[3] else None, "website": r[4], "location": r[5], "abstract_deadline": r[7].isoformat() if r[7] else None, "full_paper_deadline": r[8].isoformat() if r[8] else None}
+            {"id": r[0], "name": r[1], "start_date": r[2].isoformat() if r[2] else None, "end_date": r[3].isoformat() if r[3] else None, "website": r[4], "location": r[5], "organizer": r[6], "abstract_deadline": r[8].isoformat() if r[8] else None, "full_paper_deadline": r[9].isoformat() if r[9] else None}
             for r in rows
         ]
     finally:
