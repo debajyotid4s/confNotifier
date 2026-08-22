@@ -83,14 +83,18 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
             .mapNotNull { runCatching { LocalDate.parse(it) }.getOrNull() }.toSet()
     }
     val listState = rememberLazyListState()
-    // Professional collapse: eased fade + subtle scale + parallax
-    val firstOffset = if (listState.firstVisibleItemIndex == 0) listState.firstVisibleItemScrollOffset else 9999
-    val rawProgress = (firstOffset / 380f).coerceIn(0f, 1f)
+    // Responsive: derivedStateOf prevents recomposition on every pixel; only when progress changes
+    val rawProgress by remember {
+        derivedStateOf {
+            val off = if (listState.firstVisibleItemIndex == 0) listState.firstVisibleItemScrollOffset else 999
+            (off / 380f).coerceIn(0f, 1f)
+        }
+    }
     val eased = androidx.compose.animation.core.FastOutSlowInEasing.transform(rawProgress)
-    val calendarAlpha = (1f - eased * 0.85f).coerceIn(0.15f, 1f)
-    val calendarScale = 1f - eased * 0.02f
-    val calendarOffset = -(firstOffset * 0.18f)
-    val cardElevation = (8 * (1f - eased * 0.7f)).dp
+    val calendarAlpha by remember(eased) { derivedStateOf { (1f - eased * 0.85f).coerceIn(0.15f, 1f) } }
+    val calendarScale by remember(eased) { derivedStateOf { 1f - eased * 0.02f } }
+    val calendarOffset by remember { derivedStateOf { if (listState.firstVisibleItemIndex == 0) -(listState.firstVisibleItemScrollOffset * 0.18f) else -180f } }
+    val cardElevation by remember(eased) { derivedStateOf { (8 * (1f - eased * 0.7f)).dp } }
 
     // All deadlines for this month, sorted
     val allDeadlines = remember(s.items) {
