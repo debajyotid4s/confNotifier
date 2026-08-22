@@ -31,23 +31,46 @@ class AccountViewModel @Inject constructor(private val api: ApiService, private 
             try { val u = api.getMe(); _user.value = Triple(u.username, u.email, u.created_at) } catch (e: Exception) {}
         }
     }
+    private val _error = MutableStateFlow<String?>(null)
+    val error: StateFlow<String?> = _error
+
     fun logout(onDone: () -> Unit) {
-        viewModelScope.launch { try { api.logout() } catch (_: Exception) {}; tokens.clear(); onDone() }
+        viewModelScope.launch {
+            try {
+                api.logout()
+                tokens.clear()
+                _error.value = null
+                onDone()
+            } catch (e: Exception) {
+                _error.value = "Logout failed — check your connection and try again"
+            }
+        }
     }
     fun deleteAccount(onDone: () -> Unit) {
-        viewModelScope.launch { try { api.deleteMe() } catch (_: Exception) {}; tokens.clear(); onDone() }
+        viewModelScope.launch {
+            try {
+                api.deleteMe()
+                tokens.clear()
+                _error.value = null
+                onDone()
+            } catch (e: Exception) {
+                _error.value = "Delete failed — check your connection and try again"
+            }
+        }
     }
 }
 
 @Composable
 fun AccountScreen(onLogout: () -> Unit, onBookmarks: () -> Unit, vm: AccountViewModel = hiltViewModel()) {
     val u by vm.user.collectAsState()
+    val err by vm.error.collectAsState()
     LaunchedEffect(Unit) { vm.load() }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Text("Account", style = MaterialTheme.typography.headlineSmall, fontSize = 24.sp)
+        err?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
         // Profile card
         Card(
             shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),

@@ -19,8 +19,24 @@ class SplashViewModel @Inject constructor(private val tokens: TokenManager) : Vi
     fun decide(onAuth: () -> Unit, onLogin: () -> Unit) {
         viewModelScope.launch {
             val t = tokens.peek()
-            if (t != null) onAuth() else onLogin()
+            if (t != null && isJwtValid(t)) onAuth() else {
+                if (t != null) tokens.clear() // expired/invalid → clear stale token
+                onLogin()
+            }
         }
+    }
+
+    private fun isJwtValid(token: String): Boolean {
+        return try {
+            val parts = token.split(".")
+            if (parts.size != 3) return false
+            val payloadJson = String(android.util.Base64.decode(parts[1], android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP), Charsets.UTF_8)
+            val exp = org.json.JSONObject(payloadJson).optLong("exp", 0L)
+            if (exp == 0L) return true // no exp claim → treat as valid (server should always set it)
+            val nowSec = System.currentTimeMillis() / 1000L
+            // 60s clock skew leeway
+            exp > nowSec + 60
+        } catch (_: Exception) { false }
     }
 }
 

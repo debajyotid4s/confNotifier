@@ -8,3 +8,4 @@ google-auth==2.35.0
 requests==2.32.3
 firebase-admin==6.5.0
 python-multipart==0.0.12
+redis==5.0.5

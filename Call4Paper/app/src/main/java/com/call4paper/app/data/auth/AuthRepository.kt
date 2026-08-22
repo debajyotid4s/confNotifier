@@ -21,6 +21,12 @@ class AuthRepository @Inject constructor(
             val result = auth.createUserWithEmailAndPassword(email.trim(), password).await()
             val user = result.user
             if (user != null) {
+                try {
+                    user.sendEmailVerification().await()
+                    Log.i(TAG, "signUp: verification email sent to ${user.email}")
+                } catch (e: Exception) {
+                    Log.w(TAG, "signUp: sendEmailVerification failed for ${user.email}", e)
+                }
                 Log.i(TAG, "signUp: success uid=${user.uid} email=${user.email}")
                 Result.success(user)
             } else {
@@ -30,6 +36,28 @@ class AuthRepository @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "signUp: failed for $email", e)
             Result.failure(e)
+        }
+    }
+
+    suspend fun resendVerification(): Boolean {
+        val user = auth.currentUser ?: return false
+        return try {
+            user.sendEmailVerification().await()
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "resendVerification failed", e)
+            false
+        }
+    }
+
+    suspend fun reloadAndCheckVerified(): Boolean {
+        val user = auth.currentUser ?: return false
+        return try {
+            user.reload().await()
+            auth.currentUser?.isEmailVerified == true
+        } catch (e: Exception) {
+            Log.e(TAG, "reloadAndCheckVerified failed", e)
+            false
         }
     }
 

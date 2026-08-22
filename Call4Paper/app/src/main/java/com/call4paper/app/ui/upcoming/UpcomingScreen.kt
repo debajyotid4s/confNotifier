@@ -29,7 +29,7 @@ class UpcomingViewModel @Inject constructor(private val repo: ConferenceReposito
     fun refresh() {
         viewModelScope.launch {
             try { repo.refreshUpcoming(30); repo.observeAll().first().let { _state.value = it } }
-            catch (e: Exception) { _error.value = e.message }
+            catch (_: Exception) { _error.value = "Could not load — check your connection" }
         }
     }
 }

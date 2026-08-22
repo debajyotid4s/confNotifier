@@ -11,20 +11,32 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val TAG = "ConferenceRepo"
+private const val DETAIL_TTL_MS = 60 * 60 * 1000L // 1h
+private const val CALENDAR_FRESHNESS_MS = 15 * 60 * 1000L // 15min per month
+private const val PRUNE_AFTER_MS = 7 * 24 * 60 * 60 * 1000L // keep 7d of past data
 
 @Singleton
 class ConferenceRepository @Inject constructor(
     private val api: ApiService,
     private val dao: ConferenceDao
 ) {
+    private val calendarLastFetch = mutableMapOf<String, Long>()
+
     fun observeAll(): Flow<List<ConferenceEntity>> = dao.observeAll()
 
-    suspend fun refreshCalendar(month: String) = withContext(Dispatchers.IO) {
+    suspend fun refreshCalendar(month: String, force: Boolean = false) = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        val last = calendarLastFetch[month] ?: 0L
+        if (!force && now - last < CALENDAR_FRESHNESS_MS) {
+            Log.d(TAG, "refreshCalendar: skipping $month (fresh ${ (now-last)/1000 }s ago)")
+            return@withContext
+        }
         Log.d(TAG, "refreshCalendar: $month")
         try {
             val dtos = api.getCalendar(month)
             val entities = dtos.map { it.toEntity() }
             dao.insertAll(entities)
+            calendarLastFetch[month] = now
             Log.i(TAG, "refreshCalendar: cached ${entities.size} for $month")
         } catch (e: Exception) {
             Log.e(TAG, "refreshCalendar failed for $month", e)
@@ -43,14 +55,20 @@ class ConferenceRepository @Inject constructor(
     }
 
     suspend fun getDetail(id: Int): ConferenceEntity? = withContext(Dispatchers.IO) {
-        // Try cache first
-        dao.getById(id)?.let { return@withContext it }
-        // Fetch from network
+        val cached = dao.getById(id)
+        if (cached != null && System.currentTimeMillis() - cached.updatedAt < DETAIL_TTL_MS) {
+            return@withContext cached
+        }
+        // Fetch from network (force refresh if stale or missing)
         try {
             val dto = api.getConference(id)
             val entity = dto.toEntity()
             dao.insert(entity); entity
-        } catch (e: Exception) { Log.e(TAG, "getDetail $id failed", e); null }
+        } catch (e: Exception) {
+            // On network failure, return stale cache if exists
+            if (cached != null) return@withContext cached
+            Log.e(TAG, "getDetail $id failed", e); null
+        }
     }
 }
 

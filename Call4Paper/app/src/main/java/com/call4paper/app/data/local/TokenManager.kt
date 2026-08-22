@@ -1,23 +1,42 @@
 package com.call4paper.app.data.local
 
 import android.content.Context
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
+import android.content.SharedPreferences
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
-private val Context.authStore by preferencesDataStore(name = "auth_prefs")
-
 @Singleton
 class TokenManager @Inject constructor(@ApplicationContext private val ctx: Context) {
-    private val KEY = stringPreferencesKey("app_token")
-    val tokenFlow: Flow<String?> = ctx.authStore.data.map { it[KEY] }
-    suspend fun save(token: String) { ctx.authStore.edit { it[KEY] = token } }
-    suspend fun clear() { ctx.authStore.edit { it.remove(KEY) } }
-    suspend fun peek(): String? = ctx.authStore.data.first()[KEY]
+    private val prefs: SharedPreferences by lazy {
+        val masterKey = MasterKey.Builder(ctx).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
+        EncryptedSharedPreferences.create(
+            ctx, "auth_enc_prefs", masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+    }
+    private val _flow = MutableStateFlow<String?>(null)
+    init {
+        // Seed flow from encrypted prefs (off main thread via Dispatchers.IO where used)
+        _flow.value = prefs.getString("app_token", null)
+    }
+    val tokenFlow: Flow<String?> = _flow.map { it }
+
+    suspend fun save(token: String) = withContext(Dispatchers.IO) {
+        prefs.edit().putString("app_token", token).apply()
+        _flow.value = token
+    }
+    suspend fun clear() = withContext(Dispatchers.IO) {
+        prefs.edit().remove("app_token").apply()
+        _flow.value = null
+    }
+    suspend fun peek(): String? = withContext(Dispatchers.IO) { prefs.getString("app_token", null) }
 }

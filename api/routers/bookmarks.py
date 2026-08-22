@@ -27,6 +27,18 @@ def list_bookmarks(user=Depends(get_current_user)):
     finally:
         conn.close()
 
+@router.get("/me/bookmarks/{conference_id}")
+def get_bookmark(conference_id: int, user=Depends(get_current_user)):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM bookmarks WHERE user_id=%s AND conference_id=%s", (user["sub"], conference_id))
+        exists = cur.fetchone() is not None
+        cur.close()
+        return {"bookmarked": exists}
+    finally:
+        conn.close()
+
 @router.post("/me/bookmarks/{conference_id}", status_code=201)
 def add_bookmark(conference_id: int, user=Depends(get_current_user)):
     conn = get_conn()

@@ -21,11 +21,22 @@ def get_current_user(authorization: str = Header(None)):
     try:
         payload = decode_jwt(token)
     except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
+        logger.warning("get_current_user: jwt decode failed: %s", e)
+        raise HTTPException(status_code=401, detail="Invalid token")
     return payload  # {sub, email, exp, iat}
 
 @router.post("/auth/google")
 def auth_google(body: GoogleAuthIn, request: Request):
+    # Per-IP rate limiting: 10 req / 60s (Redis, fail-open if no Redis)
+    try:
+        from cache import check_rate_limit
+        ip = request.client.host if request.client else "unknown"
+        if not check_rate_limit(f"rl:auth:google:{ip}", 10, 60):
+            raise HTTPException(status_code=429, detail="Too many requests — try again later")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
     info = verify_google_id_token(body.id_token)
     sub = info.get("sub")
     email = info.get("email")
@@ -84,8 +95,94 @@ def auth_google(body: GoogleAuthIn, request: Request):
             raise HTTPException(status_code=500, detail="auth failed")
     raise HTTPException(status_code=500, detail="Could not generate unique username")
 
+class FirebaseAuthIn(BaseModel):
+    id_token: str
+    phone_model: str | None = None
+    device_info: str | None = None
+
+@router.post("/auth/firebase")
+def auth_firebase(body: FirebaseAuthIn, request: Request):
+    # Per-IP rate limiting: 10 req / 60s
+    try:
+        from cache import check_rate_limit
+        ip = request.client.host if request.client else "unknown"
+        if not check_rate_limit(f"rl:auth:firebase:{ip}", 10, 60):
+            raise HTTPException(status_code=429, detail="Too many requests — try again later")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+    # Exchange Firebase ID token for app JWT — for email/password users
+    try:
+        import firebase_admin.auth as fb_auth
+        from routers.internal import _ensure_firebase
+        _ensure_firebase()
+        decoded = fb_auth.verify_id_token(body.id_token)
+        fb_uid = decoded.get("uid")
+        email = decoded.get("email")
+        email_verified = decoded.get("email_verified", False)
+        if not fb_uid or not email:
+            raise HTTPException(status_code=400, detail="Firebase token missing uid/email")
+        if not email_verified:
+            raise HTTPException(status_code=403, detail="Email not verified — check your inbox")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("auth_firebase verify failed: %s", e)
+        raise HTTPException(status_code=401, detail="Invalid Firebase token")
+    client_ip = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    for attempt in range(10):
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT id, username, email FROM users WHERE firebase_uid = %s", (fb_uid,))
+            row = cur.fetchone()
+            if row:
+                uid, username, db_email = row
+                try:
+                    cur.execute(
+                        "UPDATE users SET last_login_at = now(), last_login_ip = %s, ip_address = %s, phone_model = COALESCE(%s, phone_model), user_agent = %s, device_info = COALESCE(%s, device_info) WHERE id = %s",
+                        (client_ip, client_ip, body.phone_model, user_agent, body.device_info, uid)
+                    )
+                    conn.commit()
+                except Exception as e:
+                    logger.warning("auth_firebase update failed for %s: %s", fb_uid, e)
+                    conn.rollback()
+                cur.close(); conn.close()
+                token = create_jwt(str(uid), db_email)
+                logger.info("auth_firebase: login fb_uid=%s username=%s", fb_uid, username)
+                return {"token": token, "user": {"id": str(uid), "username": username, "email": db_email}}
+            candidate = generate_username_candidate()
+            try:
+                cur.execute(
+                    "INSERT INTO users (firebase_uid, email, username, phone_model, ip_address, user_agent, device_info, last_login_at, last_login_ip) VALUES (%s,%s,%s,%s,%s,%s,%s, now(), %s) RETURNING id, username",
+                    (fb_uid, email, candidate, body.phone_model, client_ip, user_agent, body.device_info, client_ip)
+                )
+                uid, username = cur.fetchone()
+                conn.commit()
+                cur.close(); conn.close()
+                token = create_jwt(str(uid), email)
+                logger.info("auth_firebase: created fb_uid=%s username=%s", fb_uid, username)
+                return {"token": token, "user": {"id": str(uid), "username": username, "email": email}}
+            except psycopg2.errors.UniqueViolation as e:
+                conn.rollback()
+                logger.warning("auth_firebase unique violation %d for %s: %s", attempt, candidate, e)
+                cur.close(); conn.close()
+                continue
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("auth_firebase error: %s", e)
+            raise HTTPException(status_code=500, detail="auth failed")
+    raise HTTPException(status_code=500, detail="Could not generate username")
+
 @router.post("/auth/logout")
 def auth_logout(user=Depends(get_current_user)):
-    # JWT-stateless: no server store, logout is client discarding token
-    logger.info("logout sub=%s", user.get("sub"))
+    try:
+        from cache import bump_token_version
+        bump_token_version(user.get("sub"))
+    except Exception as e:
+        logger.warning("logout bump tv failed: %s", e)
+    logger.info("logout sub=%s (token revoked)", user.get("sub"))
     return {"ok": True}

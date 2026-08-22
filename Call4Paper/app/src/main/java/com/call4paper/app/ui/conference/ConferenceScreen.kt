@@ -30,7 +30,13 @@ class ConferenceViewModel @Inject constructor(private val repo: ConferenceReposi
     fun load(id: Int) {
         viewModelScope.launch {
             _conference.value = repo.getDetail(id)
-            try { api.getBookmarks().let { list -> _bookmarked.value = list.any { it.id == id } } } catch (_: Exception) {}
+            try {
+                val resp = api.getBookmark(id)
+                _bookmarked.value = resp["bookmarked"] == true
+            } catch (_: Exception) {
+                // Fallback to list check if single endpoint not yet deployed
+                try { api.getBookmarks().let { list -> _bookmarked.value = list.any { it.id == id } } } catch (_: Exception) {}
+            }
         }
     }
     fun toggleBookmark(id: Int) {
