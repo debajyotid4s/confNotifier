@@ -28,6 +28,11 @@ def delete_me(user=Depends(get_current_user)):
         cur.execute("DELETE FROM users WHERE id = %s", (user["sub"],))
         conn.commit()
         cur.close()
+        try:
+            from cache import bump_token_version
+            bump_token_version(user["sub"])
+        except Exception:
+            pass
         return {"ok": True}
     finally:
         conn.close()

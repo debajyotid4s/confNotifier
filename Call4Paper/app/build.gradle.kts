@@ -23,11 +23,12 @@ android {
         vectorDrawables { useSupportLibrary = true }
     }
 
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
@@ -58,12 +59,12 @@ dependencies {
     implementation(libs.hilt.navigation.compose)
     ksp(libs.hilt.compiler)
 
-    // Room + DataStore + Work
+    // Room + DataStore + Encrypted prefs
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
     implementation(libs.androidx.datastore.preferences)
-    implementation(libs.androidx.work.runtime)
+    implementation(libs.androidx.security.crypto)
 
     // Network
     implementation(libs.retrofit)
@@ -74,11 +75,7 @@ dependencies {
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.android)
 
-    // UI helpers + Adaptive
-    implementation(libs.coil.compose)
-    implementation(libs.calendar.compose)
-    implementation(libs.androidx.window)
-    implementation(libs.material3.window.size)
+    // UI helpers (dead weight removed: coil, calendar-compose, window, material3-window-size — grep confirms unused)
 
     // Firebase + Auth
     implementation(platform(libs.firebase.bom))

@@ -53,10 +53,11 @@ class Call4PaperMessagingService : FirebaseMessagingService() {
         val title = msg.notification?.title ?: msg.data["title"] ?: "Call4Paper"
         val body = msg.notification?.body ?: msg.data["body"] ?: ""
         val type = msg.data["type"] ?: "conference" // conference | deadline_change | reminder
-        showNotification(title, body, type)
+        val conferenceId = msg.data["conference_id"] ?: msg.data["id"]
+        showNotification(title, body, type, conferenceId)
     }
 
-    private fun showNotification(title: String, body: String, type: String) {
+    private fun showNotification(title: String, body: String, type: String, conferenceId: String? = null) {
         val channelId = when (type) {
             "deadline_change" -> "deadline_change"
             "reminder" -> "daily_digest"
@@ -64,9 +65,12 @@ class Call4PaperMessagingService : FirebaseMessagingService() {
         }
         ensureChannel(channelId, titleFor(channelId))
 
+        val conferencePath = conferenceId?.let { "/$it" } ?: "/open"
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-            data = android.net.Uri.parse("call4paper://conference/open")
+            data = android.net.Uri.parse("call4paper://conference$conferencePath")
+            // Also pass as extra for in-app routing fallback
+            conferenceId?.let { putExtra("conference_id", it) }
         }
         val pi = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 

@@ -19,6 +19,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navDeepLink
 import com.call4paper.app.feature.auth.LoginScreen
 import com.call4paper.app.feature.auth.SignUpScreen
 import com.call4paper.app.ui.account.AccountScreen
@@ -73,7 +74,10 @@ fun AppNavGraph() {
                     onLogin = { nav.navigate(Route.Login.route) { popUpTo(Route.Splash.route) { inclusive = true } } }
                 )
             }
-            composable(Route.Login.route) {
+            composable(
+                Route.Login.route,
+                deepLinks = listOf(navDeepLink { uriPattern = "call4paper://login" })
+            ) {
                 LoginScreen(
                     onNavigateToSignUp = { nav.navigate(Route.Signup.route) },
                     onLoggedIn = { nav.navigate(Route.Calendar.route) { popUpTo(Route.Login.route) { inclusive = true } } }
@@ -87,8 +91,14 @@ fun AppNavGraph() {
             }
             composable(Route.Calendar.route) { CalendarScreen(onConference = { id -> nav.navigate("conference/$id") }) }
             composable(Route.Upcoming.route) { UpcomingScreen(onConference = { id -> nav.navigate("conference/$id") }) }
-            composable(Route.Bookmarks.route) { UpcomingScreen(onConference = { id -> nav.navigate("conference/$id") }) } // reuse with bookmark filter — Phase 5 will wire GET /me/bookmarks
-            composable("conference/{id}") { backStack ->
+            composable(Route.Bookmarks.route) { com.call4paper.app.ui.bookmarks.BookmarksScreen(onConference = { id -> nav.navigate("conference/$id") }) }
+            composable(
+                "conference/{id}",
+                deepLinks = listOf(
+                    navDeepLink { uriPattern = "call4paper://conference/{id}" },
+                    navDeepLink { uriPattern = "call4paper://conference/open" }
+                )
+            ) { backStack ->
                 val id = backStack.arguments?.getString("id")?.toIntOrNull() ?: 0
                 ConferenceScreen(id = id)
             }

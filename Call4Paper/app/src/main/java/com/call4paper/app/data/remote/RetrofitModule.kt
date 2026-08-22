@@ -29,9 +29,12 @@ object NetworkModule {
             val req = if (!token.isNullOrBlank()) chain.request().newBuilder().addHeader("Authorization", "Bearer $token").build() else chain.request()
             chain.proceed(req)
         }
+        val logging = HttpLoggingInterceptor().apply {
+            level = if (com.call4paper.app.BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BODY else HttpLoggingInterceptor.Level.NONE
+        }
         return OkHttpClient.Builder()
             .addInterceptor(authInterceptor)
-            .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BODY })
+            .addInterceptor(logging)
             .build()
     }
 

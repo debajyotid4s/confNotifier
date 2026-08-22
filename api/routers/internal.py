@@ -1,5 +1,6 @@
 import os
 import json
+import hmac
 import logging
 from fastapi import APIRouter, Header, HTTPException
 from database import get_conn
@@ -60,7 +61,7 @@ def _ensure_firebase():
 @router.post("/internal/notify-scraper-run")
 def notify_scraper_run(x_notify_secret: str = Header(None)):
     expected = os.environ.get("NOTIFY_SECRET", "")
-    if not expected or x_notify_secret != expected:
+    if not expected or not x_notify_secret or not hmac.compare_digest(x_notify_secret, expected):
         raise HTTPException(status_code=401, detail="Invalid secret")
     conn = get_conn()
     try:
@@ -70,6 +71,14 @@ def notify_scraper_run(x_notify_secret: str = Header(None)):
         cur.close()
         count = len(tokens)
         logger.info("notify-scraper-run: %d device(s) to notify (daily digest)", count)
+        # Invalidate cached conference reads — scraper just upserted
+        try:
+            from cache import invalidate_prefix
+            invalidate_prefix("cal:")
+            invalidate_prefix("upcoming:")
+            invalidate_prefix("conf:")
+        except Exception:
+            pass
         if count == 0:
             return {"ok": True, "devices": 0, "sent": 0, "message": "No devices"}
         if not _ensure_firebase():

@@ -37,6 +37,12 @@ fun LoginScreen(
     val state by vm.uiState.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) {
+        PendingLoginEmail.email?.let { e ->
+            vm.onEmailChange(e)
+            PendingLoginEmail.email = null
+        }
+    }
     LaunchedEffect(state.isLoggedIn) { if (state.isLoggedIn) { Log.d(TAG, "LoginScreen: already logged in"); onLoggedIn() } }
     AuthForm(
         title = "Welcome back",
@@ -68,6 +74,12 @@ fun SignUpScreen(
     val state by vm.uiState.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
+    LaunchedEffect(state.suggestLogin) {
+        if (state.suggestLogin) {
+            vm.clearSuggestLogin()
+            onNavigateToLogin()
+        }
+    }
     AuthForm(
         title = "Create account",
         subtitle = "Join to never miss a submission",
@@ -177,9 +189,13 @@ private fun AuthForm(
             Text(state.errorMessage, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, fontSize = 13.sp, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(12.dp))
         }
+        if (state.infoMessage != null) {
+            Text(state.infoMessage, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall, fontSize = 13.sp, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(8.dp))
+        }
 
         Button(
-            onClick = { Log.d(TAG, "AuthForm: submit isSignUp=$isSignUp email=${state.email}"); onSubmit() },
+            onClick = { Log.d(TAG, "AuthForm: submit isSignUp=$isSignUp"); onSubmit() },
             enabled = !state.isLoading,
             modifier = Modifier.fillMaxWidth().height(52.dp)
         ) {

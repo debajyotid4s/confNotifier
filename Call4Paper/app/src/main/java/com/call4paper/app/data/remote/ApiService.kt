@@ -11,6 +11,13 @@ data class GoogleAuthRequest(
 )
 
 @Serializable
+data class FirebaseAuthRequest(
+    val id_token: String,
+    val phone_model: String? = null,
+    val device_info: String? = null
+)
+
+@Serializable
 data class AuthResponse(val token: String, val user: UserDto)
 
 @Serializable
@@ -36,6 +43,9 @@ interface ApiService {
     @POST("auth/google")
     suspend fun authGoogle(@Body body: GoogleAuthRequest): AuthResponse
 
+    @POST("auth/firebase")
+    suspend fun authFirebase(@Body body: FirebaseAuthRequest): AuthResponse
+
     @POST("auth/logout")
     suspend fun logout()
 
@@ -56,6 +66,9 @@ interface ApiService {
 
     @GET("me/bookmarks")
     suspend fun getBookmarks(): List<ConferenceDto>
+
+    @GET("me/bookmarks/{id}")
+    suspend fun getBookmark(@Path("id") id: Int): Map<String, Boolean>
 
     @POST("me/bookmarks/{id}")
     suspend fun addBookmark(@Path("id") id: Int): Map<String, Boolean>

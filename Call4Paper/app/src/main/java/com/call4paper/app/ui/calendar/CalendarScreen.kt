@@ -42,6 +42,9 @@ import javax.inject.Inject
 private val Red = Color(0xFFE53935)
 private val RedGradient = Brush.horizontalGradient(listOf(Color(0xFFFF3B30), Color(0xFFD32F2F)))
 private val CardBg = Color(0xFFF2F2F7)
+// Theme-aware helpers — CalendarScreen now respects light/dark via MaterialTheme
+@Composable private fun calendarRed() = MaterialTheme.colorScheme.error
+@Composable private fun calendarCardBg() = MaterialTheme.colorScheme.surfaceVariant
 
 data class CalendarUiState(val month: YearMonth = YearMonth.now(), val selected: LocalDate = LocalDate.now(), val items: List<ConferenceEntity> = emptyList(), val loading: Boolean = false, val error: String? = null)
 
@@ -69,7 +72,7 @@ class CalendarViewModel @Inject constructor(private val repo: ConferenceReposito
     fun refresh(m: YearMonth = _month.value) {
         viewModelScope.launch {
             _state.value = _state.value.copy(loading = true)
-            try { repo.refreshCalendar(String.format("%04d-%02d", m.year, m.monthValue)) } catch (e: Exception) { _state.value = _state.value.copy(error = e.message) }
+            try { repo.refreshCalendar(String.format("%04d-%02d", m.year, m.monthValue)) } catch (_: Exception) { _state.value = _state.value.copy(error = "Could not load calendar — check your connection") }
             _state.value = _state.value.copy(loading = false)
         }
     }
@@ -108,9 +111,11 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
     val selStr = s.selected.toString()
     val forDay = allDeadlines.filter { it.first == selStr }
 
+    val themedRed = calendarRed()
+    val themedCardBg = calendarCardBg()
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxSize().background(Color(0xFFF8F8FF)),
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
         contentPadding = PaddingValues(bottom = 16.dp)
     ) {
         // Calendar card — polished collapse: eased alpha + scale + parallax
@@ -126,12 +131,12 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
             ) {
                 Card(
                     shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = CardBg),
+                    colors = CardDefaults.cardColors(containerColor = themedCardBg),
                     modifier = Modifier.fillMaxWidth().shadow(cardElevation, RoundedCornerShape(20.dp))
                 ) {
                     Column(Modifier.padding(16.dp)) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text(s.month.month.getDisplayName(TextStyle.FULL, Locale.ENGLISH) + " " + s.month.year, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+                            Text(s.month.month.getDisplayName(TextStyle.FULL, Locale.ENGLISH) + " " + s.month.year, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 Box(Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)).background(RedGradient).clickable { vm.prev() }, contentAlignment = Alignment.Center) { Icon(Icons.Filled.ChevronLeft, null, tint = Color.White, modifier = Modifier.size(20.dp)) }
                                 Box(Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)).background(RedGradient).clickable { vm.next() }, contentAlignment = Alignment.Center) { Icon(Icons.Filled.ChevronRight, null, tint = Color.White, modifier = Modifier.size(20.dp)) }
@@ -139,7 +144,7 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
                         }
                         Spacer(Modifier.height(12.dp)); HorizontalDivider(color = Color(0xFFE0E0E0), thickness = 1.dp); Spacer(Modifier.height(12.dp))
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            listOf("Mo","Tu","We","Th","Fr","Sa","Su").forEach { Text(it, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.Black, modifier = Modifier.weight(1f), textAlign = TextAlign.Center) }
+                            listOf("Mo","Tu","We","Th","Fr","Sa","Su").forEach { Text(it, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f), textAlign = TextAlign.Center) }
                         }
                         Spacer(Modifier.height(8.dp))
                         val firstDay = s.month.atDay(1)
@@ -163,7 +168,7 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
                                     ) {
                                         if (isInMonth) {
                                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                                Text("$curDay", fontSize = 15.sp, color = when { isSelected -> Color.White; hasConf -> Red; else -> Color(0xFF222222) }, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, textAlign = TextAlign.Center)
+                                                Text("$curDay", fontSize = 15.sp, color = when { isSelected -> Color.White; hasConf -> themedRed; else -> MaterialTheme.colorScheme.onSurface }, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, textAlign = TextAlign.Center)
                                                 if (hasConf && !isSelected) Box(Modifier.size(4.dp).clip(RoundedCornerShape(2.dp)).background(Red))
                                             }
                                         }
@@ -183,9 +188,9 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
                 for (m in 1..12) {
                     val isSel = m == s.month.monthValue
                     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { vm.setMonth(YearMonth.of(s.month.year, m)) }) {
-                        Text(YearMonth.of(2021, m).month.getDisplayName(TextStyle.SHORT, Locale.ENGLISH), fontSize = 11.sp, color = if (isSel) Color.Black else Color(0xFF9E9EB8), fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal)
+                        Text(YearMonth.of(2021, m).month.getDisplayName(TextStyle.SHORT, Locale.ENGLISH), fontSize = 11.sp, color = if (isSel) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal)
                         Spacer(Modifier.height(4.dp))
-                        Box(Modifier.size(16.dp).clip(RoundedCornerShape(8.dp)).background(if (isSel) Red else Color.White).then(if (!isSel) Modifier.shadow(2.dp, RoundedCornerShape(8.dp)) else Modifier))
+                        Box(Modifier.size(16.dp).clip(RoundedCornerShape(8.dp)).background(if (isSel) themedRed else MaterialTheme.colorScheme.surface).then(if (!isSel) Modifier.shadow(2.dp, RoundedCornerShape(8.dp)) else Modifier))
                     }
                 }
             }
@@ -199,7 +204,7 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
                 if (forDay.isNotEmpty()) {
                     Text("Deadlines on ${s.selected} — ${forDay.size} conference(s)", fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 8.dp))
                 } else {
-                    Text("No submission deadlines on ${s.selected}", fontSize = 13.sp, color = Color.Gray, modifier = Modifier.padding(vertical = 8.dp))
+                    Text("No submission deadlines on ${s.selected}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp))
                 }
             }
         }
@@ -207,15 +212,15 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
             items(forDay, key = { it.second.id to it.first }) { (dl, c, label) ->
                 Card(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).clickable { onConference(c.id) },
-                    colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                 ) {
                     Column(Modifier.padding(12.dp)) {
                         Text(c.title, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 2)
                         Spacer(Modifier.height(4.dp))
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("⏰ $label: $dl", fontSize = 12.sp, color = Red, fontWeight = FontWeight.Bold)
+                            Text("⏰ $label: $dl", fontSize = 12.sp, color = themedRed, fontWeight = FontWeight.Bold)
                         }
-                        Text(c.website ?: "", fontSize = 11.sp, color = Color.Gray, maxLines = 1)
+                        Text(c.website ?: "", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                     }
                 }
             }
