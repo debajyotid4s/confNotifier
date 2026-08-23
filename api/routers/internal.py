@@ -2,6 +2,7 @@ import os
 import json
 import hmac
 import logging
+from datetime import date
 from fastapi import APIRouter, Header, HTTPException
 from database import get_conn
 
@@ -106,3 +107,149 @@ def notify_scraper_run(x_notify_secret: str = Header(None)):
             raise HTTPException(status_code=500, detail=f"FCM failed: {e}")
     finally:
         conn.close()
+
+
+@router.post("/internal/notify-bookmarks")
+def notify_bookmarks(x_notify_secret: str = Header(None)):
+    if not hmac.compare_digest(x_notify_secret or "", os.environ.get("NOTIFY_SECRET", "")):
+        raise HTTPException(status_code=401, detail="Invalid secret")
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        # Find bookmarked conferences with approaching or changed deadlines,
+        # excluding already-notified combinations via notification_log.
+        # Queries flat columns (scraper writes here); UNION ALL per deadline type.
+        cur.execute("""
+            SELECT dt.fcm_token, dt.user_id, conf.id AS conf_id, conf.title,
+                   dl.dl_type, dl.deadline_date, dl.reason
+            FROM device_tokens dt
+            JOIN bookmarks b ON b.user_id = dt.user_id
+            JOIN conferences conf ON conf.id = b.conference_id
+            CROSS JOIN LATERAL (
+                VALUES
+                    ('abstract',         conf.abstract_deadline,         conf.abstract_deadline_previous),
+                    ('full_paper',       conf.full_paper_deadline,       conf.full_paper_deadline_previous)
+            ) AS dl(dl_type, deadline_date, previous_date)
+            LEFT JOIN notification_log nl
+              ON nl.user_id = dt.user_id
+             AND nl.conference_id = conf.id
+             AND nl.deadline_type = dl.dl_type
+             AND nl.reason = dl.reason
+            WHERE dl.deadline_date IS NOT NULL
+              AND nl.id IS NULL
+              AND (
+                  dl.deadline_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '3 days'
+                  OR (dl.previous_date IS DISTINCT FROM dl.deadline_date AND dl.previous_date IS NOT NULL)
+              )
+        """)
+        rows = cur.fetchall()
+        cur.close()
+
+        if not rows:
+            return {"ok": True, "targets": 0, "sent": 0, "message": "No approaching/changed deadlines"}
+
+        if not _ensure_firebase():
+            return {"ok": True, "targets": len(rows), "sent": 0, "message": "FCM not configured"}
+
+        import firebase_admin.messaging as fcm
+
+        # Group by user to avoid sending multiple notifications per device
+        user_tokens = {}
+        user_payloads = {}  # user_id -> list of (conf_id, title, dl_type, reason, deadline_date)
+        for r in rows:
+            fcm_token, user_id, conf_id, title, dl_type, deadline_date, reason = r
+            user_tokens.setdefault(user_id, set()).add(fcm_token)
+            user_payloads.setdefault(user_id, []).append((conf_id, title, dl_type, reason, deadline_date))
+
+        sent = 0
+        for user_id, tokens_set in user_tokens.items():
+            token_list = list(tokens_set)
+            payloads = user_payloads[user_id]
+
+            # Build per-conference notification bodies
+            if len(payloads) == 1:
+                conf_id, title, dl_type, reason, deadline_date = payloads[0]
+                if reason == "changed":
+                    body = f"Deadline updated for {title}"
+                else:
+                    days_left = (deadline_date - date.today()).days
+                    body = f"{title} — {dl_type.replace('_', ' ')} due in {days_left}d"
+                data = {
+                    "type": "deadline_change",
+                    "conference_id": str(conf_id),
+                    "screen": "calendar",
+                }
+            else:
+                # Multiple conferences — generic list body
+                names = ", ".join(p[1] for p in payloads[:3])
+                suffix = f" +{len(payloads) - 3}" if len(payloads) > 3 else ""
+                body = f"Deadlines approaching: {names}{suffix}"
+                data = {"type": "deadline_change", "screen": "upcoming"}
+
+            for i in range(0, len(token_list), 500):
+                batch = token_list[i:i + 500]
+                msg = fcm.MulticastMessage(
+                    notification=fcm.Notification(title="Call4Paper", body=body),
+                    data=data,
+                    tokens=batch,
+                )
+                resp = fcm.send_each_for_multicast(msg)
+                sent += resp.success_count
+
+                # Clean up invalid tokens on failure
+                if resp.failure_count:
+                    logger.warning("notify-bookmarks user %s batch %d: %d failures",
+                                   user_id, i // 500, resp.failure_count)
+
+        # Record what we sent so we don't spam next run
+        cur2 = conn.cursor()
+        inserted = 0
+        for r in rows:
+            fcm_token, user_id, conf_id, title, dl_type, deadline_date, reason = r
+            try:
+                cur2.execute("""
+                    INSERT INTO notification_log (user_id, conference_id, deadline_type, reason)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (user_id, conference_id, deadline_type, reason) DO NOTHING
+                """, (user_id, conf_id, dl_type, reason))
+                inserted += cur2.rowcount
+            except Exception:
+                conn.rollback()
+                break
+        conn.commit()
+        cur2.close()
+
+        logger.info("notify-bookmarks: %d targets, %d sent, %d logged", len(rows), sent, inserted)
+        return {"ok": True, "targets": len(rows), "sent": sent, "logged": inserted}
+    finally:
+        conn.close()
+
+
+@router.post("/internal/notify-digest")
+def notify_digest(time_of_day: str = "morning", x_notify_secret: str = Header(None)):
+    if not hmac.compare_digest(x_notify_secret or "", os.environ.get("NOTIFY_SECRET", "")):
+        raise HTTPException(status_code=401, detail="Invalid secret")
+    if time_of_day not in ("morning", "evening"):
+        raise HTTPException(status_code=400, detail="time_of_day must be 'morning' or 'evening'")
+    if not _ensure_firebase():
+        return {"ok": True, "sent": False, "message": "FCM not configured"}
+
+    body = (
+        "Good morning — check today's CFP deadlines"
+        if time_of_day == "morning"
+        else "Evening check-in — anything closing soon?"
+    )
+
+    try:
+        import firebase_admin.messaging as fcm
+        fcm.send(fcm.Message(
+            notification=fcm.Notification(title="Call4Paper", body=body),
+            data={"type": "reminder", "screen": "upcoming"},
+            topic="all_users",
+        ))
+        logger.info("notify-digest: sent %s digest via topic", time_of_day)
+        return {"ok": True, "sent": True, "topic": "all_users"}
+    except Exception as e:
+        logger.error("notify-digest failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"FCM failed: {e}")

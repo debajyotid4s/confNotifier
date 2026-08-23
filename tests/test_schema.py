@@ -7,31 +7,32 @@ from scraper.schema import (
     deadline_select_columns,
     normalize_extraction,
     validate_deadline_context,
+    MAX_DESCRIPTION_WORDS,
 )
+
+
+def test_deadline_types_only_submission():
+    assert DEADLINE_TYPES == ["abstract", "full_paper"]
 
 
 def test_select_columns_exact():
     expected = [
         "abstract_deadline", "abstract_deadline_label",
         "full_paper_deadline", "full_paper_deadline_label",
-        "notification_of_acceptance_deadline", "notification_of_acceptance_deadline_label",
-        "camera_ready_deadline", "camera_ready_deadline_label",
-        "registration_deadline", "registration_deadline_label",
     ]
     assert deadline_select_columns() == expected
 
 
 def test_select_columns_with_previous():
     cols = deadline_select_columns(include_previous=True)
-    assert len(cols) == 15
+    assert len(cols) == 6
     assert cols[2] == "abstract_deadline_previous"
     assert cols[5] == "full_paper_deadline_previous"
-    assert cols[8] == "notification_of_acceptance_deadline_previous"
 
 
 def test_range_checks_exact_string():
     checks = deadline_range_checks(30, past_days=30)
-    assert len(checks) == 5
+    assert len(checks) == 2
     assert checks[0] == (
         "(abstract_deadline IS NOT NULL"
         " AND abstract_deadline >= CURRENT_DATE - INTERVAL '30 days'"
@@ -41,7 +42,7 @@ def test_range_checks_exact_string():
 
 def test_range_checks_legacy_included():
     checks = deadline_range_checks(30, include_legacy=True)
-    assert len(checks) == 7
+    assert len(checks) == 4
     assert any("submission_deadline IS NOT NULL" in c for c in checks)
 
 
@@ -53,8 +54,8 @@ def test_context_keywords_match():
 
 def test_context_keywords_mismatch():
     assert validate_deadline_context(
-        "abstract", "Camera ready papers due July 1, 2026"
-    ) == (False, "camera_ready")
+        "abstract", "Full paper due July 1, 2026"
+    ) == (False, "full_paper")
 
 
 def test_context_empty_ok():
@@ -81,3 +82,26 @@ def test_normalize_extraction_flattens_deadline_dicts():
 def test_extraction_schema_requires_all_deadline_fields():
     for typ in DEADLINE_TYPES:
         assert f"{typ}_deadline" in EXTRACTION_SCHEMA["required"]
+
+
+def test_extraction_schema_requires_description():
+    assert "description" in EXTRACTION_SCHEMA["required"]
+
+
+def test_description_word_count_truncation():
+    long_desc = "word " * (MAX_DESCRIPTION_WORDS + 10)
+    result = {"description": long_desc.strip()}
+    normalized = normalize_extraction(result)
+    assert len(normalized["description"].split()) <= MAX_DESCRIPTION_WORDS
+
+
+def test_description_none_passes_through():
+    result = {"description": None}
+    normalized = normalize_extraction(result)
+    assert normalized["description"] is None
+
+
+def test_description_non_string_becomes_none():
+    result = {"description": 123}
+    normalized = normalize_extraction(result)
+    assert normalized["description"] is None

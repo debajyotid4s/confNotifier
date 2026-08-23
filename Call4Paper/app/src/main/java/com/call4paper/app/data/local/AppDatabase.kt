@@ -28,7 +28,7 @@ interface ConferenceDao {
     suspend fun clear()
 }
 
-@Database(entities = [ConferenceEntity::class], version = 1, exportSchema = false)
+@Database(entities = [ConferenceEntity::class], version = 2, exportSchema = false)
 abstract class AppDatabase : androidx.room.RoomDatabase() {
     abstract fun conferenceDao(): ConferenceDao
 }

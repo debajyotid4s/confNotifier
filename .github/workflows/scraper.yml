@@ -62,3 +62,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
           TELEGRAM_CHANNEL_LINK: ${{ secrets.TELEGRAM_CHANNEL_LINK }}
+
+      - name: Notify bookmarked users
+        if: always()
+        run: |
+          curl -sf -X POST "https://confnotifier.onrender.com/internal/notify-bookmarks" \
+            -H "X-Notify-Secret: ${{ secrets.NOTIFY_SECRET }}" || true

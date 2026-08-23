@@ -1,13 +1,9 @@
-import re
 from datetime import date
 from fastapi import APIRouter, HTTPException, Query
 from database import get_conn
 from cache import get_or_set
 
 router = APIRouter()
-
-def _row_to_dict(row, cols):
-    return {col: row[i] for i, col in enumerate(cols)}
 
 @router.get("/conferences/calendar")
 def calendar(month: str = Query(..., pattern=r"^\d{4}-\d{2}$")):
@@ -30,7 +26,7 @@ def calendar(month: str = Query(..., pattern=r"^\d{4}-\d{2}$")):
                 """
                 SELECT id, title, date_start, date_end, website, city, category,
                        abstract_deadline, full_paper_deadline,
-                       submission_deadline, submission_deadline_2
+                       submission_deadline, submission_deadline_2, description
                 FROM conferences
                 WHERE (abstract_deadline >= %s AND abstract_deadline < %s)
                    OR (full_paper_deadline >= %s AND full_paper_deadline < %s)
@@ -58,6 +54,7 @@ def calendar(month: str = Query(..., pattern=r"^\d{4}-\d{2}$")):
                     "location": r[5],
                     "abstract_deadline": abs_dl.isoformat() if abs_dl else None,
                     "full_paper_deadline": full_dl.isoformat() if full_dl else None,
+                    "description": r[11],
                 })
             return result
         finally:
@@ -73,12 +70,23 @@ def upcoming(limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0))
             cur.execute(
                 """
                 SELECT id, title, date_start, date_end, website, city, category,
-                       abstract_deadline, full_paper_deadline
+                       abstract_deadline, full_paper_deadline, description
                 FROM conferences
-                WHERE (abstract_deadline IS NOT NULL AND abstract_deadline >= CURRENT_DATE)
-                   OR (full_paper_deadline IS NOT NULL AND full_paper_deadline >= CURRENT_DATE)
-                   OR (submission_deadline IS NOT NULL AND submission_deadline >= CURRENT_DATE)
-                ORDER BY COALESCE(abstract_deadline, full_paper_deadline, submission_deadline) ASC
+                WHERE
+                    (date_start IS NOT NULL AND date_start >= CURRENT_DATE)
+                    OR (abstract_deadline IS NOT NULL AND abstract_deadline >= CURRENT_DATE)
+                    OR (full_paper_deadline IS NOT NULL AND full_paper_deadline >= CURRENT_DATE)
+                    OR (submission_deadline IS NOT NULL AND submission_deadline >= CURRENT_DATE)
+                    OR (
+                        date_start IS NULL
+                        AND abstract_deadline IS NULL
+                        AND full_paper_deadline IS NULL
+                        AND submission_deadline IS NULL
+                    )
+                ORDER BY
+                    CASE WHEN date_start IS NULL THEN 1 ELSE 0 END,
+                    date_start ASC,
+                    COALESCE(abstract_deadline, full_paper_deadline, submission_deadline) ASC
                 LIMIT %s OFFSET %s
                 """,
                 (limit, offset)
@@ -91,6 +99,7 @@ def upcoming(limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0))
                     "end_date": r[3].isoformat() if r[3] else None, "website": r[4], "location": r[5],
                     "abstract_deadline": r[7].isoformat() if r[7] else None,
                     "full_paper_deadline": r[8].isoformat() if r[8] else None,
+                    "description": r[9],
                 }
                 for r in rows
             ]
@@ -107,7 +116,7 @@ def get_conference(conf_id: int):
             cur.execute(
                 """
                 SELECT id, title, date_start, date_end, website, city, organizer, category,
-                       abstract_deadline, full_paper_deadline
+                       abstract_deadline, full_paper_deadline, description
                 FROM conferences WHERE id = %s
                 """,
                 (conf_id,)
@@ -121,7 +130,7 @@ def get_conference(conf_id: int):
                 "start_date": row[2].isoformat() if row[2] else None,
                 "end_date": row[3].isoformat() if row[3] else None,
                 "website": row[4], "location": row[5], "organizer": row[6],
-                "category": row[7], "description": None,
+                "category": row[7], "description": row[10],
                 "abstract_deadline": row[8].isoformat() if row[8] else None,
                 "full_paper_deadline": row[9].isoformat() if row[9] else None,
             }

@@ -2,15 +2,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-DEADLINE_TYPES = ["abstract", "full_paper", "notification_of_acceptance", "camera_ready", "registration"]
-# Only submission deadlines drive notifications; other types are stored for future use.
+DEADLINE_TYPES = ["abstract", "full_paper"]
 SUBMISSION_TYPES = ["abstract", "full_paper"]
 DEADLINE_LABELS = {
     "abstract": "Abstract Submission",
     "full_paper": "Full Paper Submission",
-    "notification_of_acceptance": "Notification of Acceptance",
-    "camera_ready": "Camera Ready",
-    "registration": "Registration",
 }
 
 
@@ -26,11 +22,7 @@ for typ in DEADLINE_TYPES:
 
 
 def deadline_select_columns(include_previous: bool = False) -> list[str]:
-    """Column names for the 4 named deadline types (date + label [+ previous]).
-
-    Order matches the per-type grouping used by row unpacking downstream
-    (date at index i*2, label at i*2+1, previous at i*2+2 when included).
-    """
+    """Column names for the 2 submission deadline types (date + label [+ previous])."""
     cols = []
     for typ in DEADLINE_TYPES:
         cols.append(_deadline_field(typ, ""))
@@ -45,13 +37,7 @@ def deadline_range_checks(
     past_days: int = 0,
     include_legacy: bool = False,
 ) -> list[str]:
-    """SQL boolean expressions: each deadline column within a date window.
-
-    Each expression is of the form "(col IS NOT NULL AND col >= today - past_days
-    AND col <= today + within_days)". When include_legacy is True, the old
-    submission_deadline columns are included for rows that predate the named
-    deadline schema.
-    """
+    """SQL boolean expressions: each deadline column within a date window."""
     checks = []
     for typ in DEADLINE_TYPES:
         col = _deadline_field(typ, "")
@@ -70,21 +56,13 @@ def deadline_range_checks(
     return checks
 
 FIELD_KEYWORDS = {
-    "abstract":     ["abstract", "extended abstract", "short paper", "summary", "proposal submission"],
-    "full_paper":   ["full paper", "final paper", "manuscript", "full-length", "complete paper", "paper submission"],
-    "notification_of_acceptance": ["notification of acceptance", "acceptance notification", "notification of results", "paper acceptance"],
-    "camera_ready": ["camera ready", "camera-ready", "final version", "crc", "camera-ready submission"],
-    "registration": ["registration", "early bird", "sign up", "register", "registration fee"],
+    "abstract":   ["abstract", "extended abstract", "short paper", "summary", "proposal submission"],
+    "full_paper": ["full paper", "final paper", "manuscript", "full-length", "complete paper", "paper submission"],
 }
 
 
 def validate_deadline_context(typ: str, context: str) -> tuple[bool, str | None]:
-    """Check that a deadline's context text matches its own field's keywords.
-
-    Returns (is_valid, mismatched_field).
-    is_valid: True if context matches own keywords (or context is empty/unavailable).
-    mismatched_field: if a keyword from another field matches instead, return that field name.
-    """
+    """Check that a deadline's context text matches its own field's keywords."""
     if not context:
         return True, None
 
@@ -117,7 +95,7 @@ for typ in DEADLINE_TYPES:
             },
             "context": {
                 "type": ["string", "null"],
-                "description": "The exact text from the webpage that describes this deadline, e.g. 'Abstract Submission: June 15, 2026'. Include the label verbatim so it can be verified."
+                "description": "The exact text from the webpage that describes this deadline"
             }
         },
         "required": ["date", "context"],
@@ -145,15 +123,21 @@ EXTRACTION_SCHEMA = {
             "Biomedical", "Business", "Energy", "Science",
             "Agriculture", "Medical", "Textile", "Other"
         ]},
+        "description": {
+            "type": ["string", "null"],
+            "description": "Brief 1-2 sentence overview of the conference: what it covers, who it is for, key topics. Max 200 words."
+        },
         "confidence": {"type": "number", "minimum": 0, "maximum": 1}
     },
     "required": [
         "is_conference", "title", "date_start", "date_end",
         *DEADLINE_SCHEMA_REQUIRED,
-        "city", "country", "website", "organizer", "category", "confidence"
+        "city", "country", "website", "organizer", "category", "description", "confidence"
     ],
     "additionalProperties": False,
 }
+
+MAX_DESCRIPTION_WORDS = 200
 
 SYSTEM_PROMPT = """You are a precise conference data extractor for Bangladesh.
 Given raw webpage text, extract international conference details.
@@ -164,43 +148,33 @@ Rules:
 - If held outside Bangladesh, is_conference = false.
 - If page has no conference content, return is_conference = false.
 
-Deadline extraction — extract ALL of the following if present on the page.
-Each deadline is an object with "date" (YYYY-MM-DD) and "context".
-The "context" field MUST contain the exact surrounding text from the page
-that identifies what this deadline is for (e.g. "Abstract Submission: August 15, 2026"
-or "Camera-ready papers due by July 1, 2026"). Return null if not found.
-
+Deadline extraction — extract ONLY submission deadlines:
   abstract_deadline:      { date, context } — deadline for abstract/short paper submission
   full_paper_deadline:    { date, context } — deadline for full paper/manuscript submission
-  notification_of_acceptance_deadline: { date, context } — deadline for notification of acceptance
-  camera_ready_deadline:  { date, context } — deadline for camera-ready/final version (post-acceptance)
-  registration_deadline:  { date, context } — deadline for author/early-bird registration
+
+Do NOT extract notification of acceptance, camera ready, or registration dates.
+Only extract deadlines that are actually stated on the page; never invent one.
+
+Conference overview:
+  description: A brief 1-2 sentence overview of the conference (max 200 words).
+  State what the conference covers, who it is for, and key topics.
+  If no meaningful overview can be inferred, return null.
+
+Context field:
+  The "context" field MUST contain the exact surrounding text from the page
+  that identifies what this deadline is for. Return null if not found.
 
 Look for phrases like "submission deadline", "paper due", "last date of submission",
-"abstract submission", "full paper due", "call for papers", "camera ready", "registration",
-"notification of acceptance". Scan the full text for date patterns like "Month DD, YYYY"
-and match each date to its nearby label by proximity. Dates may appear in visual timelines,
-infographics, or bullet lists — the date and its label might be on separate lines. Match
-dates to nearby labels by proximity.
-
-IMPORTANT: Do NOT put a registration, camera-ready, or notification-of-acceptance date
-into abstract_deadline or full_paper_deadline. Each deadline type goes into its own field
-— no guessing. Only extract a deadline that is actually stated on the page; never invent
-one. The context text is critical — include the full surrounding phrase verbatim."""
+"abstract submission", "full paper due", "call for papers". Scan the full text for
+date patterns like "Month DD, YYYY" and match each date to its nearby label by proximity.
+Dates may appear in visual timelines, infographics, or bullet lists — the date and its
+label might be on separate lines. Match dates to nearby labels by proximity."""
 
 
 def normalize_extraction(result: dict) -> dict:
     """Normalize nested deadline objects to flat fields for downstream code.
 
-    Gemini returns deadlines as {"date": ..., "context": ...} objects.
-    This function flattens them to the previous flat format:
-      abstract_deadline -> date string
-      abstract_deadline_label -> DEADLINE_LABELS[typ] (deterministic)
-      abstract_deadline_context -> context string (for Layer C validation only)
-
-    Downstream code (save, notify, diff) sees the same flat fields as before.
-    Contract: everything outside extractor.py/schema.py must expect flat
-    YYYY-MM-DD strings, never {"date", "context"} dicts.
+    Also validates description word count (R9/R10).
     """
     normalized = dict(result)
     for typ in DEADLINE_TYPES:
@@ -213,4 +187,17 @@ def normalize_extraction(result: dict) -> dict:
         else:
             normalized[f"{typ}_deadline_label"] = DEADLINE_LABELS.get(typ, typ)
             normalized[f"{typ}_deadline_context"] = None
+
+    description = normalized.get("description")
+    if description and isinstance(description, str):
+        word_count = len(description.split())
+        if word_count > MAX_DESCRIPTION_WORDS:
+            logger.warning(
+                "overview_wordcount_violation: %d words (max %d), truncating",
+                word_count, MAX_DESCRIPTION_WORDS,
+            )
+            normalized["description"] = " ".join(description.split()[:MAX_DESCRIPTION_WORDS])
+    elif description is not None and not isinstance(description, str):
+        normalized["description"] = None
+
     return normalized

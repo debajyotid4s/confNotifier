@@ -269,7 +269,8 @@ def save_conference(conf: dict) -> tuple[bool, bool, int | None]:
         prev_set = _deadline_previous_set_clause()
 
         base_cols = ["title", "date_start", "date_end", "city", "country",
-                     "website", "organizer", "category", "confidence", "raw_source", "is_notified"]
+                     "website", "organizer", "category", "confidence", "description",
+                     "raw_source", "is_notified"]
         all_cols = base_cols + dl_cols
         placeholders = ", ".join(["%s"] * len(all_cols))
         col_names = ", ".join(all_cols)
@@ -294,7 +295,8 @@ def save_conference(conf: dict) -> tuple[bool, bool, int | None]:
             conf.get("title"), conf.get("date_start"), conf.get("date_end"),
             conf.get("city"), "Bangladesh", website,
             conf.get("organizer"), conf.get("category"),
-            conf.get("confidence"), conf.get("raw_source"), False,
+            conf.get("confidence"), conf.get("description"),
+            conf.get("raw_source"), False,
         ]
         cur.execute(sql, base_vals + dl_vals)
         row = cur.fetchone()

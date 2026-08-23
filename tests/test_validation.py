@@ -42,7 +42,7 @@ def test_equal_dates_not_flagged_as_swap():
 
 
 def test_context_mismatch_flagged():
-    conf = {"abstract_deadline_context": "Camera-ready papers due July 1, 2026"}
+    conf = {"abstract_deadline_context": "Full paper due July 1, 2026"}
     assert _check_deadline_context(conf) == {"abstract"}
 
 
