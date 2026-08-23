@@ -46,12 +46,18 @@ class AuthViewModel @Inject constructor(
     private val tokens: TokenManager
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(AuthUiState(isLoggedIn = repo.currentUser != null))
+    private val _uiState = MutableStateFlow(AuthUiState(isLoggedIn = false))
     val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()
     private var resendJob: Job? = null
 
     init {
         Log.d(TAG, "init: currentUser=${repo.currentUser?.email} uid=${repo.currentUser?.uid}")
+        // Don't treat Firebase user as logged in — JWT is source of truth; check it async
+        viewModelScope.launch {
+            val hasJwt = try { tokens.peek() != null } catch (_: Exception) { false }
+            // Only mark logged in if we actually have a JWT; Splash handles routing anyway
+            if (hasJwt) _uiState.value = _uiState.value.copy(isLoggedIn = true)
+        }
     }
 
     fun onEmailChange(v: String) { _uiState.value = _uiState.value.copy(email = v, errorMessage = null, suggestLogin = false, infoMessage = null) }
@@ -154,6 +160,26 @@ class AuthViewModel @Inject constructor(
             val ok = repo.resendVerification()
             if (ok) startResendCooldown(120)
             _uiState.value = _uiState.value.copy(infoMessage = if (ok) "Verification email sent — check your inbox" else "Could not send verification email — try again later", errorMessage = null)
+        }
+    }
+
+    fun sendPasswordReset(onSent: () -> Unit = {}) {
+        val email = _uiState.value.email.trim()
+        if (email.isBlank() || !android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches()) {
+            _uiState.value = _uiState.value.copy(errorMessage = "Enter your email first")
+            return
+        }
+        if (_uiState.value.resendCooldown > 0) return
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, infoMessage = null)
+            val res = repo.sendPasswordReset(email)
+            res.onSuccess {
+                startResendCooldown(120)
+                _uiState.value = _uiState.value.copy(isLoading = false, infoMessage = "Reset link sent to $email — check inbox (and Spam)")
+                onSent()
+            }.onFailure {
+                _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "Could not send reset link — check email and try again")
+            }
         }
     }
 
