@@ -1,15 +1,19 @@
 package com.call4paper.app.ui.calendar
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material3.*
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -168,7 +172,7 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
                 ) {
                     Column(Modifier.padding(16.dp)) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text(s.month.month.getDisplayName(TextStyle.FULL, Locale.ENGLISH) + " " + s.month.year, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                            Text(s.month.month.getDisplayName(TextStyle.FULL, Locale.ENGLISH) + " " + s.month.year, style = MaterialTheme.typography.displaySmall, color = MaterialTheme.colorScheme.onSurface)
                             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 Box(Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.secondaryContainer).clickable { vm.prev() }, contentAlignment = Alignment.Center) { Icon(Icons.Filled.ChevronLeft, null, tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(20.dp)) }
                                 Box(Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.secondaryContainer).clickable { vm.next() }, contentAlignment = Alignment.Center) { Icon(Icons.Filled.ChevronRight, null, tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(20.dp)) }
@@ -176,7 +180,7 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
                         }
                         Spacer(Modifier.height(12.dp)); HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, thickness = 1.dp); Spacer(Modifier.height(12.dp))
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            listOf("Mo","Tu","We","Th","Fr","Sa","Su").forEach { Text(it, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f), textAlign = TextAlign.Center) }
+                            listOf("Mo","Tu","We","Th","Fr","Sa","Su").forEach { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f), textAlign = TextAlign.Center) }
                         }
                         Spacer(Modifier.height(8.dp))
                         val firstDay = s.month.atDay(1)
@@ -193,16 +197,17 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
                                     val isSelected = date != null && date == s.selected
                                     val hasConf = date != null && conferenceDates.contains(date)
                                     val dotColor = if (hasConf && date != null) urgencyColorForDate(date) else Color.Transparent
+                                    val selectedBg = if (hasConf) dotColor else MaterialTheme.colorScheme.primary
                                     Box(
                                         Modifier.weight(1f).aspectRatio(1f).padding(2.dp).clip(RoundedCornerShape(8.dp))
-                                            .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
+                                            .background(if (isSelected) selectedBg else Color.Transparent)
                                             .clickable(enabled = isInMonth) { date?.let { vm.select(it) } },
                                         contentAlignment = Alignment.Center
                                     ) {
                                         if (isInMonth) {
                                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                                Text("$curDay", fontSize = 15.sp, color = when { isSelected -> MaterialTheme.colorScheme.onPrimary; hasConf -> dotColor; else -> MaterialTheme.colorScheme.onSurface }, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, textAlign = TextAlign.Center)
-                                                if (hasConf && !isSelected) Box(Modifier.size(4.dp).clip(RoundedCornerShape(2.dp)).background(dotColor))
+                                                Text("$curDay", style = MaterialTheme.typography.bodyMedium, color = when { isSelected -> MaterialTheme.colorScheme.onPrimary; hasConf -> dotColor; else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f) }, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, textAlign = TextAlign.Center)
+                                                if (hasConf && !isSelected) Box(Modifier.size(4.dp).clip(CircleShape).background(dotColor))
                                             }
                                         }
                                     }
@@ -220,24 +225,46 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                 for (m in 1..12) {
                     val isSel = m == s.month.monthValue
+                    val monthStr = String.format("%04d-%02d", s.month.year, m)
+                    val hasDeadline = s.items.any { it.abstractDeadline?.startsWith(monthStr) == true || it.fullPaperDeadline?.startsWith(monthStr) == true }
                     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { vm.setMonth(YearMonth.of(s.month.year, m)) }) {
-                        Text(YearMonth.of(2021, m).month.getDisplayName(TextStyle.SHORT, Locale.ENGLISH), fontSize = 11.sp, color = if (isSel) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal)
+                        Text(YearMonth.of(2021, m).month.getDisplayName(TextStyle.SHORT, Locale.ENGLISH), style = MaterialTheme.typography.labelSmall, color = if (isSel) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal)
                         Spacer(Modifier.height(4.dp))
-                        Box(Modifier.size(16.dp).clip(RoundedCornerShape(8.dp)).background(if (isSel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface).then(if (!isSel) Modifier.shadow(2.dp, RoundedCornerShape(8.dp)) else Modifier))
+                        Box(
+                            Modifier.size(8.dp)
+                                .clip(CircleShape)
+                                .background(if (hasDeadline) MaterialTheme.colorScheme.primary else Color.Transparent, CircleShape)
+                                .then(if (!hasDeadline) Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape) else Modifier)
+                        )
                     }
                 }
             }
         }
         if (s.loading) item { LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) }
-        s.error?.let { item { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp)) } }
+        s.error?.let { err ->
+            item {
+                Card(
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+                ) {
+                    Column(Modifier.padding(20.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Icon(Icons.Filled.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.size(32.dp))
+                        Text("Couldn't load calendar", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onErrorContainer)
+                        Text(err, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
+                        Button(onClick = { vm.refresh() }, shape = RoundedCornerShape(12.dp)) { Text("Retry") }
+                    }
+                }
+            }
+        }
 
         // Selected day agenda — only deadlines on the selected date, not all month
         item {
             Column(Modifier.padding(horizontal = 16.dp)) {
                 if (forDay.isNotEmpty()) {
-                    Text("Deadlines on ${s.selected} — ${forDay.size} conference(s)", fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 8.dp))
+                    Text("Deadlines on ${s.selected} — ${forDay.size} conference(s)", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(vertical = 8.dp))
                 } else {
-                    Text("No submission deadlines on ${s.selected}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp))
+                    Text("No submission deadlines on ${s.selected}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp))
                 }
             }
         }
@@ -245,23 +272,25 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
             items(forDay, key = { it.second.id to it.first }) { (dl, c, label) ->
                 val urgency = urgencyColorFor(dl)
                 Card(
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).clickable { onConference(c.id) },
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    shape = RoundedCornerShape(12.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).clickable { onConference(c.id) }
                 ) {
-                    Column(Modifier.padding(12.dp)) {
-                        Text(c.title, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 2)
-                        Spacer(Modifier.height(4.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("⏰ $label: $dl", fontSize = 12.sp, color = urgency, fontWeight = FontWeight.Bold)
+                    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+                        Box(Modifier.width(3.dp).fillMaxHeight().background(urgency))
+                        Column(Modifier.padding(14.dp).weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(c.title, style = MaterialTheme.typography.titleMedium, maxLines = 2)
+                            Text("$label: $dl", style = MaterialTheme.typography.labelMedium, color = urgency)
+                            Text(listOfNotNull(c.city, c.organizer).joinToString(" · ").ifEmpty { c.website ?: "" }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                         }
-                        Text(c.website ?: "", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                     }
                 }
             }
         } else {
             item {
                 Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                    Text("Tap a red-dotted date to see its deadlines", fontSize = 13.sp, color = Color(0xFF9E9EB8))
+                    Text("Tap a red-dotted date to see its deadlines", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
