@@ -19,7 +19,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
@@ -38,15 +37,40 @@ import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.TextStyle
+import java.time.temporal.ChronoUnit
 import java.util.Locale
 import javax.inject.Inject
 
 private val Red = Color(0xFFE53935)
-private val RedGradient = Brush.horizontalGradient(listOf(Color(0xFFFF3B30), Color(0xFFD32F2F)))
+private val WarningAmber = Color(0xFFF9A825)
 private val CardBg = Color(0xFFF2F2F7)
-// Theme-aware helpers — CalendarScreen now respects light/dark via MaterialTheme
+// Theme-aware helpers — ink/navy seed, red only for urgency
 @Composable private fun calendarRed() = MaterialTheme.colorScheme.error
 @Composable private fun calendarCardBg() = MaterialTheme.colorScheme.surfaceVariant
+@Composable private fun warningAmber() = WarningAmber
+@Composable private fun calmNeutral() = MaterialTheme.colorScheme.outlineVariant
+
+@Composable
+private fun urgencyColorFor(deadlineStr: String, today: LocalDate = LocalDate.now()): Color {
+    val d = runCatching { LocalDate.parse(deadlineStr) }.getOrNull() ?: return MaterialTheme.colorScheme.outlineVariant
+    val days = ChronoUnit.DAYS.between(today, d)
+    return when {
+        days < 0 -> MaterialTheme.colorScheme.outlineVariant // past - muted
+        days < 3 -> calendarRed() // urgent — error red
+        days <= 14 -> WarningAmber // warning — amber
+        else -> MaterialTheme.colorScheme.outlineVariant // calm
+    }
+}
+@Composable
+private fun urgencyColorForDate(date: LocalDate, today: LocalDate = LocalDate.now()): Color {
+    val days = ChronoUnit.DAYS.between(today, date)
+    return when {
+        days < 0 -> MaterialTheme.colorScheme.outlineVariant
+        days < 3 -> calendarRed()
+        days <= 14 -> WarningAmber
+        else -> MaterialTheme.colorScheme.outlineVariant
+    }
+}
 
 data class CalendarUiState(val month: YearMonth = YearMonth.now(), val selected: LocalDate = LocalDate.now(), val items: List<ConferenceEntity> = emptyList(), val loading: Boolean = false, val error: String? = null)
 
@@ -146,11 +170,11 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Text(s.month.month.getDisplayName(TextStyle.FULL, Locale.ENGLISH) + " " + s.month.year, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                Box(Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)).background(RedGradient).clickable { vm.prev() }, contentAlignment = Alignment.Center) { Icon(Icons.Filled.ChevronLeft, null, tint = Color.White, modifier = Modifier.size(20.dp)) }
-                                Box(Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)).background(RedGradient).clickable { vm.next() }, contentAlignment = Alignment.Center) { Icon(Icons.Filled.ChevronRight, null, tint = Color.White, modifier = Modifier.size(20.dp)) }
+                                Box(Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.secondaryContainer).clickable { vm.prev() }, contentAlignment = Alignment.Center) { Icon(Icons.Filled.ChevronLeft, null, tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(20.dp)) }
+                                Box(Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.secondaryContainer).clickable { vm.next() }, contentAlignment = Alignment.Center) { Icon(Icons.Filled.ChevronRight, null, tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(20.dp)) }
                             }
                         }
-                        Spacer(Modifier.height(12.dp)); HorizontalDivider(color = Color(0xFFE0E0E0), thickness = 1.dp); Spacer(Modifier.height(12.dp))
+                        Spacer(Modifier.height(12.dp)); HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, thickness = 1.dp); Spacer(Modifier.height(12.dp))
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             listOf("Mo","Tu","We","Th","Fr","Sa","Su").forEach { Text(it, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f), textAlign = TextAlign.Center) }
                         }
@@ -168,16 +192,17 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
                                     val date = if (isInMonth) s.month.atDay(curDay) else null
                                     val isSelected = date != null && date == s.selected
                                     val hasConf = date != null && conferenceDates.contains(date)
+                                    val dotColor = if (hasConf && date != null) urgencyColorForDate(date) else Color.Transparent
                                     Box(
                                         Modifier.weight(1f).aspectRatio(1f).padding(2.dp).clip(RoundedCornerShape(8.dp))
-                                            .background(if (isSelected) Red else Color.Transparent)
+                                            .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
                                             .clickable(enabled = isInMonth) { date?.let { vm.select(it) } },
                                         contentAlignment = Alignment.Center
                                     ) {
                                         if (isInMonth) {
                                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                                Text("$curDay", fontSize = 15.sp, color = when { isSelected -> Color.White; hasConf -> themedRed; else -> MaterialTheme.colorScheme.onSurface }, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, textAlign = TextAlign.Center)
-                                                if (hasConf && !isSelected) Box(Modifier.size(4.dp).clip(RoundedCornerShape(2.dp)).background(Red))
+                                                Text("$curDay", fontSize = 15.sp, color = when { isSelected -> MaterialTheme.colorScheme.onPrimary; hasConf -> dotColor; else -> MaterialTheme.colorScheme.onSurface }, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, textAlign = TextAlign.Center)
+                                                if (hasConf && !isSelected) Box(Modifier.size(4.dp).clip(RoundedCornerShape(2.dp)).background(dotColor))
                                             }
                                         }
                                     }
@@ -198,7 +223,7 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
                     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { vm.setMonth(YearMonth.of(s.month.year, m)) }) {
                         Text(YearMonth.of(2021, m).month.getDisplayName(TextStyle.SHORT, Locale.ENGLISH), fontSize = 11.sp, color = if (isSel) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal)
                         Spacer(Modifier.height(4.dp))
-                        Box(Modifier.size(16.dp).clip(RoundedCornerShape(8.dp)).background(if (isSel) themedRed else MaterialTheme.colorScheme.surface).then(if (!isSel) Modifier.shadow(2.dp, RoundedCornerShape(8.dp)) else Modifier))
+                        Box(Modifier.size(16.dp).clip(RoundedCornerShape(8.dp)).background(if (isSel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface).then(if (!isSel) Modifier.shadow(2.dp, RoundedCornerShape(8.dp)) else Modifier))
                     }
                 }
             }
@@ -218,6 +243,7 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
         }
         if (forDay.isNotEmpty()) {
             items(forDay, key = { it.second.id to it.first }) { (dl, c, label) ->
+                val urgency = urgencyColorFor(dl)
                 Card(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).clickable { onConference(c.id) },
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
@@ -226,7 +252,7 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
                         Text(c.title, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 2)
                         Spacer(Modifier.height(4.dp))
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("⏰ $label: $dl", fontSize = 12.sp, color = themedRed, fontWeight = FontWeight.Bold)
+                            Text("⏰ $label: $dl", fontSize = 12.sp, color = urgency, fontWeight = FontWeight.Bold)
                         }
                         Text(c.website ?: "", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                     }
