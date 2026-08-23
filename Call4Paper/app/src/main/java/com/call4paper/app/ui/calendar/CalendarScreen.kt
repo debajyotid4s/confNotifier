@@ -11,6 +11,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material3.*
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -79,6 +81,7 @@ class CalendarViewModel @Inject constructor(private val repo: ConferenceReposito
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltViewModel()) {
     val s by vm.state.collectAsState()
     val conferenceDates = remember(s.items) {
@@ -113,11 +116,16 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
 
     val themedRed = calendarRed()
     val themedCardBg = calendarCardBg()
-    LazyColumn(
-        state = listState,
-        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
-        contentPadding = PaddingValues(bottom = 16.dp)
+    PullToRefreshBox(
+        isRefreshing = s.loading,
+        onRefresh = { vm.refresh() },
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
     ) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 16.dp)
+        ) {
         // Calendar card — polished collapse: eased alpha + scale + parallax
         item {
             Box(
@@ -232,5 +240,6 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
             }
         }
         item { Spacer(Modifier.height(24.dp)) }
+        }
     }
 }
