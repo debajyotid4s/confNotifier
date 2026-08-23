@@ -36,6 +36,27 @@ def _get_pool():
         _pool = None
     return _pool
 
+class _PooledConnection:
+    """Wrapper so conn.close() returns to pool (psycopg2 connection close is read-only)."""
+    def __init__(self, conn, pool):
+        self._conn = conn
+        self._pool = pool
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+    def close(self):
+        try:
+            self._pool.putconn(self._conn)
+        except Exception:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+    # Support `with get_conn() as conn:` if ever used
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        self.close()
+
 def get_conn():
     pool = _get_pool()
     if pool is not None:
@@ -49,18 +70,7 @@ def get_conn():
                 except psycopg2.Error:
                     pool.putconn(conn, close=True)
                     raise
-                # Make conn.close() return to pool so existing `finally: conn.close()` code works
-                orig_close = conn.close
-                def _pooled_close(_orig=orig_close, _c=conn, _pool=pool):
-                    try:
-                        _pool.putconn(_c)
-                    except Exception:
-                        try:
-                            _orig()
-                        except Exception:
-                            pass
-                conn.close = _pooled_close
-                return conn
+                return _PooledConnection(conn, pool)
             except psycopg2.Error as e:
                 logger.error("DB pool getconn attempt %d/3 failed: %s", attempt + 1, e)
                 if attempt < 2:
