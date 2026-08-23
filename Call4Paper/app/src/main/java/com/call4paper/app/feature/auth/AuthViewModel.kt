@@ -11,6 +11,8 @@ import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
 import com.google.firebase.auth.FirebaseAuthUserCollisionException
 import com.google.firebase.auth.FirebaseAuthWeakPasswordException
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -33,7 +35,8 @@ data class AuthUiState(
     val suggestLogin: Boolean = false,
     val infoMessage: String? = null,
     val verificationPending: Boolean = false,
-    val verificationEmail: String? = null
+    val verificationEmail: String? = null,
+    val resendCooldown: Int = 0
 )
 
 @HiltViewModel
@@ -45,6 +48,7 @@ class AuthViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(AuthUiState(isLoggedIn = repo.currentUser != null))
     val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()
+    private var resendJob: Job? = null
 
     init {
         Log.d(TAG, "init: currentUser=${repo.currentUser?.email} uid=${repo.currentUser?.uid}")
@@ -62,6 +66,17 @@ class AuthViewModel @Inject constructor(
         if (s.password.length < 6) return "Password must be at least 6 characters"
         if (isSignUp && s.password != s.confirmPassword) return "Passwords do not match"
         return null
+    }
+
+    private fun startResendCooldown(seconds: Int = 120) {
+        resendJob?.cancel()
+        resendJob = viewModelScope.launch {
+            for (i in seconds downTo 0) {
+                _uiState.value = _uiState.value.copy(resendCooldown = i)
+                if (i == 0) break
+                delay(1000)
+            }
+        }
     }
 
     fun signUp(onSuccess: () -> Unit) {
@@ -82,6 +97,7 @@ class AuthViewModel @Inject constructor(
                     infoMessage = "Verification email sent to ${fbUser.email ?: email} — tap the link in your inbox, then press 'I've verified'",
                     errorMessage = null
                 )
+                startResendCooldown(120)
                 // Keep Firebase user signed in so resend/reload works; don't call backend yet
             }.onFailure { e ->
                 if (e is FirebaseAuthUserCollisionException) {
@@ -133,8 +149,10 @@ class AuthViewModel @Inject constructor(
     }
 
     fun resendVerification() {
+        if (_uiState.value.resendCooldown > 0) return
         viewModelScope.launch {
             val ok = repo.resendVerification()
+            if (ok) startResendCooldown(120)
             _uiState.value = _uiState.value.copy(infoMessage = if (ok) "Verification email sent — check your inbox" else "Could not send verification email — try again later", errorMessage = null)
         }
     }
@@ -219,7 +237,9 @@ class AuthViewModel @Inject constructor(
     }
 
     // Local sign-out (used for session-expiry cleanup) — does not call backend
-    fun signOut() { repo.signOut(); viewModelScope.launch { tokens.clear() }; _uiState.value = AuthUiState(); Log.d(TAG, "signOut: cleared state") }
+    fun signOut() { resendJob?.cancel(); repo.signOut(); viewModelScope.launch { tokens.clear() }; _uiState.value = AuthUiState(); Log.d(TAG, "signOut: cleared state") }
+
+    override fun onCleared() { resendJob?.cancel(); super.onCleared() }
 
     private fun mapError(e: Throwable): String = when (e) {
         is FirebaseAuthWeakPasswordException -> "Password is too weak — use at least 6 characters with letters and numbers"
