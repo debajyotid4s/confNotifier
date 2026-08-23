@@ -82,5 +82,6 @@ private fun com.call4paper.app.data.remote.ConferenceDto.toEntity() = Conference
     organizer = organizer,
     category = category,
     abstractDeadline = abstract_deadline,
-    fullPaperDeadline = full_paper_deadline
+    fullPaperDeadline = full_paper_deadline,
+    description = description
 )

@@ -15,5 +15,6 @@ data class ConferenceEntity(
     val category: String?,
     val abstractDeadline: String? = null,
     val fullPaperDeadline: String? = null,
+    val description: String? = null,
     val updatedAt: Long = System.currentTimeMillis()
 )

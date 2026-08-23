@@ -81,6 +81,16 @@ class RunStats:
         self.skipped = 0
         self.failed = 0
         self.quota_exhausted = False
+        # Observability counters (SYSTEM_CONTRACT.md)
+        self.conferences_discovered = 0
+        self.conferences_inserted = 0
+        self.conferences_updated = 0
+        self.unknown_dates_tba = 0
+        self.post_submission_ignored = 0
+        self.notifications_sent = 0
+        self.notifications_deduped = 0
+        self.gemini_schema_failures = 0
+        self.overview_wordcount_violations = 0
 
     def tally(self, outcome: CandidateOutcome) -> None:
         with self._lock:
@@ -106,6 +116,16 @@ class RunStats:
             "LLM requests today: %d ===",
             self.found, self.new, self.skipped, self.failed,
             total_requests_today(),
+        )
+        logger.info(
+            "=== Observability: discovered=%d inserted=%d updated=%d "
+            "tba=%d ignored=%d sent=%d deduped=%d "
+            "schema_fails=%d overview_violations=%d ===",
+            self.conferences_discovered, self.conferences_inserted,
+            self.conferences_updated, self.unknown_dates_tba,
+            self.post_submission_ignored, self.notifications_sent,
+            self.notifications_deduped, self.gemini_schema_failures,
+            self.overview_wordcount_violations,
         )
 
 
@@ -164,7 +184,7 @@ def _verify_dependencies() -> None:
 # ── Phases 1-3: discovery and requeue ──
 
 
-def _discover_candidates(playwright) -> list[str]:
+def _discover_candidates(playwright, stats: RunStats) -> list[str]:
     """Phase 1-2: collect candidates from homepage and special sources."""
     candidates: list[str] = []
 
@@ -180,7 +200,10 @@ def _discover_candidates(playwright) -> list[str]:
     except Exception as e:
         logger.error("special failed: %s", e)
 
-    return list(set(candidates))
+    unique = list(set(candidates))
+    with stats._lock:
+        stats.conferences_discovered = len(unique)
+    return unique
 
 
 def _requeue_previous_runs(candidates: list[str]) -> tuple[list[str], set[str]]:
@@ -279,7 +302,7 @@ def _validate_result(result: dict) -> str | None:
     return None
 
 
-def _save_and_notify(url: str, result: dict) -> CandidateOutcome:
+def _save_and_notify(url: str, result: dict, stats: RunStats) -> CandidateOutcome:
     """Persist a validated extraction, then notify when a deadline is due."""
     result["raw_source"] = url
     save_success, was_inserted, conf_id = db.save_conference(result)
@@ -292,15 +315,29 @@ def _save_and_notify(url: str, result: dict) -> CandidateOutcome:
 
     if not was_inserted:
         logger.info("Conference already in DB (updated deadlines): %s", result.get("title"))
+        with stats._lock:
+            stats.conferences_updated += 1
         return CandidateOutcome.UPDATED
 
     logger.info("New conference saved: %s", result.get("title"))
+    with stats._lock:
+        stats.conferences_inserted += 1
+
+    # Check if TBA (no submission deadlines and no conference dates)
+    has_submission = result.get("abstract_deadline") or result.get("full_paper_deadline")
+    has_dates = result.get("date_start") or result.get("date_end")
+    if not has_submission and not has_dates:
+        with stats._lock:
+            stats.unknown_dates_tba += 1
+        logger.info("TBA conference (no dates yet): %s", result.get("title"))
 
     # Only notify if at least one deadline is within the notify window.
     if _has_deadline_within_days(result, NOTIFY_WINDOW_DAYS):
         if conf_id:
             notify(result)
             db.mark_notified_with_retry(conf_id)
+            with stats._lock:
+                stats.notifications_sent += 1
     else:
         logger.info(
             "No deadline within %d days — saving but NOT notifying yet: %s",
@@ -391,7 +428,7 @@ def _process_candidate(
         db.mark_url_status(url, "failed_transient")
         return CandidateOutcome.VALIDATION_FAILED
 
-    return _save_and_notify(url, result)
+    return _save_and_notify(url, result, stats)
 
 
 def _run_extraction_loop(
@@ -428,18 +465,19 @@ def run():
     try:
         with PlaywrightManager() as playwright:
 
+            stats = RunStats()
+
             # Phases 1-3: discovery + requeue from previous runs
-            candidates = _discover_candidates(playwright)
+            candidates = _discover_candidates(playwright, stats)
             candidates, retryable_url_set = _requeue_previous_runs(candidates)
 
             known_websites = db.load_known_websites()
             logger.info(
                 "Loaded %d known conference websites for dedup", len(known_websites)
             )
+            stats.found = len(candidates)
             logger.info("Phase 4: Processing %d unique candidates", len(candidates))
 
-            stats = RunStats()
-            stats.found = len(candidates)
             _run_extraction_loop(candidates, retryable_url_set, known_websites, playwright, stats)
             stats.log_summary()
 

@@ -1,0 +1,13 @@
+name: Morning digest
+on:
+  schedule:
+    - cron: '0 2 * * *'   # 08:00 BDT (UTC+6)
+  workflow_dispatch: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -sf -X POST "https://confnotifier.onrender.com/internal/notify-digest?time_of_day=morning" \
+            -H "X-Notify-Secret: ${{ secrets.NOTIFY_SECRET }}"

@@ -10,7 +10,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material3.*
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -29,9 +28,15 @@ import java.time.temporal.ChronoUnit
 import javax.inject.Inject
 
 private val WarningAmber = androidx.compose.ui.graphics.Color(0xFFF9A825)
+private val TbaGray = androidx.compose.ui.graphics.Color(0xFF9E9E9E)
+
+private fun isTba(c: ConferenceEntity): Boolean {
+    return c.abstractDeadline == null && c.fullPaperDeadline == null && c.startDate == null
+}
 
 @Composable
 private fun urgencyForEntity(c: ConferenceEntity): androidx.compose.ui.graphics.Color {
+    if (isTba(c)) return TbaGray
     val dl = c.abstractDeadline ?: c.fullPaperDeadline ?: c.startDate ?: return MaterialTheme.colorScheme.outlineVariant
     val d = runCatching { LocalDate.parse(dl) }.getOrNull() ?: return MaterialTheme.colorScheme.outlineVariant
     val days = ChronoUnit.DAYS.between(LocalDate.now(), d)
@@ -56,7 +61,7 @@ class UpcomingViewModel @Inject constructor(private val repo: ConferenceReposito
         viewModelScope.launch {
             _isRefreshing.value = true
             _error.value = null
-            try { repo.refreshUpcoming(30); repo.observeAll().first().let { _state.value = it } }
+            try { repo.refreshUpcoming(50); _state.value = repo.observeAll().first() }
             catch (_: Exception) { _error.value = "Could not load — check your connection" }
             _isRefreshing.value = false
         }
@@ -96,13 +101,24 @@ fun UpcomingScreen(onConference: (Int) -> Unit, vm: UpcomingViewModel = hiltView
                 else -> {
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) {
                         items(items, key = { it.id }) { c ->
+                            val tba = isTba(c)
                             val urgency = urgencyForEntity(c)
-                            val deadline = c.abstractDeadline ?: c.fullPaperDeadline ?: c.startDate
-                            val label = when {
-                                c.abstractDeadline != null -> "Abstract"
-                                c.fullPaperDeadline != null -> "Full paper"
-                                else -> "Starts"
+
+                            val deadlineText: String
+                            val deadlineLabel: String
+                            if (tba) {
+                                deadlineText = "To be announced"
+                                deadlineLabel = ""
+                            } else {
+                                val dl = c.abstractDeadline ?: c.fullPaperDeadline
+                                deadlineLabel = when {
+                                    c.abstractDeadline != null -> "Abstract submission"
+                                    c.fullPaperDeadline != null -> "Full paper submission"
+                                    else -> "Starts"
+                                }
+                                deadlineText = dl ?: c.startDate ?: ""
                             }
+
                             Card(
                                 shape = RoundedCornerShape(12.dp),
                                 elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
@@ -112,8 +128,30 @@ fun UpcomingScreen(onConference: (Int) -> Unit, vm: UpcomingViewModel = hiltView
                                 Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
                                     Box(Modifier.width(3.dp).fillMaxHeight().background(urgency))
                                     Column(Modifier.padding(14.dp).weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        Text(c.title, style = MaterialTheme.typography.titleMedium, maxLines = 2)
-                                        if (deadline != null) Text("$label: $deadline", style = MaterialTheme.typography.labelMedium, color = urgency)
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            Text(c.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, modifier = Modifier.weight(1f))
+                                            if (tba) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    color = TbaGray.copy(alpha = 0.15f),
+                                                    modifier = Modifier
+                                                ) {
+                                                    Text(
+                                                        "TBA",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = TbaGray,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        if (deadlineText.isNotEmpty()) {
+                                            val displayText = if (deadlineLabel.isNotEmpty()) "$deadlineLabel: $deadlineText" else deadlineText
+                                            Text(displayText, style = MaterialTheme.typography.labelMedium, color = urgency)
+                                        }
+                                        if (c.description != null) {
+                                            Text(c.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+                                        }
                                         Text(listOfNotNull(c.city, c.organizer).joinToString(" · ").ifEmpty { c.website ?: "" }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                                     }
                                 }

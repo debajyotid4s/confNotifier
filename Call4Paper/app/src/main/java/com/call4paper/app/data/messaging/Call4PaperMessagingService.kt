@@ -16,6 +16,9 @@ class Call4PaperMessagingService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
         android.util.Log.d("FCM", "onNewToken: ${token.take(12)}...")
+        // Subscribe to broadcast topic for digest notifications
+        com.google.firebase.messaging.FirebaseMessaging.getInstance()
+            .subscribeToTopic("all_users")
         // Try to register with backend if user is logged in (JWT exists)
         // Uses EntryPoint to get TokenManager and ApiService without Hilt injection in Service
         try {
