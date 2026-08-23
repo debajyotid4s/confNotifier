@@ -85,7 +85,8 @@ fun LoginScreen(
                 }
             },
             onSwitch = onNavigateToSignUp,
-            switchText = "Don't have an account? Sign up"
+            switchText = "Don't have an account? Sign up",
+            onForgotPassword = { vm.sendPasswordReset() }
         )
     }
 }
@@ -236,7 +237,8 @@ private fun AuthForm(
     onSubmit: () -> Unit,
     onGoogle: () -> Unit,
     onSwitch: () -> Unit,
-    switchText: String
+    switchText: String,
+    onForgotPassword: (() -> Unit)? = null
 ) {
     var passVisible by remember { mutableStateOf(false) }
     var confirmVisible by remember { mutableStateOf(false) }
@@ -318,6 +320,23 @@ private fun AuthForm(
             modifier = Modifier.fillMaxWidth().graphicsLayer { scaleX = passScale; scaleY = passScale }.onFocusChanged { passFocused = it.isFocused }
         )
         Spacer(Modifier.height(14.dp))
+
+        if (!isSignUp) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(
+                    onClick = { onForgotPassword?.invoke() },
+                    enabled = !state.isLoading && state.resendCooldown == 0,
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    Text(
+                        if (state.resendCooldown > 0) "Resend in ${state.resendCooldown}s" else "Forgot password?",
+                        fontSize = 13.sp,
+                        color = if (state.resendCooldown > 0) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+        }
 
         AnimatedVisibility(visible = isSignUp, enter = expandVertically(animationSpec = tween(250)) + fadeIn(), exit = shrinkVertically() + fadeOut()) {
             Column {

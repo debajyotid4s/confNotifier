@@ -61,6 +61,17 @@ class AuthRepository @Inject constructor(
         }
     }
 
+    suspend fun sendPasswordReset(email: String): Result<Unit> {
+        return try {
+            auth.sendPasswordResetEmail(email.trim()).await()
+            Log.i(TAG, "password reset sent to $email")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e(TAG, "sendPasswordReset failed for $email", e)
+            Result.failure(e)
+        }
+    }
+
     suspend fun signIn(email: String, password: String): Result<FirebaseUser> {
         Log.d(TAG, "signIn: attempt for $email")
         return try {
