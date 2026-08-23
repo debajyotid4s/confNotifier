@@ -155,12 +155,12 @@ private fun VerificationPendingScreen(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Spacer(Modifier.height(32.dp))
-        Text("Check your email", style = MaterialTheme.typography.headlineMedium, fontSize = 28.sp)
+        Text("Check your email", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(8.dp))
-        Text("We sent a verification link to", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+        Text("We sent a verification link to", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(4.dp))
         Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
-            Text(email, style = MaterialTheme.typography.titleSmall, fontSize = 14.sp, modifier = Modifier.padding(12.dp))
+            Text(email, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(12.dp))
         }
         Spacer(Modifier.height(24.dp))
         Card(
@@ -170,22 +170,22 @@ private fun VerificationPendingScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Tap the link in the email to verify. This is a link (not a 6-digit OTP) — Firebase's built-in flow works this way.", style = MaterialTheme.typography.bodySmall, fontSize = 13.sp)
-                Text("Tip: if it landed in Spam, mark it as Not spam.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+                Text("Tap the link in the email to verify. This is a link (not a 6-digit OTP) — Firebase's built-in flow works this way.", style = MaterialTheme.typography.bodySmall)
+                Text("Tip: if it landed in Spam, mark it as Not spam.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         Spacer(Modifier.height(16.dp))
         AnimatedVisibility(visible = state.errorMessage != null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
             state.errorMessage?.let {
                 Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
-                    Text(it, color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall, fontSize = 13.sp, modifier = Modifier.padding(12.dp))
+                    Text(it, color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(12.dp))
                 }
             }
         }
         AnimatedVisibility(visible = state.infoMessage != null) {
             state.infoMessage?.let {
                 Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.fillMaxWidth()) {
-                    Text(it, color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.bodySmall, fontSize = 13.sp, modifier = Modifier.padding(12.dp))
+                    Text(it, color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(12.dp))
                 }
             }
         }
@@ -199,7 +199,7 @@ private fun VerificationPendingScreen(
         ) {
             AnimatedContent(targetState = state.isLoading, label = "verifyLoading") { loading ->
                 if (loading) CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.5.dp, color = MaterialTheme.colorScheme.onPrimary)
-                else Text("I've verified — continue", fontSize = 16.sp)
+                else Text("I've verified — continue")
             }
         }
         Spacer(Modifier.height(12.dp))
@@ -211,17 +211,17 @@ private fun VerificationPendingScreen(
             shape = RoundedCornerShape(16.dp),
             modifier = Modifier.fillMaxWidth().height(54.dp)
         ) {
-            if (state.resendCooldown > 0) Text("Resend in ${state.resendCooldown}s", fontSize = 15.sp)
-            else Text("Resend email", fontSize = 15.sp)
+            if (state.resendCooldown > 0) Text("Resend in ${state.resendCooldown}s")
+            else Text("Resend email")
         }
         if (state.resendCooldown > 0) {
             Spacer(Modifier.height(8.dp))
             LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().height(4.dp), strokeCap = ProgressIndicatorDefaults.LinearStrokeCap)
             Spacer(Modifier.height(4.dp))
-            Text("To prevent spam, please wait before resending", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+            Text("To prevent spam, please wait before resending", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Spacer(Modifier.height(12.dp))
-        TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Back", fontSize = 14.sp) }
+        TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Back") }
     }
 }
 
@@ -262,9 +262,9 @@ private fun AuthForm(
         Spacer(Modifier.height(12.dp))
         // Header with subtle scale animation
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.graphicsLayer { alpha = 1f }) {
-            Text(title, style = MaterialTheme.typography.headlineMedium, fontSize = 28.sp, color = MaterialTheme.colorScheme.onSurface)
+            Text(title, style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onSurface)
             Spacer(Modifier.height(8.dp))
-            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Spacer(Modifier.height(28.dp))
 
@@ -287,7 +287,7 @@ private fun AuthForm(
         OutlinedTextField(
             value = state.email,
             onValueChange = onEmailChange,
-            label = { Text("Email", fontSize = 14.sp) },
+            label = { Text("Email") },
             leadingIcon = { Icon(Icons.Filled.Email, contentDescription = null) },
             singleLine = true,
             shape = fieldShape,
@@ -301,7 +301,7 @@ private fun AuthForm(
         OutlinedTextField(
             value = state.password,
             onValueChange = onPasswordChange,
-            label = { Text("Password", fontSize = 14.sp) },
+            label = { Text("Password") },
             leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
             singleLine = true,
             shape = fieldShape,
@@ -330,7 +330,7 @@ private fun AuthForm(
                 ) {
                     Text(
                         if (state.resendCooldown > 0) "Resend in ${state.resendCooldown}s" else "Forgot password?",
-                        fontSize = 13.sp,
+                        style = MaterialTheme.typography.labelMedium,
                         color = if (state.resendCooldown > 0) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary
                     )
                 }
@@ -343,7 +343,7 @@ private fun AuthForm(
                 OutlinedTextField(
                     value = state.confirmPassword,
                     onValueChange = onConfirmChange,
-                    label = { Text("Confirm password", fontSize = 14.sp) },
+                    label = { Text("Confirm password") },
                     leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
                     singleLine = true,
                     shape = fieldShape,
@@ -365,14 +365,14 @@ private fun AuthForm(
         AnimatedVisibility(visible = state.errorMessage != null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
             state.errorMessage?.let {
                 Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
-                    Text(it, color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall, fontSize = 13.sp, modifier = Modifier.padding(12.dp))
+                    Text(it, color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(12.dp))
                 }
             }
         }
         AnimatedVisibility(visible = state.infoMessage != null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
             state.infoMessage?.let {
                 Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.fillMaxWidth()) {
-                    Text(it, color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.bodySmall, fontSize = 13.sp, modifier = Modifier.padding(12.dp))
+                    Text(it, color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(12.dp))
                 }
             }
         }
@@ -387,7 +387,7 @@ private fun AuthForm(
         ) {
             AnimatedContent(targetState = state.isLoading, label = "submitLoading") { loading ->
                 if (loading) CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.5.dp, color = MaterialTheme.colorScheme.onPrimary)
-                else Text(if (isSignUp) "Create account" else "Sign in", fontSize = 16.sp)
+                else Text(if (isSignUp) "Create account" else "Sign in")
             }
         }
         Spacer(Modifier.height(10.dp))
@@ -399,15 +399,15 @@ private fun AuthForm(
         ) {
             AnimatedContent(targetState = state.isLoading, label = "googleLoading") { loading ->
                 if (loading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                else Text("Continue with Google", fontSize = 15.sp)
+                else Text("Continue with Google")
             }
         }
         Spacer(Modifier.height(10.dp))
 
         TextButton(onClick = onSwitch, modifier = Modifier.fillMaxWidth(), enabled = !state.isLoading) {
-            Text(switchText, fontSize = 14.sp, modifier = Modifier.alpha(if (state.isLoading) 0.5f else 1f))
+            Text(switchText, modifier = Modifier.alpha(if (state.isLoading) 0.5f else 1f))
         }
         Spacer(Modifier.height(16.dp))
-        Text("By continuing you agree to our Terms", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+        Text("By continuing you agree to our Terms", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

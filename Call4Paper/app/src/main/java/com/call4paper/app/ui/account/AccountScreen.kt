@@ -5,14 +5,16 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material3.*
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -41,7 +43,6 @@ class AccountViewModel @Inject constructor(private val api: ApiService, private 
             } catch (e: Exception) {
                 android.util.Log.e("AccountVM", "load failed", e)
                 _error.value = "Failed to load profile — ${e.message?.take(80) ?: "check connection"}"
-                // Keep previous user value so "Loading..." becomes visible error instead
             }
             _isRefreshing.value = false
         }
@@ -53,7 +54,6 @@ class AccountViewModel @Inject constructor(private val api: ApiService, private 
     fun logout(onDone: () -> Unit) {
         viewModelScope.launch {
             try {
-                // Try server logout, but always clear local token even if server fails (token already revocable via expiry)
                 try { api.logout() } catch (e: Exception) { android.util.Log.w("AccountVM", "logout server failed, clearing local anyway", e) }
                 tokens.clear()
                 _error.value = null
@@ -78,8 +78,8 @@ class AccountViewModel @Inject constructor(private val api: ApiService, private 
     }
 }
 
-@Composable
 @OptIn(ExperimentalMaterial3Api::class)
+@Composable
 fun AccountScreen(onLogout: () -> Unit, onBookmarks: () -> Unit, vm: AccountViewModel = hiltViewModel()) {
     val u by vm.user.collectAsState()
     val err by vm.error.collectAsState()
@@ -90,59 +90,88 @@ fun AccountScreen(onLogout: () -> Unit, onBookmarks: () -> Unit, vm: AccountView
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-        Text("Account", style = MaterialTheme.typography.headlineSmall, fontSize = 24.sp)
-        err?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
-        // Profile card
-        Card(
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Box(
-                    Modifier.size(56.dp).background(MaterialTheme.colorScheme.primary, shape = androidx.compose.foundation.shape.CircleShape),
-                    contentAlignment = androidx.compose.ui.Alignment.Center
+            Text("Account", style = MaterialTheme.typography.headlineSmall)
+            err?.let {
+                Card(
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(u.first.take(1).uppercase().ifEmpty { "U" }, color = MaterialTheme.colorScheme.onPrimary, fontSize = 24.sp)
+                    Column(Modifier.padding(16.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Icon(Icons.Filled.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.size(28.dp))
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
+                        Button(onClick = { vm.refresh() }, shape = RoundedCornerShape(12.dp)) { Text("Retry") }
+                    }
                 }
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(u.first.ifEmpty { "Loading..." }, style = MaterialTheme.typography.titleMedium, fontSize = 16.sp)
-                    Text(u.second.ifEmpty { "—" }, style = MaterialTheme.typography.bodySmall, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    u.third?.let { Text("Joined ${it.take(10)}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier.size(56.dp).background(MaterialTheme.colorScheme.primary, shape = CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(u.first.take(1).uppercase().ifEmpty { "U" }, style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onPrimary)
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(u.first.ifEmpty { "Loading..." }, style = MaterialTheme.typography.titleMedium)
+                        Text(u.second.ifEmpty { "—" }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        u.third?.let { Text("Joined ${it.take(10)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    }
                 }
             }
-        }
-        // My Conferences section
-        Text("My Conferences", style = MaterialTheme.typography.titleSmall, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
-        Card(Modifier.fillMaxWidth(), shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)) {
-            Column {
-                ListItem(headlineContent = { Text("Bookmarks", fontSize = 15.sp) }, supportingContent = { Text("Saved conferences", fontSize = 12.sp) }, modifier = Modifier.clickable { onBookmarks() })
-                Divider()
-                ListItem(headlineContent = { Text("Submission deadlines", fontSize = 15.sp) }, supportingContent = { Text("Track your followed deadlines", fontSize = 12.sp) })
+            Text("My Conferences", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column {
+                    ListItem(
+                        headlineContent = { Text("Bookmarks", style = MaterialTheme.typography.titleSmall) },
+                        supportingContent = { Text("Saved conferences", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                        modifier = Modifier.clickable { onBookmarks() }
+                    )
+                    HorizontalDivider()
+                    ListItem(
+                        headlineContent = { Text("Submission deadlines", style = MaterialTheme.typography.titleSmall) },
+                        supportingContent = { Text("Track your followed deadlines", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    )
+                }
             }
-        }
-        // Settings section
-        Text("Settings", style = MaterialTheme.typography.titleSmall, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary)
-        Card(Modifier.fillMaxWidth(), shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)) {
-            Column {
-                ListItem(headlineContent = { Text("Notifications", fontSize = 15.sp) }, supportingContent = { Text("Manage push preferences", fontSize = 12.sp) }, trailingContent = { Switch(checked = true, onCheckedChange = {}) })
-                Divider()
-                ListItem(headlineContent = { Text("Logout", fontSize = 15.sp) }, modifier = Modifier.clickable { vm.logout(onLogout) })
+            Text("Settings", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column {
+                    ListItem(
+                        headlineContent = { Text("Notifications", style = MaterialTheme.typography.titleSmall) },
+                        supportingContent = { Text("Manage push preferences", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                        trailingContent = { Switch(checked = true, onCheckedChange = {}) }
+                    )
+                    HorizontalDivider()
+                    ListItem(headlineContent = { Text("Logout", style = MaterialTheme.typography.titleSmall) }, modifier = Modifier.clickable { vm.logout(onLogout) })
+                }
             }
-        }
-        // Danger zone
-        Card(
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            ListItem(
-                headlineContent = { Text("Delete Account", color = MaterialTheme.colorScheme.error, fontSize = 15.sp) },
-                supportingContent = { Text("Permanently delete your data", fontSize = 12.sp, color = MaterialTheme.colorScheme.error) },
-                modifier = Modifier.clickable { vm.deleteAccount(onLogout) }
-            )
-        }
-        Spacer(Modifier.height(16.dp))
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                ListItem(
+                    headlineContent = { Text("Delete Account", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error) },
+                    supportingContent = { Text("Permanently delete your data", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) },
+                    modifier = Modifier.clickable { vm.deleteAccount(onLogout) }
+                )
+            }
+            Spacer(Modifier.height(16.dp))
         }
     }
 }

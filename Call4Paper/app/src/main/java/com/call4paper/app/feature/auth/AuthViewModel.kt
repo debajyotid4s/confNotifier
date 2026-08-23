@@ -136,7 +136,11 @@ class AuthViewModel @Inject constructor(
                 val deviceInfo = "Android ${android.os.Build.VERSION.RELEASE} (${android.os.Build.DEVICE})"
                 val resp = api.authFirebase(com.call4paper.app.data.remote.FirebaseAuthRequest(fbToken, phoneModel, deviceInfo))
                 tokens.save(resp.token)
-                try { val fcm = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await(); api.postDevice(mapOf("fcm_token" to fcm)) } catch (_: Exception) {}
+                try {
+                    val fcm = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
+                    api.postDevice(mapOf("fcm_token" to fcm))
+                    com.google.firebase.messaging.FirebaseMessaging.getInstance().subscribeToTopic("all_users")
+                } catch (_: Exception) {}
                 Log.i(TAG, "checkVerification: backend JWT saved for ${resp.user.username}")
                 _uiState.value = _uiState.value.copy(isLoading = false, isLoggedIn = true, verificationPending = false, verificationEmail = null, infoMessage = null)
                 onSuccess()
@@ -197,7 +201,11 @@ class AuthViewModel @Inject constructor(
                     val deviceInfo = "Android ${android.os.Build.VERSION.RELEASE} (${android.os.Build.DEVICE})"
                     val resp = api.authFirebase(com.call4paper.app.data.remote.FirebaseAuthRequest(fbToken, phoneModel, deviceInfo))
                     tokens.save(resp.token)
-                    try { val fcm = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await(); api.postDevice(mapOf("fcm_token" to fcm)) } catch (_: Exception) {}
+                    try {
+                        val fcm = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
+                        api.postDevice(mapOf("fcm_token" to fcm))
+                        com.google.firebase.messaging.FirebaseMessaging.getInstance().subscribeToTopic("all_users")
+                    } catch (_: Exception) {}
                     Log.i(TAG, "signIn: backend JWT saved for ${resp.user.username}")
                     _uiState.value = _uiState.value.copy(isLoading = false, isLoggedIn = true)
                     onSuccess()
@@ -248,6 +256,7 @@ class AuthViewModel @Inject constructor(
                 try {
                     val fcmToken = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
                     api.postDevice(mapOf("fcm_token" to fcmToken))
+                    com.google.firebase.messaging.FirebaseMessaging.getInstance().subscribeToTopic("all_users")
                     Log.d(TAG, "FCM token registered: ${fcmToken.take(12)}...")
                 } catch (e: Exception) {
                     Log.w(TAG, "FCM token post failed (will retry on token refresh)", e)
