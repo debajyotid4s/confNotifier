@@ -33,7 +33,16 @@ class AccountViewModel @Inject constructor(private val api: ApiService, private 
     fun load() {
         viewModelScope.launch {
             _isRefreshing.value = true
-            try { val u = api.getMe(); _user.value = Triple(u.username, u.email, u.created_at) } catch (e: Exception) {}
+            try {
+                val u = api.getMe()
+                _user.value = Triple(u.username, u.email, u.created_at)
+                _error.value = null
+                android.util.Log.i("AccountVM", "load success ${u.username} ${u.email}")
+            } catch (e: Exception) {
+                android.util.Log.e("AccountVM", "load failed", e)
+                _error.value = "Failed to load profile — ${e.message?.take(80) ?: "check connection"}"
+                // Keep previous user value so "Loading..." becomes visible error instead
+            }
             _isRefreshing.value = false
         }
     }
@@ -44,12 +53,14 @@ class AccountViewModel @Inject constructor(private val api: ApiService, private 
     fun logout(onDone: () -> Unit) {
         viewModelScope.launch {
             try {
-                api.logout()
+                // Try server logout, but always clear local token even if server fails (token already revocable via expiry)
+                try { api.logout() } catch (e: Exception) { android.util.Log.w("AccountVM", "logout server failed, clearing local anyway", e) }
                 tokens.clear()
                 _error.value = null
                 onDone()
             } catch (e: Exception) {
-                _error.value = "Logout failed — check your connection and try again"
+                android.util.Log.e("AccountVM", "logout clear failed", e)
+                _error.value = "Logout failed — ${e.message?.take(60)}"
             }
         }
     }
