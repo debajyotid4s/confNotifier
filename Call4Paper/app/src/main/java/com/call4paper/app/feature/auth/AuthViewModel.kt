@@ -31,7 +31,9 @@ data class AuthUiState(
     val errorMessage: String? = null,
     val isLoggedIn: Boolean = false,
     val suggestLogin: Boolean = false,
-    val infoMessage: String? = null
+    val infoMessage: String? = null,
+    val verificationPending: Boolean = false,
+    val verificationEmail: String? = null
 )
 
 @HiltViewModel
@@ -52,6 +54,7 @@ class AuthViewModel @Inject constructor(
     fun onPasswordChange(v: String) { _uiState.value = _uiState.value.copy(password = v, errorMessage = null, suggestLogin = false) }
     fun onConfirmPasswordChange(v: String) { _uiState.value = _uiState.value.copy(confirmPassword = v, errorMessage = null) }
     fun clearSuggestLogin() { _uiState.value = _uiState.value.copy(suggestLogin = false) }
+    fun dismissVerification() { _uiState.value = _uiState.value.copy(verificationPending = false, verificationEmail = null, errorMessage = null, infoMessage = null) }
 
     private fun validate(isSignUp: Boolean): String? {
         val s = _uiState.value
@@ -65,26 +68,21 @@ class AuthViewModel @Inject constructor(
         val err = validate(true)
         if (err != null) { _uiState.value = _uiState.value.copy(errorMessage = err); Log.w(TAG, "signUp: validation failed: $err"); return }
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, infoMessage = null)
             Log.d(TAG, "signUp: launching for ${_uiState.value.email}")
-            val res = repo.signUp(_uiState.value.email, _uiState.value.password)
+            val email = _uiState.value.email
+            val res = repo.signUp(email, _uiState.value.password)
             res.onSuccess { fbUser ->
-                try {
-                    val fbToken = fbUser.getIdToken(false).await().token ?: throw IllegalStateException("No Firebase token")
-                    val phoneModel = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}".trim()
-                    val deviceInfo = "Android ${android.os.Build.VERSION.RELEASE} (${android.os.Build.DEVICE})"
-                    val resp = api.authFirebase(com.call4paper.app.data.remote.FirebaseAuthRequest(fbToken, phoneModel, deviceInfo))
-                    tokens.save(resp.token)
-                    try { val fcm = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await(); api.postDevice(mapOf("fcm_token" to fcm)) } catch (_: Exception) {}
-                    Log.i(TAG, "signUp: backend JWT saved for ${resp.user.username}")
-                    _uiState.value = _uiState.value.copy(isLoading = false, isLoggedIn = true)
-                    onSuccess()
-                } catch (e: Exception) {
-                    Log.e(TAG, "signUp: backend exchange failed", e)
-                    // Do not navigate — user has Firebase account but no backend session; surface error
-                    _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "Account created but session failed — try signing in again")
-                    try { repo.signOut() } catch (_: Exception) {}
-                }
+                // Link-based flow: don't mint backend JWT yet — require email verification first
+                Log.i(TAG, "signUp: Firebase user created ${fbUser.email}, verification sent")
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    verificationPending = true,
+                    verificationEmail = fbUser.email ?: email,
+                    infoMessage = "Verification email sent to ${fbUser.email ?: email} — tap the link in your inbox, then press 'I've verified'",
+                    errorMessage = null
+                )
+                // Keep Firebase user signed in so resend/reload works; don't call backend yet
             }.onFailure { e ->
                 if (e is FirebaseAuthUserCollisionException) {
                     Log.w(TAG, "signUp: collision for ${_uiState.value.email} — suggest login")
@@ -99,10 +97,45 @@ class AuthViewModel @Inject constructor(
         }
     }
 
+    fun checkVerificationAndProceed(onSuccess: () -> Unit) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
+            val verified = repo.reloadAndCheckVerified()
+            if (!verified) {
+                Log.w(TAG, "checkVerification: not yet verified")
+                _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "Not verified yet — tap the link in your email, then try again")
+                return@launch
+            }
+            // Verified — now exchange Firebase token for backend JWT (force refresh so email_verified claim is fresh)
+            try {
+                val fbUser = repo.currentUser ?: throw IllegalStateException("No Firebase user")
+                val fbToken = fbUser.getIdToken(true).await().token ?: throw IllegalStateException("No Firebase token")
+                val phoneModel = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}".trim()
+                val deviceInfo = "Android ${android.os.Build.VERSION.RELEASE} (${android.os.Build.DEVICE})"
+                val resp = api.authFirebase(com.call4paper.app.data.remote.FirebaseAuthRequest(fbToken, phoneModel, deviceInfo))
+                tokens.save(resp.token)
+                try { val fcm = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await(); api.postDevice(mapOf("fcm_token" to fcm)) } catch (_: Exception) {}
+                Log.i(TAG, "checkVerification: backend JWT saved for ${resp.user.username}")
+                _uiState.value = _uiState.value.copy(isLoading = false, isLoggedIn = true, verificationPending = false, verificationEmail = null, infoMessage = null)
+                onSuccess()
+            } catch (e: Exception) {
+                Log.e(TAG, "checkVerification: backend exchange failed", e)
+                val m = e.message ?: ""
+                val stillNotVerified = m.contains("not verified", ignoreCase = true) || m.contains("403")
+                if (stillNotVerified) {
+                    _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "Still not verified — wait 10s and tap 'I've verified' again")
+                } else {
+                    // Likely Render cold start / network — keep pending so user can retry
+                    _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "Verified, but backend is waking up — tap 'I've verified' again in a few seconds")
+                }
+            }
+        }
+    }
+
     fun resendVerification() {
         viewModelScope.launch {
             val ok = repo.resendVerification()
-            _uiState.value = _uiState.value.copy(infoMessage = if (ok) "Verification email sent — check your inbox" else "Could not send verification email")
+            _uiState.value = _uiState.value.copy(infoMessage = if (ok) "Verification email sent — check your inbox" else "Could not send verification email — try again later", errorMessage = null)
         }
     }
 
@@ -129,12 +162,23 @@ class AuthViewModel @Inject constructor(
                     val msg = e.message ?: ""
                     val isNotVerified = msg.contains("not verified", ignoreCase = true) || msg.contains("403")
                     Log.e(TAG, "signIn: backend exchange failed", e)
-                    _uiState.value = _uiState.value.copy(
-                        isLoading = false,
-                        errorMessage = if (isNotVerified) "Email not verified — check your inbox and try again" else "Signed in to Firebase but backend session failed — try again",
-                        infoMessage = if (isNotVerified) "Tap resend to get a new verification email" else null
-                    )
-                    try { repo.signOut() } catch (_: Exception) {}
+                    if (isNotVerified) {
+                        // Keep Firebase user signed in so resend/reload works
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false,
+                            verificationPending = true,
+                            verificationEmail = fbUser.email,
+                            errorMessage = "Email not verified — tap the link in your inbox",
+                            infoMessage = "Press 'I've verified' after clicking the link, or resend"
+                        )
+                    } else {
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false,
+                            errorMessage = "Signed in to Firebase but backend session failed — try again",
+                            infoMessage = null
+                        )
+                        try { repo.signOut() } catch (_: Exception) {}
+                    }
                 }
             }.onFailure { e ->
                 val msg = mapError(e)
