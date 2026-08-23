@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -25,26 +27,35 @@ class UpcomingViewModel @Inject constructor(private val repo: ConferenceReposito
     val state: StateFlow<List<ConferenceEntity>> = _state.asStateFlow()
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
+    private val _isRefreshing = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
     init { refresh() }
     fun refresh() {
         viewModelScope.launch {
+            _isRefreshing.value = true
+            _error.value = null
             try { repo.refreshUpcoming(30); repo.observeAll().first().let { _state.value = it } }
             catch (_: Exception) { _error.value = "Could not load — check your connection" }
+            _isRefreshing.value = false
         }
     }
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 fun UpcomingScreen(onConference: (Int) -> Unit, vm: UpcomingViewModel = hiltViewModel()) {
     val items by vm.state.collectAsState()
     val err by vm.error.collectAsState()
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Upcoming — soonest first", style = MaterialTheme.typography.titleLarge, fontSize = 20.sp)
-        err?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(items, key = { it.id }) { c ->
-                Card(Modifier.fillMaxWidth().clickable { onConference(c.id) }) {
-                    Column(Modifier.padding(12.dp)) { Text(c.title, fontSize = 14.sp); Text(c.startDate ?: "", fontSize = 12.sp) }
+    val isRefreshing by vm.isRefreshing.collectAsState()
+    PullToRefreshBox(isRefreshing = isRefreshing, onRefresh = { vm.refresh() }, modifier = Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().padding(16.dp)) {
+            Text("Upcoming — soonest first", style = MaterialTheme.typography.titleLarge, fontSize = 20.sp)
+            err?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxSize().padding(top = 8.dp)) {
+                items(items, key = { it.id }) { c ->
+                    Card(Modifier.fillMaxWidth().clickable { onConference(c.id) }) {
+                        Column(Modifier.padding(12.dp)) { Text(c.title, fontSize = 14.sp); Text(c.startDate ?: "", fontSize = 12.sp) }
+                    }
                 }
             }
         }

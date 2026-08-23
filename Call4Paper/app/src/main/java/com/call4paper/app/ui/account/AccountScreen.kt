@@ -7,6 +7,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -26,11 +28,16 @@ import javax.inject.Inject
 class AccountViewModel @Inject constructor(private val api: ApiService, private val tokens: TokenManager) : ViewModel() {
     private val _user = MutableStateFlow<Triple<String,String,String?>>(Triple("","",""))
     val user: StateFlow<Triple<String,String,String?>> = _user
+    private val _isRefreshing = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing
     fun load() {
         viewModelScope.launch {
+            _isRefreshing.value = true
             try { val u = api.getMe(); _user.value = Triple(u.username, u.email, u.created_at) } catch (e: Exception) {}
+            _isRefreshing.value = false
         }
     }
+    fun refresh() { load() }
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
 
@@ -61,14 +68,17 @@ class AccountViewModel @Inject constructor(private val api: ApiService, private 
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 fun AccountScreen(onLogout: () -> Unit, onBookmarks: () -> Unit, vm: AccountViewModel = hiltViewModel()) {
     val u by vm.user.collectAsState()
     val err by vm.error.collectAsState()
+    val isRefreshing by vm.isRefreshing.collectAsState()
     LaunchedEffect(Unit) { vm.load() }
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
+    PullToRefreshBox(isRefreshing = isRefreshing, onRefresh = { vm.refresh() }, modifier = Modifier.fillMaxSize()) {
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
         Text("Account", style = MaterialTheme.typography.headlineSmall, fontSize = 24.sp)
         err?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
         // Profile card
@@ -122,5 +132,6 @@ fun AccountScreen(onLogout: () -> Unit, onBookmarks: () -> Unit, vm: AccountView
             )
         }
         Spacer(Modifier.height(16.dp))
+        }
     }
 }
