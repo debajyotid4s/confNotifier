@@ -47,16 +47,14 @@ private const val TAG = "AuthScreens"
 fun LoginScreen(
     onNavigateToSignUp: () -> Unit,
     onLoggedIn: () -> Unit,
+    prefillEmail: String? = null,
     vm: AuthViewModel = hiltViewModel()
 ) {
     val state by vm.uiState.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    LaunchedEffect(Unit) {
-        PendingLoginEmail.email?.let { e ->
-            vm.onEmailChange(e)
-            PendingLoginEmail.email = null
-        }
+    LaunchedEffect(prefillEmail) {
+        if (!prefillEmail.isNullOrBlank()) vm.onEmailChange(prefillEmail)
     }
     LaunchedEffect(state.isLoggedIn) { if (state.isLoggedIn) { Log.d(TAG, "LoginScreen: already logged in"); onLoggedIn() } }
     if (state.verificationPending) {
@@ -93,7 +91,7 @@ fun LoginScreen(
 
 @Composable
 fun SignUpScreen(
-    onNavigateToLogin: () -> Unit,
+    onNavigateToLogin: (String?) -> Unit,
     onSignedUp: () -> Unit,
     vm: AuthViewModel = hiltViewModel()
 ) {
@@ -102,8 +100,9 @@ fun SignUpScreen(
     val scope = rememberCoroutineScope()
     LaunchedEffect(state.suggestLogin) {
         if (state.suggestLogin) {
+            val email = state.loginRedirectEmail
             vm.clearSuggestLogin()
-            onNavigateToLogin()
+            onNavigateToLogin(email)
         }
     }
     if (state.verificationPending) {

@@ -10,33 +10,38 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.call4paper.app.data.local.TokenManager
+import com.call4paper.app.data.remote.ApiService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import kotlin.coroutines.cancellation.CancellationException
+import retrofit2.HttpException
 
 @HiltViewModel
-class SplashViewModel @Inject constructor(private val tokens: TokenManager) : ViewModel() {
+class SplashViewModel @Inject constructor(
+    private val tokens: TokenManager,
+    private val api: ApiService
+) : ViewModel() {
     fun decide(onAuth: () -> Unit, onLogin: () -> Unit) {
         viewModelScope.launch {
             val t = tokens.peek()
-            if (t != null && isJwtValid(t)) onAuth() else {
-                if (t != null) tokens.clear() // expired/invalid → clear stale token
+            if (t == null) {
                 onLogin()
+                return@launch
+            }
+            try {
+                api.getMe()
+                onAuth()
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                if (e is HttpException && (e.code() == 401 || e.code() == 403)) {
+                    tokens.clear()
+                    onLogin()
+                } else {
+                    onAuth()
+                }
             }
         }
-    }
-
-    private fun isJwtValid(token: String): Boolean {
-        return try {
-            val parts = token.split(".")
-            if (parts.size != 3) return false
-            val payloadJson = String(android.util.Base64.decode(parts[1], android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP), Charsets.UTF_8)
-            val exp = org.json.JSONObject(payloadJson).optLong("exp", 0L)
-            if (exp == 0L) return true // no exp claim → treat as valid (server should always set it)
-            val nowSec = System.currentTimeMillis() / 1000L
-            // 60s clock skew leeway
-            exp > nowSec + 60
-        } catch (_: Exception) { false }
     }
 }
 

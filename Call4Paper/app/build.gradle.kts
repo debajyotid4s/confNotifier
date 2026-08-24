@@ -9,6 +9,8 @@ plugins {
     alias(libs.plugins.crashlytics)
 }
 
+val webClientId = providers.gradleProperty("WEB_CLIENT_ID").orElse("").get()
+
 android {
     namespace = "com.call4paper.app"
     compileSdk = 35
@@ -21,6 +23,7 @@ android {
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
+        buildConfigField("String", "WEB_CLIENT_ID", "\"$webClientId\"")
     }
 
     buildFeatures { compose = true; buildConfig = true }

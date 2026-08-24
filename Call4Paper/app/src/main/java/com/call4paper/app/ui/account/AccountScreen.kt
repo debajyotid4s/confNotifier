@@ -19,14 +19,18 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.call4paper.app.data.local.TokenManager
 import com.call4paper.app.data.remote.ApiService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
+import kotlin.coroutines.cancellation.CancellationException
 
 @HiltViewModel
 class AccountViewModel @Inject constructor(
@@ -39,8 +43,14 @@ class AccountViewModel @Inject constructor(
     val user: StateFlow<Triple<String,String,String?>> = _user
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing
-    private val _notificationsEnabled = MutableStateFlow(prefs.getBoolean("notifications_enabled", true))
+    private val _notificationsEnabled = MutableStateFlow(true)
     val notificationsEnabled: StateFlow<Boolean> = _notificationsEnabled
+    init {
+        viewModelScope.launch(Dispatchers.IO) {
+            val enabled = prefs.getBoolean("notifications_enabled", true)
+            _notificationsEnabled.value = enabled
+        }
+    }
     fun load() {
         viewModelScope.launch {
             _isRefreshing.value = true
@@ -50,6 +60,7 @@ class AccountViewModel @Inject constructor(
                 _error.value = null
                 android.util.Log.i("AccountVM", "load success ${u.username} ${u.email}")
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 android.util.Log.e("AccountVM", "load failed", e)
                 _error.value = "Failed to load profile — ${e.message?.take(80) ?: "check connection"}"
             }
@@ -62,20 +73,31 @@ class AccountViewModel @Inject constructor(
 
     fun toggleNotifications(enabled: Boolean) {
         _notificationsEnabled.value = enabled
-        prefs.edit().putBoolean("notifications_enabled", enabled).apply()
-        val fcm = com.google.firebase.messaging.FirebaseMessaging.getInstance()
-        if (enabled) fcm.subscribeToTopic("all_users")
-        else fcm.unsubscribeFromTopic("all_users")
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                prefs.edit().putBoolean("notifications_enabled", enabled).apply()
+            }
+            val fcm = com.google.firebase.messaging.FirebaseMessaging.getInstance()
+            if (enabled) fcm.subscribeToTopic("all_users")
+            else fcm.unsubscribeFromTopic("all_users")
+        }
     }
 
     fun logout(onDone: () -> Unit) {
         viewModelScope.launch {
             try {
-                try { api.logout() } catch (e: Exception) { android.util.Log.w("AccountVM", "logout server failed, clearing local anyway", e) }
+                try {
+                    api.logout()
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    android.util.Log.w("AccountVM", "logout server failed, clearing local anyway", e)
+                }
+                com.google.firebase.messaging.FirebaseMessaging.getInstance().unsubscribeFromTopic("all_users")
                 tokens.clear()
                 _error.value = null
                 onDone()
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 android.util.Log.e("AccountVM", "logout clear failed", e)
                 _error.value = "Logout failed — ${e.message?.take(60)}"
             }
@@ -85,10 +107,12 @@ class AccountViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 api.deleteMe()
+                com.google.firebase.messaging.FirebaseMessaging.getInstance().unsubscribeFromTopic("all_users")
                 tokens.clear()
                 _error.value = null
                 onDone()
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 _error.value = "Delete failed — check your connection and try again"
             }
         }
@@ -98,10 +122,10 @@ class AccountViewModel @Inject constructor(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AccountScreen(onLogout: () -> Unit, onBookmarks: () -> Unit, vm: AccountViewModel = hiltViewModel()) {
-    val u by vm.user.collectAsState()
-    val err by vm.error.collectAsState()
-    val isRefreshing by vm.isRefreshing.collectAsState()
-    val notificationsEnabled by vm.notificationsEnabled.collectAsState()
+    val u by vm.user.collectAsStateWithLifecycle()
+    val err by vm.error.collectAsStateWithLifecycle()
+    val isRefreshing by vm.isRefreshing.collectAsStateWithLifecycle()
+    val notificationsEnabled by vm.notificationsEnabled.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.load() }
     PullToRefreshBox(isRefreshing = isRefreshing, onRefresh = { vm.refresh() }, modifier = Modifier.fillMaxSize()) {
         Column(

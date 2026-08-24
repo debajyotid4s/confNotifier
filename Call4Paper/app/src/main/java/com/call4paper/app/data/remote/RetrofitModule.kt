@@ -15,6 +15,7 @@ import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
 import javax.inject.Singleton
+import kotlin.coroutines.cancellation.CancellationException
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -24,7 +25,12 @@ object NetworkModule {
     fun provideOkHttp(tokenManager: TokenManager): OkHttpClient {
         val authInterceptor = Interceptor { chain ->
             val token = runBlocking {
-                try { tokenManager.tokenFlow.first() } catch (e: Exception) { null }
+                try {
+                    tokenManager.tokenFlow.first()
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    null
+                }
             }
             val req = if (!token.isNullOrBlank()) chain.request().newBuilder().addHeader("Authorization", "Bearer $token").build() else chain.request()
             chain.proceed(req)
@@ -41,8 +47,7 @@ object NetworkModule {
     @Provides @Singleton
     fun provideRetrofit(okHttp: OkHttpClient): Retrofit {
         // Prod: live Render backend — https://confnotifier.onrender.com
-        val baseUrl = "https://confnotifier.onrender.com/"
-        val url = System.getProperty("apiBaseUrl") ?: baseUrl
+        val url = "https://confnotifier.onrender.com/"
         return Retrofit.Builder()
             .baseUrl(url)
             .client(okHttp)

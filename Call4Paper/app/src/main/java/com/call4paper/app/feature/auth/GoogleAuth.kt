@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import androidx.credentials.CredentialManager
 import androidx.credentials.GetCredentialRequest
+import com.call4paper.app.BuildConfig
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import kotlinx.coroutines.Dispatchers
@@ -11,14 +12,16 @@ import kotlinx.coroutines.withContext
 
 private const val TAG = "GoogleAuth"
 
-// Web client ID from Firebase console → Project settings → General → Web SDK configuration
-private const val WEB_CLIENT_ID = "203119671824-n3jbcp0paouibc1dbg1v4dmnpf9sm16s.apps.googleusercontent.com"
-
 suspend fun getGoogleIdToken(ctx: Context): String? = withContext(Dispatchers.Main) {
     try {
+        val clientId = BuildConfig.WEB_CLIENT_ID
+        if (clientId.isBlank()) {
+            Log.e(TAG, "WEB_CLIENT_ID is missing. Set gradle property WEB_CLIENT_ID.")
+            return@withContext null
+        }
         val option = GetGoogleIdOption.Builder()
             .setFilterByAuthorizedAccounts(false)
-            .setServerClientId(WEB_CLIENT_ID)
+            .setServerClientId(clientId)
             .build()
         val request = GetCredentialRequest.Builder().addCredentialOption(option).build()
         val cm = CredentialManager.create(ctx)

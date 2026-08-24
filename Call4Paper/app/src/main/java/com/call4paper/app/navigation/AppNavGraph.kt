@@ -20,6 +20,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navDeepLink
+import androidx.navigation.navArgument
 import com.call4paper.app.feature.auth.LoginScreen
 import com.call4paper.app.feature.auth.SignUpScreen
 import com.call4paper.app.ui.account.AccountScreen
@@ -75,17 +76,24 @@ fun AppNavGraph() {
                 )
             }
             composable(
-                Route.Login.route,
+                "${Route.Login.route}?email={email}",
+                arguments = listOf(navArgument("email") { nullable = true; defaultValue = null }),
                 deepLinks = listOf(navDeepLink { uriPattern = "call4paper://login" })
-            ) {
+            ) { backStack ->
+                val prefillEmail = backStack.arguments?.getString("email")
                 LoginScreen(
                     onNavigateToSignUp = { nav.navigate(Route.Signup.route) },
-                    onLoggedIn = { nav.navigate(Route.Calendar.route) { popUpTo(Route.Login.route) { inclusive = true } } }
+                    onLoggedIn = { nav.navigate(Route.Calendar.route) { popUpTo(Route.Login.route) { inclusive = true } } },
+                    prefillEmail = prefillEmail
                 )
             }
             composable(Route.Signup.route) {
                 SignUpScreen(
-                    onNavigateToLogin = { nav.popBackStack() },
+                    onNavigateToLogin = { email ->
+                        nav.navigate("${Route.Login.route}?email=${java.net.URLEncoder.encode(email ?: "", "UTF-8")}") {
+                            popUpTo(Route.Signup.route) { inclusive = true }
+                        }
+                    },
                     onSignedUp = { nav.navigate(Route.Calendar.route) { popUpTo(Route.Login.route) { inclusive = true } } }
                 )
             }

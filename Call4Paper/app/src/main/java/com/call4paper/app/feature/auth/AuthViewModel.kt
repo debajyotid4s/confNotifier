@@ -19,11 +19,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import javax.inject.Inject
+import kotlin.coroutines.cancellation.CancellationException
 
 private const val TAG = "AuthViewModel"
-
-// Holds the email from a collision so Login can pre-fill it (separate VMs per destination)
-object PendingLoginEmail { var email: String? = null }
 
 data class AuthUiState(
     val email: String = "",
@@ -33,6 +31,7 @@ data class AuthUiState(
     val errorMessage: String? = null,
     val isLoggedIn: Boolean = false,
     val suggestLogin: Boolean = false,
+    val loginRedirectEmail: String? = null,
     val infoMessage: String? = null,
     val verificationPending: Boolean = false,
     val verificationEmail: String? = null,
@@ -54,16 +53,21 @@ class AuthViewModel @Inject constructor(
         Log.d(TAG, "init: currentUser=${repo.currentUser?.email} uid=${repo.currentUser?.uid}")
         // Don't treat Firebase user as logged in — JWT is source of truth; check it async
         viewModelScope.launch {
-            val hasJwt = try { tokens.peek() != null } catch (_: Exception) { false }
+            val hasJwt = try {
+                tokens.peek() != null
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                false
+            }
             // Only mark logged in if we actually have a JWT; Splash handles routing anyway
             if (hasJwt) _uiState.value = _uiState.value.copy(isLoggedIn = true)
         }
     }
 
-    fun onEmailChange(v: String) { _uiState.value = _uiState.value.copy(email = v, errorMessage = null, suggestLogin = false, infoMessage = null) }
-    fun onPasswordChange(v: String) { _uiState.value = _uiState.value.copy(password = v, errorMessage = null, suggestLogin = false) }
+    fun onEmailChange(v: String) { _uiState.value = _uiState.value.copy(email = v, errorMessage = null, suggestLogin = false, loginRedirectEmail = null, infoMessage = null) }
+    fun onPasswordChange(v: String) { _uiState.value = _uiState.value.copy(password = v, errorMessage = null, suggestLogin = false, loginRedirectEmail = null) }
     fun onConfirmPasswordChange(v: String) { _uiState.value = _uiState.value.copy(confirmPassword = v, errorMessage = null) }
-    fun clearSuggestLogin() { _uiState.value = _uiState.value.copy(suggestLogin = false) }
+    fun clearSuggestLogin() { _uiState.value = _uiState.value.copy(suggestLogin = false, loginRedirectEmail = null) }
     fun dismissVerification() { _uiState.value = _uiState.value.copy(verificationPending = false, verificationEmail = null, errorMessage = null, infoMessage = null) }
 
     private fun validate(isSignUp: Boolean): String? {
@@ -108,8 +112,12 @@ class AuthViewModel @Inject constructor(
             }.onFailure { e ->
                 if (e is FirebaseAuthUserCollisionException) {
                     Log.w(TAG, "signUp: collision for ${_uiState.value.email} — suggest login")
-                    PendingLoginEmail.email = _uiState.value.email
-                    _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "Email already registered — try signing in", suggestLogin = true)
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        errorMessage = "Email already registered — try signing in",
+                        suggestLogin = true,
+                        loginRedirectEmail = _uiState.value.email
+                    )
                 } else {
                     val msg = mapError(e)
                     Log.e(TAG, "signUp: error $msg", e)
@@ -140,11 +148,15 @@ class AuthViewModel @Inject constructor(
                     val fcm = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
                     api.postDevice(mapOf("fcm_token" to fcm))
                     com.google.firebase.messaging.FirebaseMessaging.getInstance().subscribeToTopic("all_users")
-                } catch (_: Exception) {}
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    Log.w(TAG, "checkVerification: device registration failed", e)
+                }
                 Log.i(TAG, "checkVerification: backend JWT saved for ${resp.user.username}")
                 _uiState.value = _uiState.value.copy(isLoading = false, isLoggedIn = true, verificationPending = false, verificationEmail = null, infoMessage = null)
                 onSuccess()
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 Log.e(TAG, "checkVerification: backend exchange failed", e)
                 val m = e.message ?: ""
                 val stillNotVerified = m.contains("not verified", ignoreCase = true) || m.contains("403")
@@ -205,11 +217,15 @@ class AuthViewModel @Inject constructor(
                         val fcm = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
                         api.postDevice(mapOf("fcm_token" to fcm))
                         com.google.firebase.messaging.FirebaseMessaging.getInstance().subscribeToTopic("all_users")
-                    } catch (_: Exception) {}
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        Log.w(TAG, "checkVerification: device registration failed", e)
+                    }
                     Log.i(TAG, "signIn: backend JWT saved for ${resp.user.username}")
                     _uiState.value = _uiState.value.copy(isLoading = false, isLoggedIn = true)
                     onSuccess()
                 } catch (e: Exception) {
+                    if (e is CancellationException) throw e
                     // Surface email-not-verified specifically; otherwise generic
                     val msg = e.message ?: ""
                     val isNotVerified = msg.contains("not verified", ignoreCase = true) || msg.contains("403")
@@ -229,7 +245,12 @@ class AuthViewModel @Inject constructor(
                             errorMessage = "Signed in to Firebase but backend session failed — try again",
                             infoMessage = null
                         )
-                        try { repo.signOut() } catch (_: Exception) {}
+                        try {
+                            repo.signOut()
+                        } catch (signOutError: Exception) {
+                            if (signOutError is CancellationException) throw signOutError
+                            Log.w(TAG, "signIn: local signOut after backend failure failed", signOutError)
+                        }
                     }
                 }
             }.onFailure { e ->
@@ -259,11 +280,13 @@ class AuthViewModel @Inject constructor(
                     com.google.firebase.messaging.FirebaseMessaging.getInstance().subscribeToTopic("all_users")
                     Log.d(TAG, "FCM token registered: ${fcmToken.take(12)}...")
                 } catch (e: Exception) {
+                    if (e is CancellationException) throw e
                     Log.w(TAG, "FCM token post failed (will retry on token refresh)", e)
                 }
                 _uiState.value = _uiState.value.copy(isLoading = false, isLoggedIn = true)
                 onSuccess()
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 Log.e(TAG, "signInWithGoogle: failed", e)
                 // Do not surface raw exception (may contain token/network internals)
                 _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "Google sign-in failed — try again")
@@ -272,7 +295,14 @@ class AuthViewModel @Inject constructor(
     }
 
     // Local sign-out (used for session-expiry cleanup) — does not call backend
-    fun signOut() { resendJob?.cancel(); repo.signOut(); viewModelScope.launch { tokens.clear() }; _uiState.value = AuthUiState(); Log.d(TAG, "signOut: cleared state") }
+    fun signOut() {
+        resendJob?.cancel()
+        repo.signOut()
+        com.google.firebase.messaging.FirebaseMessaging.getInstance().unsubscribeFromTopic("all_users")
+        viewModelScope.launch { tokens.clear() }
+        _uiState.value = AuthUiState()
+        Log.d(TAG, "signOut: cleared state")
+    }
 
     override fun onCleared() { resendJob?.cancel(); super.onCleared() }
 

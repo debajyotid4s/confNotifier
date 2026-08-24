@@ -7,18 +7,21 @@ import android.content.Intent
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import com.call4paper.app.MainActivity
+import com.call4paper.app.R
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 
 class Call4PaperMessagingService : FirebaseMessagingService() {
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onNewToken(token: String) {
         android.util.Log.d("FCM", "onNewToken: ${token.take(12)}...")
-        // Subscribe to broadcast topic for digest notifications
-        com.google.firebase.messaging.FirebaseMessaging.getInstance()
-            .subscribeToTopic("all_users")
         // Try to register with backend if user is logged in (JWT exists)
         // Uses EntryPoint to get TokenManager and ApiService without Hilt injection in Service
         try {
@@ -27,11 +30,13 @@ class Call4PaperMessagingService : FirebaseMessagingService() {
             )
             val tokenManager = entry.tokenManager()
             val api = entry.apiService()
-            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            serviceScope.launch {
                 try {
                     val jwt = tokenManager.tokenFlow.firstOrNull()
                     if (jwt != null) {
                         api.postDevice(mapOf("fcm_token" to token))
+                        com.google.firebase.messaging.FirebaseMessaging.getInstance()
+                            .subscribeToTopic("all_users")
                         android.util.Log.i("FCM", "onNewToken registered with backend")
                     } else {
                         android.util.Log.w("FCM", "onNewToken: no JWT, will register after login")
@@ -39,6 +44,11 @@ class Call4PaperMessagingService : FirebaseMessagingService() {
                 } catch (e: Exception) {
                     android.util.Log.e("FCM", "onNewToken post failed", e)
                 }
+            }
+
+            override fun onDestroy() {
+                serviceScope.coroutineContext.cancel()
+                super.onDestroy()
             }
         } catch (e: Exception) {
             android.util.Log.e("FCM", "onNewToken entry point failed", e)
@@ -78,7 +88,7 @@ class Call4PaperMessagingService : FirebaseMessagingService() {
         val pi = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 
         val notif = NotificationCompat.Builder(this, channelId)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
@@ -87,7 +97,11 @@ class Call4PaperMessagingService : FirebaseMessagingService() {
             .build()
 
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
-            .notify(System.currentTimeMillis().toInt(), notif)
+            .notify(buildNotificationId(type, conferenceId, title, body), notif)
+    }
+
+    private fun buildNotificationId(type: String, conferenceId: String?, title: String, body: String): Int {
+        return listOf(type, conferenceId.orEmpty(), title, body).joinToString("|").hashCode()
     }
 
     private fun titleFor(id: String) = when (id) {
