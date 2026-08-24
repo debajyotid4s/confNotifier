@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Depends, Header, Request
 from pydantic import BaseModel
 import psycopg2
 
-from database import get_conn
+from database import db_cursor, db_transaction, fetch_one
 from auth import verify_google_id_token, generate_username_candidate, create_jwt, decode_jwt
 
 logger = logging.getLogger(__name__)
@@ -44,50 +44,38 @@ def _rate_limit_or_429(request: Request, key_prefix: str):
         pass
 
 def _upsert_user(*, lookup_col: str, lookup_val: str, email: str, body, client_ip, user_agent, log_id: str):
-    """Shared upsert for Google (google_subject_id) and Firebase (firebase_uid).
-
-    `lookup_col` must be a trusted column name (hardcoded caller), `lookup_val` is parameterized.
-    Loops 10x on UniqueViolation (username collision) and returns {"token":..., "user":...}.
-    """
+    """Shared upsert for Google and Firebase — single place for login-metadata handling."""
     if lookup_col not in ("google_subject_id", "firebase_uid"):
         raise ValueError(f"Invalid lookup_col: {lookup_col}")
     for attempt in range(10):
         try:
-            conn = get_conn()
-            cur = conn.cursor()
-            cur.execute(f"SELECT id, username, email FROM users WHERE {lookup_col} = %s", (lookup_val,))
-            row = cur.fetchone()
+            row = fetch_one(f"SELECT id, username, email FROM users WHERE {lookup_col} = %s", (lookup_val,))
             if row:
                 uid, username, db_email = row
                 try:
-                    cur.execute(
+                    from database import execute
+                    execute(
                         "UPDATE users SET last_login_at = now(), last_login_ip = %s, ip_address = %s, phone_model = COALESCE(%s, phone_model), user_agent = %s, device_info = COALESCE(%s, device_info) WHERE id = %s",
-                        (client_ip, client_ip, body.phone_model, user_agent, body.device_info, uid)
+                        (client_ip, client_ip, body.phone_model, user_agent, body.device_info, uid),
                     )
-                    conn.commit()
                 except Exception as e:
                     logger.warning("%s: update login info failed for %s: %s", log_id, lookup_val, e)
-                    conn.rollback()
-                cur.close(); conn.close()
                 token = create_jwt(str(uid), db_email)
                 logger.info("%s: login %s=%s username=%s ip=%s phone=%s", log_id, lookup_col, lookup_val, username, client_ip, body.phone_model)
                 return {"token": token, "user": {"id": str(uid), "username": username, "email": db_email}}
             candidate = generate_username_candidate()
             try:
-                cur.execute(
-                    f"INSERT INTO users ({lookup_col}, email, username, phone_model, ip_address, user_agent, device_info, last_login_at, last_login_ip) VALUES (%s,%s,%s,%s,%s,%s,%s, now(), %s) RETURNING id, username",
-                    (lookup_val, email, candidate, body.phone_model, client_ip, user_agent, body.device_info, client_ip)
-                )
-                uid, username = cur.fetchone()
-                conn.commit()
-                cur.close(); conn.close()
+                with db_transaction() as cur:
+                    cur.execute(
+                        f"INSERT INTO users ({lookup_col}, email, username, phone_model, ip_address, user_agent, device_info, last_login_at, last_login_ip) VALUES (%s,%s,%s,%s,%s,%s,%s, now(), %s) RETURNING id, username",
+                        (lookup_val, email, candidate, body.phone_model, client_ip, user_agent, body.device_info, client_ip)
+                    )
+                    uid, username = cur.fetchone()
                 token = create_jwt(str(uid), email)
                 logger.info("%s: created %s=%s username=%s ip=%s phone=%s", log_id, lookup_col, lookup_val, username, client_ip, body.phone_model)
                 return {"token": token, "user": {"id": str(uid), "username": username, "email": email}}
             except psycopg2.errors.UniqueViolation as e:
-                conn.rollback()
                 logger.warning("%s: unique violation attempt %d for %s: %s", log_id, attempt, candidate, e)
-                cur.close(); conn.close()
                 continue
         except HTTPException:
             raise

@@ -4,7 +4,7 @@ import hmac
 import logging
 from datetime import date
 from fastapi import APIRouter, Header, HTTPException
-from database import get_conn
+from database import db_cursor, fetch_all
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -64,49 +64,43 @@ def notify_scraper_run(x_notify_secret: str = Header(None)):
     expected = os.environ.get("NOTIFY_SECRET", "")
     if not expected or not x_notify_secret or not hmac.compare_digest(x_notify_secret, expected):
         raise HTTPException(status_code=401, detail="Invalid secret")
-    conn = get_conn()
+    rows = fetch_all("SELECT fcm_token FROM device_tokens")
+    tokens = [r[0] for r in rows if r[0]]
+    count = len(tokens)
+    logger.info("notify-scraper-run: %d device(s) to notify (daily digest)", count)
+    # Invalidate cached conference reads — scraper just upserted
     try:
-        cur = conn.cursor()
-        cur.execute("SELECT fcm_token FROM device_tokens")
-        tokens = [r[0] for r in cur.fetchall() if r[0]]
-        cur.close()
-        count = len(tokens)
-        logger.info("notify-scraper-run: %d device(s) to notify (daily digest)", count)
-        # Invalidate cached conference reads — scraper just upserted
-        try:
-            from cache import invalidate_prefix
-            invalidate_prefix("cal:")
-            invalidate_prefix("upcoming:")
-            invalidate_prefix("conf:")
-        except Exception:
-            pass
-        if count == 0:
-            return {"ok": True, "devices": 0, "sent": 0, "message": "No devices"}
-        if not _ensure_firebase():
-            return {"ok": True, "devices": count, "sent": 0, "message": "Check today's conference updates (FCM not configured)"}
-        # Send via FCM — single daily digest, defer per-conference diff
-        try:
-            import firebase_admin.messaging as fcm
-            # FCM multicast max 500 per call
-            sent = 0
-            for i in range(0, len(tokens), 500):
-                batch = tokens[i:i+500]
-                msg = fcm.MulticastMessage(
-                    notification=fcm.Notification(title="Call4Paper", body="Check today's conference updates"),
-                    data={"type": "daily_digest", "screen": "calendar"},
-                    tokens=batch,
-                )
-                resp = fcm.send_each_for_multicast(msg)
-                sent += resp.success_count
-                if resp.failure_count:
-                    logger.warning("FCM batch %d: %d failures", i//500, resp.failure_count)
-            logger.info("FCM daily digest sent to %d/%d", sent, count)
-            return {"ok": True, "devices": count, "sent": sent, "message": "Check today's conference updates"}
-        except Exception as e:
-            logger.error("FCM send failed: %s", e)
-            raise HTTPException(status_code=500, detail=f"FCM failed: {e}")
-    finally:
-        conn.close()
+        from cache import invalidate_prefix
+        invalidate_prefix("cal:")
+        invalidate_prefix("upcoming:")
+        invalidate_prefix("conf:")
+    except Exception:
+        pass
+    if count == 0:
+        return {"ok": True, "devices": 0, "sent": 0, "message": "No devices"}
+    if not _ensure_firebase():
+        return {"ok": True, "devices": count, "sent": 0, "message": "Check today's conference updates (FCM not configured)"}
+    # Send via FCM — single daily digest, defer per-conference diff
+    try:
+        import firebase_admin.messaging as fcm
+        # FCM multicast max 500 per call
+        sent = 0
+        for i in range(0, len(tokens), 500):
+            batch = tokens[i:i+500]
+            msg = fcm.MulticastMessage(
+                notification=fcm.Notification(title="Call4Paper", body="Check today's conference updates"),
+                data={"type": "daily_digest", "screen": "calendar"},
+                tokens=batch,
+            )
+            resp = fcm.send_each_for_multicast(msg)
+            sent += resp.success_count
+            if resp.failure_count:
+                logger.warning("FCM batch %d: %d failures", i//500, resp.failure_count)
+        logger.info("FCM daily digest sent to %d/%d", sent, count)
+        return {"ok": True, "devices": count, "sent": sent, "message": "Check today's conference updates"}
+    except Exception as e:
+        logger.error("FCM send failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"FCM failed: {e}")
 
 
 @router.post("/internal/notify-bookmarks")
@@ -115,13 +109,7 @@ def notify_bookmarks(x_notify_secret: str = Header(None)):
     if not expected or not x_notify_secret or not hmac.compare_digest(x_notify_secret, expected):
         raise HTTPException(status_code=401, detail="Invalid secret")
 
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        # Find bookmarked conferences with approaching or changed deadlines,
-        # excluding already-notified combinations via notification_log.
-        # Includes deadline_date in dedup key so A→B→C each gets a fresh slot.
-        cur.execute("""
+    rows = fetch_all("""
             SELECT dt.fcm_token, dt.user_id, conf.id AS conf_id, conf.title,
                    dl.dl_type, dl.deadline_date,
                    CASE
@@ -152,102 +140,98 @@ def notify_bookmarks(x_notify_secret: str = Header(None)):
                   END IS NOT NULL
               AND nl.id IS NULL
         """)
-        rows = cur.fetchall()
-        cur.close()
 
-        if not rows:
-            return {"ok": True, "targets": 0, "sent": 0, "message": "No approaching/changed deadlines"}
+    if not rows:
+        return {"ok": True, "targets": 0, "sent": 0, "message": "No approaching/changed deadlines"}
 
-        if not _ensure_firebase():
-            return {"ok": True, "targets": len(rows), "sent": 0, "message": "FCM not configured"}
+    if not _ensure_firebase():
+        return {"ok": True, "targets": len(rows), "sent": 0, "message": "FCM not configured"}
 
-        import firebase_admin.messaging as fcm
+    import firebase_admin.messaging as fcm
 
-        # Group by user to avoid sending multiple notifications per device
-        user_tokens = {}
-        user_payloads = {}  # user_id -> list of (conf_id, title, dl_type, reason, deadline_date)
-        for r in rows:
-            fcm_token, user_id, conf_id, title, dl_type, deadline_date, reason = r
-            user_tokens.setdefault(user_id, set()).add(fcm_token)
-            user_payloads.setdefault(user_id, []).append((conf_id, title, dl_type, reason, deadline_date))
+    # Group by user to avoid sending multiple notifications per device
+    user_tokens = {}
+    user_payloads = {}  # user_id -> list of (conf_id, title, dl_type, reason, deadline_date)
+    for r in rows:
+        fcm_token, user_id, conf_id, title, dl_type, deadline_date, reason = r
+        user_tokens.setdefault(user_id, set()).add(fcm_token)
+        user_payloads.setdefault(user_id, []).append((conf_id, title, dl_type, reason, deadline_date))
 
-        sent = 0
-        # Track which users actually received at least one token success — only log those
-        succeeded_users = set()
-        for user_id, tokens_set in user_tokens.items():
-            token_list = list(tokens_set)
-            payloads = user_payloads[user_id]
+    sent = 0
+    # Track which users actually received at least one token success — only log those
+    succeeded_users = set()
+    for user_id, tokens_set in user_tokens.items():
+        token_list = list(tokens_set)
+        payloads = user_payloads[user_id]
 
-            # Build per-conference notification bodies
-            if len(payloads) == 1:
-                conf_id, title, dl_type, reason, deadline_date = payloads[0]
-                if reason == "changed":
-                    body = f"Deadline updated for {title}"
-                else:
-                    days_left = (deadline_date - date.today()).days
-                    body = f"{title} — {dl_type.replace('_', ' ')} due in {days_left}d"
-                data = {
-                    "type": "deadline_change",
-                    "conference_id": str(conf_id),
-                    "screen": "calendar",
-                }
-            else:
-                # Multiple conferences — generic list body
-                names = ", ".join(p[1] for p in payloads[:3])
-                suffix = f" +{len(payloads) - 3}" if len(payloads) > 3 else ""
-                body = f"Deadlines approaching: {names}{suffix}"
-                data = {"type": "deadline_change", "screen": "upcoming"}
-
-            user_success = False
-            for i in range(0, len(token_list), 500):
-                batch = token_list[i:i + 500]
-                msg = fcm.MulticastMessage(
-                    notification=fcm.Notification(title="Call4Paper", body=body),
-                    data=data,
-                    tokens=batch,
-                )
-                resp = fcm.send_each_for_multicast(msg)
-                # Per-token detail — don't count batch as success if all tokens in batch failed
-                batch_success = 0
-                try:
-                    for idx, r in enumerate(resp.responses):
-                        if r.success:
-                            batch_success += 1
-                        else:
-                            # Log stale token for cleanup; exception holds the error
-                            tok = batch[idx] if idx < len(batch) else "unknown"
-                            logger.info("notify-bookmarks token failed user=%s token=%s.. err=%s", user_id, tok[:12], r.exception)
-                except Exception as e:
-                    logger.warning("notify-bookmarks response parse failed user=%s: %s", user_id, e)
-                    batch_success = resp.success_count
-
-                sent += batch_success
-                if batch_success > 0:
-                    user_success = True
-
-                if resp.failure_count:
-                    logger.warning("notify-bookmarks user %s batch %d: %d failures",
-                                   user_id, i // 500, resp.failure_count)
-
-            if user_success:
-                succeeded_users.add(user_id)
-
-        # Record only what was actually delivered — batch insert so we don't pay N commits
-        # Also, when a 'changed' fires, delete any prior 'approaching' for same (user, conference, type) so the 3-day warning can fire again for the new date
-        inserted = 0
-        # Collect rows to log (only succeeded users, with deadline_date for dedup)
-        to_insert = []
-        to_delete_approaching = []
-        for r in rows:
-            _, user_id, conf_id, _, dl_type, deadline_date, reason = r
-            if user_id not in succeeded_users:
-                continue
-            to_insert.append((user_id, conf_id, dl_type, deadline_date, reason))
+        # Build per-conference notification bodies
+        if len(payloads) == 1:
+            conf_id, title, dl_type, reason, deadline_date = payloads[0]
             if reason == "changed":
-                to_delete_approaching.append((user_id, conf_id, dl_type))
+                body = f"Deadline updated for {title}"
+            else:
+                days_left = (deadline_date - date.today()).days
+                body = f"{title} — {dl_type.replace('_', ' ')} due in {days_left}d"
+            data = {
+                "type": "deadline_change",
+                "conference_id": str(conf_id),
+                "screen": "calendar",
+            }
+        else:
+            # Multiple conferences — generic list body
+            names = ", ".join(p[1] for p in payloads[:3])
+            suffix = f" +{len(payloads) - 3}" if len(payloads) > 3 else ""
+            body = f"Deadlines approaching: {names}{suffix}"
+            data = {"type": "deadline_change", "screen": "upcoming"}
 
-        cur2 = conn.cursor()
-        try:
+        user_success = False
+        for i in range(0, len(token_list), 500):
+            batch = token_list[i:i + 500]
+            msg = fcm.MulticastMessage(
+                notification=fcm.Notification(title="Call4Paper", body=body),
+                data=data,
+                tokens=batch,
+            )
+            resp = fcm.send_each_for_multicast(msg)
+            # Per-token detail — don't count batch as success if all tokens in batch failed
+            batch_success = 0
+            try:
+                for idx, r in enumerate(resp.responses):
+                    if r.success:
+                        batch_success += 1
+                    else:
+                        # Log stale token for cleanup; exception holds the error
+                        tok = batch[idx] if idx < len(batch) else "unknown"
+                        logger.info("notify-bookmarks token failed user=%s token=%s.. err=%s", user_id, tok[:12], r.exception)
+            except Exception as e:
+                logger.warning("notify-bookmarks response parse failed user=%s: %s", user_id, e)
+                batch_success = resp.success_count
+
+            sent += batch_success
+            if batch_success > 0:
+                user_success = True
+
+            if resp.failure_count:
+                logger.warning("notify-bookmarks user %s batch %d: %d failures",
+                               user_id, i // 500, resp.failure_count)
+
+        if user_success:
+            succeeded_users.add(user_id)
+
+    # Record only what was actually delivered — batch insert via centralized DB helper
+    to_insert = []
+    to_delete_approaching = []
+    for r in rows:
+        _, user_id, conf_id, _, dl_type, deadline_date, reason = r
+        if user_id not in succeeded_users:
+            continue
+        to_insert.append((user_id, conf_id, dl_type, deadline_date, reason))
+        if reason == "changed":
+            to_delete_approaching.append((user_id, conf_id, dl_type))
+
+    inserted = 0
+    try:
+        with db_cursor(commit=True) as cur2:
             if to_delete_approaching:
                 for uid, cid, typ in to_delete_approaching:
                     try:
@@ -260,38 +244,22 @@ def notify_bookmarks(x_notify_secret: str = Header(None)):
                     "INSERT INTO notification_log (user_id, conference_id, deadline_type, deadline_date, reason) VALUES %s ON CONFLICT (user_id, conference_id, deadline_type, reason, deadline_date) DO NOTHING",
                     to_insert)
                 inserted = cur2.rowcount if cur2.rowcount != -1 else len(to_insert)
-            conn.commit()
-        except Exception as e:
-            logger.error("notify-bookmarks batch log insert failed: %s", e)
+    except Exception as e:
+        logger.error("notify-bookmarks batch log insert failed: %s", e)
+        # Fallback handled by db_cursor rollback; try per-row
+        inserted = 0
+        for uid, cid, typ, dl_date, rsn in to_insert:
             try:
-                conn.rollback()
-            except Exception:
-                pass
-            # Fallback to per-row with savepoints if batch fails
-            inserted = 0
-            for uid, cid, typ, dl_date, rsn in to_insert:
-                try:
-                    cur2.execute("INSERT INTO notification_log (user_id, conference_id, deadline_type, deadline_date, reason) VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING", (uid, cid, typ, dl_date, rsn))
-                    if cur2.rowcount:
+                with db_cursor(commit=True) as cur3:
+                    cur3.execute("INSERT INTO notification_log (user_id, conference_id, deadline_type, deadline_date, reason) VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING", (uid, cid, typ, dl_date, rsn))
+                    if cur3.rowcount:
                         inserted += 1
-                    conn.commit()
-                except Exception as e2:
-                    logger.error("per-row fallback failed %s %s %s: %s", uid, cid, typ, e2)
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
-                    continue
-        finally:
-            cur2.close()
+            except Exception as e2:
+                logger.error("per-row fallback failed %s %s %s: %s", uid, cid, typ, e2)
+                continue
 
-        logger.info("notify-bookmarks: %d targets, %d sent, %d logged", len(rows), sent, inserted)
-        return {"ok": True, "targets": len(rows), "sent": sent, "logged": inserted}
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+    logger.info("notify-bookmarks: %d targets, %d sent, %d logged", len(rows), sent, inserted)
+    return {"ok": True, "targets": len(rows), "sent": sent, "logged": inserted}
 
 
 @router.post("/internal/notify-digest")

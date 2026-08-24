@@ -37,15 +37,8 @@ def health():
     checks = {"ok": True}
     # DB
     try:
-        from database import get_conn
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT 1")
-        cur.close()
-        try:
-            conn.close()
-        except Exception:
-            pass
+        from database import fetch_one
+        fetch_one("SELECT 1")
         checks["db"] = "ok"
     except Exception as e:
         checks["db"] = f"error: {str(e)[:200]}"
