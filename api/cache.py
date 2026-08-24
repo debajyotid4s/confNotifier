@@ -92,7 +92,7 @@ def invalidate_conf(conference_id: int):
 def check_rate_limit(key: str, limit: int, window_sec: int) -> bool:
     """
     Return True if allowed, False if rate-limited.
-    Uses INCR; first increment sets EXPIRE atomically. No Redis → allow (fail open in dev).
+    Uses INCR; first increment sets EXPIRE. No Redis → allow (fail open in dev).
     """
     r = get_redis()
     if r is None:
@@ -100,20 +100,17 @@ def check_rate_limit(key: str, limit: int, window_sec: int) -> bool:
             logger.warning("rate limit %s fail-open: Redis configured but unavailable", key)
         return True
     try:
-        # Single INCR is atomic; set expiry only on first hit to avoid extra TTL round-trip
         count = r.incr(key)
         if count == 1:
             r.expire(key, window_sec)
         else:
-            # Key existed but had no TTL (e.g., manual delete) — ensure TTL
-            # Only check TTL if count is small to avoid overhead on every request
-            if count <= 2:
-                try:
-                    ttl = r.ttl(key)
-                    if ttl == -1:
-                        r.expire(key, window_sec)
-                except Exception:
-                    pass
+            # Ensure TTL exists even if key was created without expiry (e.g., TTL stripped) — must check every hit for correctness
+            try:
+                ttl = r.ttl(key)
+                if ttl == -1:
+                    r.expire(key, window_sec)
+            except Exception:
+                pass
         return count <= limit
     except Exception as e:
         logger.warning("Redis rate limit %s failed: %s", key, e)

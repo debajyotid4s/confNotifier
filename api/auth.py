@@ -49,12 +49,23 @@ def generate_username_candidate() -> str:
     return f"{secrets.choice(ADJECTIVES)}{secrets.choice(NOUNS)}{secrets.randbelow(90)+10}"
 
 def create_jwt(user_id: str, email: str) -> str:
-    # Embed token_version for revocation (Redis user:{id}:tv)
+    # Embed token_version for revocation (Redis user:{id}:tv) — fail-closed when Redis configured but unavailable
     tv = 0
     try:
-        from cache import get_token_version
+        from cache import get_token_version, _is_redis_configured, get_redis
+
+        if _is_redis_configured() and get_redis() is None:
+            logger.error("create_jwt fail-closed for %s: Redis configured but unavailable", user_id)
+            raise RuntimeError("Redis unavailable — cannot issue token")
         tv = get_token_version(user_id)
+        # Re-check Redis still available after tv fetch (race)
+        if _is_redis_configured() and get_redis() is None:
+            logger.error("create_jwt fail-closed after tv fetch for %s: Redis became unavailable", user_id)
+            raise RuntimeError("Redis unavailable — cannot issue token")
+    except RuntimeError:
+        raise
     except Exception:
+        # No Redis configured (dev) — allow tv=0; or transient error logged inside get_token_version
         pass
     payload = {
         "sub": user_id,

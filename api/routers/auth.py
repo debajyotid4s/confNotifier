@@ -161,10 +161,33 @@ def _upsert_user(*, lookup_col: str, lookup_val: str, email: str, body, client_i
                 logger.info("%s: created %s=%s username=%s ip=%s phone=%s", log_id, lookup_col, lookup_val, username, client_ip, body.phone_model)
                 return login_response(token, uid, username, email)
             except psycopg2.errors.UniqueViolation as e:
-                logger.warning("%s: unique violation attempt %d for %s: %s", log_id, attempt, candidate, e)
+                # Distinguish email vs username vs lookup_col collision
+                constraint = ""
+                try:
+                    constraint = (getattr(e.diag, "constraint_name", "") or "").lower()
+                    # Fallback to message parsing if diag not available
+                    if not constraint:
+                        constraint = str(e).lower()
+                except Exception:
+                    constraint = str(e).lower()
+                if "email" in constraint:
+                    logger.warning("%s: email conflict %s: %s", log_id, email, e)
+                    raise HTTPException(status_code=409, detail="Email already in use with another provider — use original sign-in method")
+                if "username" in constraint:
+                    logger.warning("%s: username collision attempt %d for %s: %s", log_id, attempt, candidate, e)
+                    continue
+                # lookup_col (google_subject_id / firebase_uid) race — concurrent insert, will be found on next loop
+                logger.warning("%s: upsert race on %s attempt %d: %s", log_id, lookup_col, attempt, e)
                 continue
         except HTTPException:
             raise
+        except RuntimeError as e:
+            # Redis unavailable during JWT issue — fail 503, not 500
+            if "Redis" in str(e):
+                logger.error("%s Redis unavailable: %s", log_id, e)
+                raise HTTPException(status_code=503, detail="Auth store unavailable — try again")
+            logger.error("%s error: %s", log_id, e)
+            raise HTTPException(status_code=500, detail="auth failed")
         except Exception as e:
             logger.error("%s error: %s", log_id, e)
             raise HTTPException(status_code=500, detail="auth failed")
