@@ -55,10 +55,28 @@ def deadlines_for_ids(conf_ids: list[int]) -> dict[int, dict[str, date]]:
     """Bulk-fetch deadlines from the normalized child table (indexed)."""
     if not conf_ids:
         return {}
-    rows = fetch_all(
-        "SELECT conference_id, type, deadline FROM conference_deadlines WHERE conference_id = ANY(%s)",
-        (conf_ids,),
-    )
+    try:
+        rows = fetch_all(
+            "SELECT conference_id, type, deadline FROM conference_deadlines WHERE conference_id = ANY(%s)",
+            (conf_ids,),
+        )
+    except Exception as e:
+        # Table may not exist yet (prod before migration_005) — fallback to wide columns
+        import logging
+
+        # Only suppress UndefinedTable; log other errors but degrade gracefully
+        try:
+            import psycopg2.errors
+
+            if isinstance(e, psycopg2.errors.UndefinedTable):
+                logging.getLogger(__name__).warning("deadlines_for_ids: conference_deadlines missing, fallback to wide cols")
+                return {}
+        except Exception:
+            pass
+        import logging as _lg
+
+        _lg.getLogger(__name__).warning("deadlines_for_ids failed: %s", e)
+        return {}
     m: dict[int, dict[str, date]] = {}
     for cid, typ, dl in rows:
         m.setdefault(cid, {})[typ] = dl
