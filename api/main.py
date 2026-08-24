@@ -29,8 +29,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["Authorization", "Content-Type", "X-Notify-Secret", "X-Forwarded-For"],
 )
 
 app.include_router(auth_router.router)
@@ -43,13 +43,14 @@ app.include_router(internal_router.router)
 @app.get("/health")
 def health():
     checks = {"ok": True}
-    # DB
+    # DB — do not leak exception details to unauthenticated caller
     try:
         from database import fetch_one
         fetch_one("SELECT 1")
         checks["db"] = "ok"
     except Exception as e:
-        checks["db"] = f"error: {str(e)[:200]}"
+        logging.getLogger(__name__).warning("health db check failed: %s", e)
+        checks["db"] = "error"
         checks["ok"] = False
     # Redis
     try:
@@ -61,14 +62,16 @@ def health():
         else:
             checks["redis"] = "not_configured" if not os.environ.get("REDIS_URL") else "unavailable"
     except Exception as e:
-        checks["redis"] = f"error: {str(e)[:200]}"
+        logging.getLogger(__name__).warning("health redis check failed: %s", e)
+        checks["redis"] = "error"
         checks["ok"] = False
     # Firebase
     try:
         from routers.internal import _ensure_firebase
         checks["firebase"] = "ok" if _ensure_firebase() else "not_configured"
     except Exception as e:
-        checks["firebase"] = f"error: {str(e)[:200]}"
+        logging.getLogger(__name__).warning("health firebase check failed: %s", e)
+        checks["firebase"] = "error"
     from fastapi.responses import JSONResponse
     return JSONResponse(content=checks, status_code=200 if checks["ok"] else 503)
 

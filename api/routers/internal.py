@@ -150,7 +150,8 @@ def notify_bookmarks(x_notify_secret: str = Header(None)):
         if isinstance(e, (psycopg2.errors.UndefinedColumn, psycopg2.errors.UndefinedTable)):
             logger.warning("notify_bookmarks: fallback to wide columns (missing table/col): %s", e)
             # Fallback: wide columns only, and notification_log without deadline_date (pre-migration_006)
-            rows = fetch_all("""
+            try:
+                rows = fetch_all("""
             SELECT dt.fcm_token, dt.user_id, conf.id AS conf_id, conf.title,
                    dl.dl_type, dl.deadline_date,
                    CASE
@@ -180,6 +181,33 @@ def notify_bookmarks(x_notify_secret: str = Header(None)):
                   END IS NOT NULL
               AND nl.id IS NULL
         """)
+            except psycopg2.errors.UndefinedTable as e2:
+                # notification_log table itself missing — skip dedup entirely
+                if "notification_log" in str(e2):
+                    logger.warning("notification_log missing, skip dedup: %s", e2)
+                    rows = fetch_all("""
+            SELECT dt.fcm_token, dt.user_id, conf.id AS conf_id, conf.title,
+                   dl.dl_type, dl.deadline_date,
+                   CASE
+                     WHEN dl.previous_date IS DISTINCT FROM dl.deadline_date AND dl.previous_date IS NOT NULL THEN 'changed'
+                     WHEN dl.deadline_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '3 days' THEN 'approaching'
+                   END AS reason
+            FROM device_tokens dt
+            JOIN bookmarks b ON b.user_id = dt.user_id
+            JOIN conferences conf ON conf.id = b.conference_id
+            CROSS JOIN LATERAL (
+                VALUES
+                    ('abstract',         conf.abstract_deadline,         conf.abstract_deadline_previous),
+                    ('full_paper',       conf.full_paper_deadline,       conf.full_paper_deadline_previous)
+            ) AS dl(dl_type, deadline_date, previous_date)
+            WHERE dl.deadline_date IS NOT NULL
+              AND CASE
+                    WHEN dl.previous_date IS DISTINCT FROM dl.deadline_date AND dl.previous_date IS NOT NULL THEN 'changed'
+                    WHEN dl.deadline_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '3 days' THEN 'approaching'
+                  END IS NOT NULL
+        """)
+                else:
+                    raise
         else:
             raise
 
@@ -289,14 +317,23 @@ def notify_bookmarks(x_notify_secret: str = Header(None)):
                         "INSERT INTO notification_log (user_id, conference_id, deadline_type, deadline_date, reason) VALUES %s ON CONFLICT (user_id, conference_id, deadline_type, reason, deadline_date) DO NOTHING",
                         to_insert)
                     inserted = cur2.rowcount if cur2.rowcount != -1 else len(to_insert)
-                except psycopg2.errors.UndefinedColumn:
-                    logger.warning("notification_log missing deadline_date — fallback to legacy schema")
+                except (psycopg2.errors.UndefinedColumn, psycopg2.errors.UndefinedTable) as e:
+                    if isinstance(e, psycopg2.errors.UndefinedTable) and "notification_log" not in str(e):
+                        raise
+                    logger.warning("notification_log missing deadline_date/table — fallback to legacy schema: %s", e)
                     # Legacy schema without deadline_date (pre-migration_006)
                     legacy = [(uid, cid, typ, rsn) for uid, cid, typ, _, rsn in to_insert]
-                    execute_values(cur2,
-                        "INSERT INTO notification_log (user_id, conference_id, deadline_type, reason) VALUES %s ON CONFLICT (user_id, conference_id, deadline_type, reason) DO NOTHING",
-                        legacy)
-                    inserted = cur2.rowcount if cur2.rowcount != -1 else len(legacy)
+                    try:
+                        execute_values(cur2,
+                            "INSERT INTO notification_log (user_id, conference_id, deadline_type, reason) VALUES %s ON CONFLICT (user_id, conference_id, deadline_type, reason) DO NOTHING",
+                            legacy)
+                        inserted = cur2.rowcount if cur2.rowcount != -1 else len(legacy)
+                    except psycopg2.errors.UndefinedTable as e2:
+                        if "notification_log" in str(e2):
+                            logger.warning("notification_log table missing, skip logging: %s", e2)
+                            inserted = 0
+                        else:
+                            raise
     except Exception as e:
         logger.error("notify-bookmarks batch log insert failed: %s", e)
         # Fallback handled by db_cursor rollback; try per-row
@@ -308,11 +345,21 @@ def notify_bookmarks(x_notify_secret: str = Header(None)):
                 with db_cursor(commit=True) as cur3:
                     try:
                         cur3.execute("INSERT INTO notification_log (user_id, conference_id, deadline_type, deadline_date, reason) VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING", (uid, cid, typ, dl_date, rsn))
-                    except psycopg2.errors.UndefinedColumn:
-                        cur3.execute("INSERT INTO notification_log (user_id, conference_id, deadline_type, reason) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING", (uid, cid, typ, rsn))
+                    except (psycopg2.errors.UndefinedColumn, psycopg2.errors.UndefinedTable) as e_inner:
+                        if isinstance(e_inner, psycopg2.errors.UndefinedTable) and "notification_log" not in str(e_inner):
+                            raise
+                        if isinstance(e_inner, psycopg2.errors.UndefinedColumn):
+                            cur3.execute("INSERT INTO notification_log (user_id, conference_id, deadline_type, reason) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING", (uid, cid, typ, rsn))
+                        else:
+                            logger.warning("notification_log table missing, skip per-row log")
+                            continue
                     if cur3.rowcount:
                         inserted += 1
             except Exception as e2:
+                # Skip logging if table missing — not a hard error
+                if "notification_log" in str(e2) and isinstance(e2, psycopg2.errors.UndefinedTable):
+                    logger.warning("notification_log missing, skip per-row: %s", e2)
+                    continue
                 logger.error("per-row fallback failed %s %s %s: %s", uid, cid, typ, e2)
                 continue
 

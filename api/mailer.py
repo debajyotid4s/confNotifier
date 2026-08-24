@@ -9,6 +9,7 @@ Env:
   RESEND_API_KEY, RESEND_FROM
 """
 import os
+import html
 import logging
 import smtplib
 import ssl
@@ -83,37 +84,41 @@ def send_email(to: str, subject: str, html: str, text: str | None = None) -> boo
 
 def send_verification_otp(to: str, code: str) -> bool:
     subject = "Verify your Call4Paper account — code inside"
-    html = f"""
+    esc_to = html.escape(to, quote=False)
+    esc_code = html.escape(code, quote=False)
+    html_body = f"""
     <div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;color:#1a1a1a">
       <div style="background:#53192D;color:#fff;padding:20px;text-align:center;border-radius:12px 12px 0 0">
         <h1 style="margin:0;font-size:22px">Call4Paper</h1>
         <p style="margin:4px 0 0;opacity:0.9;font-size:13px">Conference Tracker</p>
       </div>
       <div style="padding:24px;background:#fff;border:1px solid #e5e5e5;border-top:none;border-radius:0 0 12px 12px">
-        <p style="font-size:15px">You signed up with <b>{to}</b>. Use this code to verify your email:</p>
-        <p style="text-align:center;font-size:32px;letter-spacing:8px;font-weight:700;background:#f5f0f2;padding:16px;border-radius:10px;margin:16px 0">{code}</p>
+        <p style="font-size:15px">You signed up with <b>{esc_to}</b>. Use this code to verify your email:</p>
+        <p style="text-align:center;font-size:32px;letter-spacing:8px;font-weight:700;background:#f5f0f2;padding:16px;border-radius:10px;margin:16px 0">{esc_code}</p>
         <p style="font-size:13px;color:#666">Code expires in 10 minutes. If you didn't request this, ignore.</p>
       </div>
       <p style="font-size:11px;color:#999;text-align:center;margin-top:12px">This is an automated message from Call4Paper — please don't reply.</p>
     </div>
     """
     text = f"Your Call4Paper verification code is {code} (expires in 10 min) for {to}."
-    return send_email(to, subject, html, text)
+    return send_email(to, subject, html_body, text)
 
 
 def send_password_reset_otp(to: str, code: str) -> bool:
     subject = "Reset your Call4Paper password"
-    html = f"""
+    esc_to = html.escape(to, quote=False)
+    esc_code = html.escape(code, quote=False)
+    html_body = f"""
     <div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;color:#1a1a1a">
       <div style="background:#53192D;color:#fff;padding:20px;text-align:center;border-radius:12px 12px 0 0">
         <h1 style="margin:0;font-size:22px">Call4Paper</h1>
       </div>
       <div style="padding:24px;background:#fff;border:1px solid #e5e5e5;border-top:none;border-radius:0 0 12px 12px">
-        <p>Reset code for <b>{to}</b>:</p>
-        <p style="text-align:center;font-size:32px;letter-spacing:8px;font-weight:700;background:#f5f0f2;padding:16px;border-radius:10px">{code}</p>
+        <p>Reset code for <b>{esc_to}</b>:</p>
+        <p style="text-align:center;font-size:32px;letter-spacing:8px;font-weight:700;background:#f5f0f2;padding:16px;border-radius:10px">{esc_code}</p>
         <p style="font-size:13px;color:#666">Expires in 10 minutes. If you didn't ask, ignore.</p>
       </div>
     </div>
     """
     text = f"Your Call4Paper reset code is {code} for {to}."
-    return send_email(to, subject, html, text)
+    return send_email(to, subject, html_body, text)

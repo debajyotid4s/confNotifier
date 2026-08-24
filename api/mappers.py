@@ -61,33 +61,19 @@ def deadlines_for_ids(conf_ids: list[int]) -> dict[int, dict[str, date]]:
             (conf_ids,),
         )
     except Exception as e:
-        # Table may not exist yet (prod before migration_005) — fallback to wide columns
-        import logging
+        import psycopg2.errors
 
-        # Only suppress UndefinedTable; log other errors but degrade gracefully
-        try:
-            import psycopg2.errors
+        if isinstance(e, psycopg2.errors.UndefinedTable):
+            import logging
 
-            if isinstance(e, psycopg2.errors.UndefinedTable):
-                logging.getLogger(__name__).warning("deadlines_for_ids: conference_deadlines missing, fallback to wide cols")
-                return {}
-        except Exception:
-            pass
-        import logging as _lg
-
-        _lg.getLogger(__name__).warning("deadlines_for_ids failed: %s", e)
-        return {}
+            logging.getLogger(__name__).warning("deadlines_for_ids: conference_deadlines missing, fallback to wide cols")
+            return {}
+        # Re-raise genuine DB errors (timeouts, syntax) — do not mask
+        raise
     m: dict[int, dict[str, date]] = {}
     for cid, typ, dl in rows:
         m.setdefault(cid, {})[typ] = dl
     return m
-
-
-def _row_get(row, key: str, idx: int):
-    """Dict-safe accessor: prefers dict key, falls back to tuple index for legacy callers."""
-    if isinstance(row, dict):
-        return row.get(key)
-    return row[idx]
 
 
 def conference_row_to_out(row, dl_map: dict[int, dict], today: date, bookmarked: bool | None = None) -> dict:

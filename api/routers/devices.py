@@ -38,8 +38,22 @@ def upsert_device(body: DeviceIn, user=Depends(get_current_user)):
         row = cur.fetchone()
         if row and str(row[0]) != str(user["sub"]):
             raise HTTPException(status_code=409, detail="Token already registered to another user")
-        # Edge: row is None should not happen (concurrent delete), treat as retryable success
-        # Re-attempt insert once without RETURNING check - but we already in tx, just return ok
+        if row is None:
+            # Concurrent delete between INSERT and SELECT — retry once
+            cur.execute(
+                """
+                INSERT INTO device_tokens (user_id, fcm_token, updated_at)
+                VALUES (%s,%s, now())
+                ON CONFLICT (fcm_token) DO UPDATE SET updated_at=now() WHERE device_tokens.user_id = EXCLUDED.user_id
+                RETURNING id
+                """,
+                (user["sub"], token),
+            )
+            ret2 = cur.fetchone()
+            if ret2 is not None:
+                return {"ok": True}
+            raise HTTPException(status_code=500, detail="Failed to register device, try again")
+        # Same-user row exists but WHERE false shouldn't happen — treat as success after ensuring row
         return {"ok": True}
 
 @router.delete("/me/devices/{token}", status_code=204)

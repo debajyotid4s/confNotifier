@@ -36,11 +36,11 @@ def add_bookmark(conference_id: int, user=Depends(get_current_user)):
         if "foreign key" in str(e).lower() or "violates foreign key" in str(e).lower():
             raise HTTPException(status_code=404, detail="Conference not found")
         raise
-    # Invalidate cached conference detail (bookmarked flag is per-user, cached as conf:{id}:{user_id})
+    # Invalidate cached conference detail (exact + per-user variants, no collision conf:1 vs conf:10)
     try:
-        from cache import invalidate_prefix
+        from cache import invalidate_conf
 
-        invalidate_prefix(f"conf:{conference_id}")
+        invalidate_conf(conference_id)
     except Exception:
         pass
     return {"ok": True}
@@ -51,9 +51,9 @@ def remove_bookmark(conference_id: int, user=Depends(get_current_user)):
     with db_cursor(commit=True) as cur:
         cur.execute("DELETE FROM bookmarks WHERE user_id=%s AND conference_id=%s", (user["sub"], conference_id))
     try:
-        from cache import invalidate_prefix
+        from cache import invalidate_conf
 
-        invalidate_prefix(f"conf:{conference_id}")
+        invalidate_conf(conference_id)
     except Exception:
         pass
     return

@@ -151,31 +151,11 @@ def db_cursor(commit: bool = False, cursor_factory=None) -> Generator[psycopg2.e
 
 
 @contextmanager
-def db_transaction() -> Generator[psycopg2.extensions.cursor, None, None]:
-    """Yield a cursor inside a single transaction — commit on success, rollback on error.
-
-    Usage:
-        with db_transaction() as cur:
-            cur.execute("SELECT ...")
-            cur.execute("UPDATE ...")
-        # auto-commit
-    """
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            yield cur
-        conn.commit()
-    except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        raise
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+def db_transaction(cursor_factory=None) -> Generator[psycopg2.extensions.cursor, None, None]:
+    """Yield a cursor inside a single transaction — commit on success, rollback on error."""
+    # Reuse db_cursor(commit=True) to avoid duplication; db_cursor handles pool return/rollback.
+    with db_cursor(commit=True, cursor_factory=cursor_factory) as cur:
+        yield cur
 
 
 def fetch_one(sql: str, params=None):
