@@ -72,6 +72,7 @@ Call4Paper/.idea/
 Call4Paper/*.iml
 Call4Paper/app/*.iml
 Call4Paper/local.properties
+Call4Paper/gradle.properties
 Call4Paper/app/google-services.json
 Call4Paper/.kotlin/
 Call4Paper/captures/
@@ -95,3 +96,7 @@ Project_Report.tex
 
 # Local tooling state
 .opencode/
+
+# Source assets — not needed in repo
+Call4Paper/C4P_logo_source.png
+Call4Paper/conference_tracker_android_architecture-1.md
