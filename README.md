@@ -1,128 +1,154 @@
-# BD Conference Bot — Scraper + API + Android
+# Call4Paper — Bangladesh Conference Deadline Tracker
 
-Keeps track of Bangladeshi academic conference deadlines. Scrapes 80+ university homepages, cert logs and curated sources, extracts via Gemini 2.5 Flash, stores in Neon Postgres, and notifies via Telegram + Android push.
+> Academic conferences in Bangladesh are scattered across 80+ university websites with no central index. Researchers miss submission deadlines because there is no single place to track them. Call4Paper solves this.
 
-## Repo Layout
+---
 
-```
-scraper/        # Pipeline (GitHub Actions, 5×/day) — Playwright + Gemini
-api/            # FastAPI backend for the app (Render) — same Neon DB
-Call4Paper/     # Android app (Kotlin/Compose, minSdk 24, target 35)
-config/         # universities.json, special_sources.json
-db/             # schema.sql / migration.sql — now .gitignored, lives on Neon
-```
+## The Problem
 
-## Live Demo
+Bangladesh has **83+ universities** hosting academic conferences annually — ICCIT, ICECE, BECITHCON, ICCHE, SPICSCON, PEEIACON, and dozens more. But:
 
-- **Telegram:** private channel (ask for invite)
-- **API:** `https://api.call4paper.app` (after `api/` is deployed)
-- **Android:** `Call4Paper/app/build/outputs/apk/debug/app-debug.apk`
+- Deadlines are buried in individual university homepages, often updated silently
+- No centralized conference calendar exists for Bangladesh
+- Researchers rely on word-of-mouth or manual checking
+- By the time a conference is shared on social media, submission deadlines have often passed
+- Conference details change (deadline extensions, venue shifts) with no notification system
 
-## Deployment
+## The Solution
 
-| Service | Where | What |
-|---------|-------|------|
-| Scraper | GitHub Actions (`scraper.yml` 00,06,12,16,18 UTC, `verification` 04 UTC, `daily_reminder` 04 UTC) | `scraper/main.py` → Neon |
-| API | Render (`api/` rootDir) | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
-| App | Play Store / APK | Retrofit → API, FCM |
-
-### Deploy your own — Scraper (GitHub)
-
-1. Fork, set secrets: `DATABASE_URL` (Neon), `GOOGLE_AI_KEY`×3 (aistudio), `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHANNEL_ID`, `CERTSPOTTER_API_KEY`.
-2. `psql "$DATABASE_URL" -f api/migration_001_users.sql` (additive, never touches `conferences`).
-
-### Deploy your own — API (Render)
-
-1. Import repo to Render → **Root Directory: `api`** → Build `pip install -r requirements.txt` → Start `uvicorn main:app --host 0.0.0.0 --port $PORT` (see `render.yaml`).
-2. Env: `DATABASE_URL`, `JWT_SECRET` (generate), `NOTIFY_SECRET` (for `POST /internal/notify-scraper-run`), `GOOGLE_AUTH_DISABLE=0`.
-3. DB: same Neon as scraper — per-operation `psycopg2` (no pool, Neon idle-kill safe).
-
-### Deploy your own — Android
-
-1. `Call4Paper/app/google-services.json` from Firebase (project `call4paper`, package `com.call4paper.app`, SHA-1 added).
-2. `WEB_CLIENT_ID` in `feature/auth/GoogleAuth.kt:9` = Web client from Cloud Console.
-3. `gradle/libs.versions.toml` is the single source for AGP/Kotlin/Compose versions — run `./gradlew --refresh-dependencies && ./gradlew installDebug` (Gradle JDK **21**, `gradle-wrapper.properties` 8.11.1).
-
-## How It Works
+A **three-component pipeline** that discovers, extracts, and distributes conference deadlines automatically:
 
 ```
-GitHub Actions → scraper/main.py (per-op DB open/close)
-  ├─ discovery — homepage_links (requests→curl→Playwright stealth) + special + crt_monitor
-  ├─ requeue   — seen_links pending + failed_transient (6h/24h/72h)
-  ├─ extract   — Gemini (8000 chars, 3 keys 5 RPM/20/day, confidence ≥0.75)
-  ├─ save      — ON CONFLICT (website,date_start) + _previous preserves original
-  ├─ notify    — submission-only (abstract/full_paper) within 30d
-  └─ verify    — verifier.py every ≤8h, re-extracts raw_source→website, swap+context
-
-Neon ←→ FastAPI (same DB) ←→ Android (Retrofit, Room cache, DataStore JWT, FCM)
-                                   └── Telegram bot (Koyeb) also reads same DB
+┌─────────────────────────────────────────────────────────────────┐
+│                     SCRAPER PIPELINE                            │
+│  83 universities + 11 curated sources + certificate transparency │
+│  → Playwright (headless browser) → Gemini 2.5 Flash (LLM)       │
+│  → PostgreSQL (Neon) → Telegram channel + FCM push              │
+└──────────────┬──────────────────────────┬───────────────────────┘
+               │                          │
+               ▼                          ▼
+    ┌─────────────────┐      ┌──────────────────────┐
+    │  TELEGRAM BOT   │      │   FASTAPI BACKEND     │
+    │  (Early v1)     │      │   (REST API + FCM)    │
+    │  Channel posts  │      │   Auth + Bookmarks    │
+    │  + daily digest │      │   + Push notifs       │
+    └─────────────────┘      └──────────┬───────────┘
+                                        │
+                                        ▼
+                           ┌──────────────────────┐
+                           │   ANDROID APP         │
+                           │   (Kotlin + Compose)  │
+                           │   Calendar + Bookmarks│
+                           │   + Deadline alerts   │
+                           └──────────────────────┘
 ```
 
-### Deadline Fields — 5 types, submission-only notifications
+### How Discovery Works
 
-| Column | Label | Notified? |
-|--------|-------|-----------|
-| `abstract_deadline` | Abstract Submission | **yes** (`SUBMISSION_TYPES`) |
-| `full_paper_deadline` | Full Paper Submission | **yes** |
-| `notification_of_acceptance_deadline` | Notification of Acceptance | stored only |
-| `camera_ready_deadline` | Camera Ready | stored only |
-| `registration_deadline` | Registration | stored only |
+The scraper runs **5 times daily** via GitHub Actions and follows a multi-source discovery strategy:
 
-`schema.py:SUBMISSION_TYPES = [abstract, full_paper]` drives `notifier.py`, `main.py:_has_deadline_within_days`, `send_reminders.py`, `verifier.NOTIFY_TYPES`. Other types are stored for future use. Gemini returns `{"date","context"}` per type, `normalize_extraction` flattens to `YYYY-MM-DD` + label + context before `db.py`/`verifier`.
+1. **University Homepage Scanning** — Crawls 83 Bangladeshi university domains looking for outbound links matching conference patterns (`ic*`, `*con*`, `conference*`, `symposium*`). Uses a 3-tier fetch strategy: HTTP requests → curl → Playwright (headless Chromium with stealth mode).
 
-### Validation (submission-only, simple)
+2. **Certificate Transparency Monitoring** — Queries CertSpotter and crt.sh for new SSL certificates on university domains, catching conference sites before they appear on homepages.
 
-1. **Swap** `validation.py:19` — two-way `abstract ↔ full_paper` only (`SUBMISSION_TYPES`, index loop, not string compare).
-2. **Context** `validation.py:46` — `FIELD_KEYWORDS` must match own field, otherwise skip.
+3. **Curated Sources** — 11 hand-picked sources with custom scraping logic (ICCIT path probing, conf.info.bd table scraping, SUST/KUET/RUET subdomain detection).
 
-Chronological check removed — site order is authoritative.
+### How Extraction Works
 
-## Database
+Each candidate URL is passed to **Gemini 2.5 Flash** with structured prompting. The LLM extracts:
+- Title, dates, city, organizer, category
+- 5 deadline types (abstract, full paper, acceptance notification, camera-ready, registration)
+- Confidence score (threshold: ≥0.75)
 
-| Table | Purpose |
-|-------|---------|
-| `conferences` | unique `(website,date_start)`, 5×3 deadlines + legacy + `telegram_messages` |
-| `seen_links` | `pending → extracted/not_conference/low_confidence/failed_permanent` + retry |
-| `users` / `bookmarks` / `device_tokens` | app-owned (additive migration `api/migration_001_users.sql`) |
-| `telegram_messages` | `website, message_id` for auto-deletion of false alerts |
-| `domain_stats`, `certspotter_cursor` | scraper state |
+A validation layer catches swap errors (abstract vs. full paper), keyword mismatches, and low-confidence extractions. Three API keys are rotated round-robin for rate limit management (60 extractions/day).
 
-## API (FastAPI, `api/`)
+### How Notification Works
 
-| Method | Path | Auth | Purpose |
-|--------|------|------|---------|
-| POST | `/auth/google` | — | Google `id_token` → JWT (loop on UNIQUE username) |
-| POST | `/auth/logout` | Bearer | stateless |
-| GET/DELETE | `/me` | Bearer | profile / cascade delete |
-| GET | `/conferences/calendar?month=YYYY-MM` | — | overlap month |
-| GET | `/conferences/upcoming?limit=30` | — | soonest |
-| GET | `/conferences/{id}` | — | detail |
-| GET/POST/DELETE | `/me/bookmarks…` | Bearer | idempotent |
-| POST/DELETE | `/me/devices` | Bearer | FCM token upsert |
-| POST | `/internal/notify-scraper-run` | `X-Notify-Secret` | workflow hook → daily digest |
-| GET | `/health` | — | |
+- **Telegram Channel** — New conferences with deadlines within 30 days are posted to a private channel with formatted messages, urgency indicators, and auto-deletion of false alerts
+- **Android Push (FCM)** — Targeted notifications for bookmarked conferences when deadlines change; daily digest broadcasts
+- **Deadline Re-verification** — Every 8 hours, upcoming conferences are re-extracted and changes are notified
 
-`GET /conferences/*` are read-only against scraper-populated `conferences`.
+---
 
-## Android (`Call4Paper/`)
+## Evolution
 
-Kotlin 2.0.21, AGP 8.7.3, Compose BOM 2024.09.03, Hilt, Room, Retrofit+OkHttp, DataStore, WorkManager, Credential Manager, FCM, SplashScreen. `compileSdk/targetSdk 35`, `minSdk 24`, edge-to-edge + `WindowSizeClass` (Compact <600dp / Medium 600–840dp / Expanded >840dp), `dp`/`sp` only, vectors, `BoxWithConstraints`/`LazyColumn`.
+### Phase 1: Telegram Bot
 
-Flow: `Splash (TokenManager peek) → Login (Continue with Google → POST /auth/google → DataStore JWT) → Calendar (Room single source, `refreshCalendar` on month change) → Upcoming/Conference/Account/Bookmarks` + bottom nav, `POST_NOTIFICATIONS` after login, `FCM → POST /me/devices`.
+The project began as a Telegram notification bot — a scraper that posted conference discoveries to a private channel. It solved the core problem (centralized discovery) but required users to actively monitor the channel.
 
-## Running Locally
+### Phase 2: REST API
 
-```bash
-python -m venv venv && source venv/bin/activate
-pip install -e . && playwright install --with-deps chromium
-export DATABASE_URL="postgresql://..." GOOGLE_AI_KEY="..." TELEGRAM_BOT_TOKEN="..."
-python scraper/main.py
+A FastAPI backend was added to serve structured conference data, enabling third-party integrations and an Android app. The API provides calendar views, upcoming deadlines, and user accounts with bookmarks.
 
-# API
-cd api && DATABASE_URL="..." JWT_SECRET="dev" GOOGLE_AUTH_DISABLE=1 uvicorn main:app --host 0.0.0.0 --port 8000
-# App: adb reverse tcp:8000 tcp:8000, then http://127.0.0.1:8000 in RetrofitModule
-```
+### Phase 3: Android App (Call4Paper)
 
-## Tests
+A native Android app that personalizes the experience — users bookmark conferences, see deadline urgency color-coded, and receive push notifications when deadlines for their bookmarks change. The app works offline via Room local caching.
 
-`tests/` — no DB/network: `test_validation` (swap/context), `test_schema` (columns/ranges), `test_utils`, `test_notifier` (now asserts submission-only). `pip install -e '.[dev]' && pytest -q` (29 passed) + `ci.yml`.
+---
+
+## Tech Stack
+
+| Component | Technology | Purpose |
+|-----------|-----------|---------|
+| **Scraper** | Python 3.11, Playwright, BeautifulSoup | Headless browser scraping of 83+ university sites |
+| **LLM** | Gemini 2.5 Flash (3-key rotation) | Structured extraction of conference metadata |
+| **Database** | Neon PostgreSQL (serverless) | Conference data, users, bookmarks, device tokens |
+| **API** | FastAPI, psycopg2, Redis | REST backend with auth, caching, rate limiting |
+| **Auth** | Firebase Auth + Google Sign-In + JWT | Passwordless authentication with 7-day tokens |
+| **Telegram** | python-telegram-bot | Channel notifications, daily digests, auto-cleanup |
+| **Android** | Kotlin, Jetpack Compose, Material3 | Native UI with calendar, bookmarks, push |
+| **Android DI** | Hilt, Room, Retrofit, OkHttp | Dependency injection, local cache, networking |
+| **Push** | Firebase Cloud Messaging | Targeted deadline-change + daily digest notifications |
+| **CI/CD** | GitHub Actions | 5×/day scraper, reminders, digests |
+| **Hosting** | Render (API), GitHub Actions (scraper) | Serverless-friendly deployment |
+
+---
+
+## Key Numbers
+
+| Metric | Value |
+|--------|-------|
+| University domains scraped | **83** |
+| Curated special sources | **11** |
+| Scraper runs per day | **5** (every 4-6 hours) |
+| LLM extraction capacity | **60/day** (3 keys × 20 RPD) |
+| Confidence threshold | **≥0.75** |
+| Notification window | **30 days** before deadline |
+| Deadline types tracked | **5** (2 notified, 3 stored) |
+| Unit tests | **29** (validation, schema, notifier) |
+| Android min SDK | **24** (Android 7.0+) |
+| Android target SDK | **35** (Android 15) |
+| Release APK size | **3.3 MB** |
+
+---
+
+## Architecture Decisions
+
+- **Per-operation DB connections** (no pool) — Neon serverless kills idle connections; opening/closing per request is more reliable than managing a pool
+- **LLM over regex** — Conference websites have wildly inconsistent HTML structures; Gemini 2.5 Flash handles this variability with structured extraction
+- **3-tier fetch** — Some university sites block plain HTTP requests; the escalation from requests → curl → Playwright ensures maximum coverage
+- **Dual notification** — Telegram for passive discovery (channel browsing), FCM for active alerts (deadline changes on bookmarked conferences)
+- **Room cache** — Android app works offline after first load; conferences are cached locally with TTL-based freshness
+- **Soft-delete with 7-day grace** — Account deletion is reversible within 7 days; after that, data is permanently purged
+- **Mutex-guarded calendar cache** — Prevents concurrent refresh requests for the same month
+
+---
+
+## Future Work
+
+- [ ] **Email notifications** — Weekly digest email for users who prefer email over push
+- [ ] **Conference recommendations** — LLM-powered suggestions based on bookmark history and research interests
+- [ ] **Deadline countdown widget** — Android home screen widget showing nearest deadlines
+- [ ] **Multi-language support** — Bengali UI for broader accessibility
+- [ ] **Paper submission tracker** — Let users mark which conferences they've submitted to and track review status
+- [ ] **ICLR/NeurIPS/ICML integration** — Expand beyond Bangladesh to major international conferences
+- [ ] **Smart reminders** — Increase notification frequency as deadline approaches (weekly → daily → hourly)
+- [ ] **Conference comparison** — Side-by-side view of multiple conferences (dates, topics, venues)
+- [ ] **iOS app** — Flutter/SwiftUI companion for iPhone users
+- [ ] **Web dashboard** — Browser-based interface for researchers without Android devices
+
+---
+
+## License
+
+Private — All rights reserved.
