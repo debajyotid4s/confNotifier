@@ -2,7 +2,7 @@
 DB pooling — use Neon's PgBouncer (pooled DSN) or a local SimpleConnectionPool.
 Per-request connect was a scraper workaround for idle kills; for the API we pool
 with keepalives so we don't pay TCP+TLS+auth per request. Falls back to per-op
-connect if pool isn't available (e.g. no REDIS_URL in dev).
+connect only if pool was never initialized (dev without DATABASE_URL).
 """
 import os
 import time
@@ -45,6 +45,13 @@ class _PooledConnection:
         return getattr(self._conn, name)
     def close(self):
         try:
+            # If connection is in aborted transaction, rollback before returning to pool
+            if self._conn.closed == 0:
+                try:
+                    if self._conn.get_transaction_status() != psycopg2.extensions.TRANSACTION_STATUS_IDLE:
+                        self._conn.rollback()
+                except Exception:
+                    pass
             self._pool.putconn(self._conn)
         except Exception:
             try:
@@ -54,8 +61,14 @@ class _PooledConnection:
     # Support `with get_conn() as conn:` if ever used
     def __enter__(self):
         return self
-    def __exit__(self, *a):
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
         self.close()
+        return False
 
 def get_conn():
     pool = _get_pool()
@@ -68,16 +81,22 @@ def get_conn():
                     with conn.cursor() as cur:
                         cur.execute("SELECT 1")
                 except psycopg2.Error:
-                    pool.putconn(conn, close=True)
+                    try:
+                        pool.putconn(conn, close=True)
+                    except Exception:
+                        pass
                     raise
                 return _PooledConnection(conn, pool)
             except psycopg2.Error as e:
                 logger.error("DB pool getconn attempt %d/3 failed: %s", attempt + 1, e)
                 if attempt < 2:
                     time.sleep(0.5)
-        # Fall through to direct connect
-    # Fallback: direct connect (dev or pool exhausted)
-    dsn = os.environ["DATABASE_URL"]
+        # Pool exists but exhausted — don't bypass max, fail fast
+        raise RuntimeError("DB pool exhausted after 3 attempts")
+    # Fallback: direct connect only if pool was never initialized (dev without DATABASE_URL or pool init failed)
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        raise RuntimeError("DATABASE_URL not set")
     for attempt in range(3):
         try:
             return psycopg2.connect(dsn, keepalives=1, keepalives_idle=30, connect_timeout=5)

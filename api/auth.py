@@ -22,7 +22,12 @@ NOUNS = ["Comet","River","Forest","Falcon","Panda","Tiger","Ocean","Meadow","Sum
 def verify_google_id_token(id_token_str: str) -> dict:
     """Verify against Google's public keys server-side. Never trust client claims."""
     if os.environ.get("GOOGLE_AUTH_DISABLE") == "1":
-        logger.warning("GOOGLE_AUTH_DISABLE=1 — skipping Google verification (dev only)")
+        # Fail-closed in production — this flag must never ship to prod
+        env = os.environ.get("ENV", os.environ.get("RENDER_ENV", "production" if os.environ.get("RENDER") else "development"))
+        if env == "production":
+            logger.error("GOOGLE_AUTH_DISABLE=1 blocked in production env=%s", env)
+            raise RuntimeError("GOOGLE_AUTH_DISABLE not allowed in production")
+        logger.warning("GOOGLE_AUTH_DISABLE=1 — skipping Google verification (dev only, env=%s)", env)
         import json
         try:
             return json.loads(id_token_str)
@@ -66,6 +71,9 @@ def decode_jwt(token: str) -> dict:
             raise jwt.JWTError("Token revoked")
     except jwt.JWTError:
         raise
-    except Exception:
-        pass  # Redis down → fail open (token still valid)
+    except Exception as e:
+        # Redis down → fail open but visible
+        if os.environ.get("REDIS_URL"):
+            logger.warning("decode_jwt fail-open for sub=%s: Redis unavailable (%s)", payload.get("sub"), e)
+        pass
     return payload

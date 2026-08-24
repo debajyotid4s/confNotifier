@@ -1,7 +1,11 @@
+import logging
+import os
 from fastapi import APIRouter, Depends, HTTPException
 import psycopg2
 from database import get_conn
 from routers.auth import get_current_user
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -31,8 +35,14 @@ def delete_me(user=Depends(get_current_user)):
         try:
             from cache import bump_token_version
             bump_token_version(user["sub"])
-        except Exception:
-            pass
+        except Exception as e:
+            if os.environ.get("REDIS_URL"):
+                logger.error("delete bump tv failed (Redis configured): %s", e)
+                raise HTTPException(status_code=503, detail="Delete failed — try again")
+            logger.warning("delete bump tv failed (no Redis): %s", e)
         return {"ok": True}
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
