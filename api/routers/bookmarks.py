@@ -2,7 +2,7 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from database import db_cursor, fetch_all, fetch_one
+from database import db_cursor, fetch_all, fetch_all_dict, fetch_one
 from mappers import CONF_SELECT, deadlines_for_ids, conference_row_to_out
 from routers.auth import get_current_user
 
@@ -11,15 +11,15 @@ router = APIRouter()
 
 @router.get("/me/bookmarks")
 def list_bookmarks(user=Depends(get_current_user)):
-    rows = fetch_all(
+    rows = fetch_all_dict(
         f"""
         {CONF_SELECT}
-        JOIN bookmarks b ON b.conference_id = id
-        WHERE b.user_id = %s ORDER BY date_start ASC
+        JOIN bookmarks b ON b.conference_id = conferences.id
+        WHERE b.user_id = %s ORDER BY date_start ASC, conferences.id ASC
         """,
         (user["sub"],),
     )
-    dl_map = deadlines_for_ids([r[0] for r in rows])
+    dl_map = deadlines_for_ids([r["id"] for r in rows])
     today = date.today()
     return [conference_row_to_out(r, dl_map, today, bookmarked=True) for r in rows]
 
@@ -36,6 +36,13 @@ def add_bookmark(conference_id: int, user=Depends(get_current_user)):
         if "foreign key" in str(e).lower() or "violates foreign key" in str(e).lower():
             raise HTTPException(status_code=404, detail="Conference not found")
         raise
+    # Invalidate cached conference detail (bookmarked flag is per-user, cached as conf:{id}:{user_id})
+    try:
+        from cache import invalidate_prefix
+
+        invalidate_prefix(f"conf:{conference_id}")
+    except Exception:
+        pass
     return {"ok": True}
 
 
@@ -43,4 +50,10 @@ def add_bookmark(conference_id: int, user=Depends(get_current_user)):
 def remove_bookmark(conference_id: int, user=Depends(get_current_user)):
     with db_cursor(commit=True) as cur:
         cur.execute("DELETE FROM bookmarks WHERE user_id=%s AND conference_id=%s", (user["sub"], conference_id))
+    try:
+        from cache import invalidate_prefix
+
+        invalidate_prefix(f"conf:{conference_id}")
+    except Exception:
+        pass
     return

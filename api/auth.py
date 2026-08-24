@@ -9,11 +9,15 @@ from google.auth.transport import requests as google_requests
 
 logger = logging.getLogger(__name__)
 
-JWT_SECRET = os.environ.get("JWT_SECRET")
-if not JWT_SECRET:
-    raise RuntimeError("JWT_SECRET env var is required — set a strong random value, no fallback")
 JWT_ALG = "HS256"
 JWT_EXP_DAYS = 7
+
+
+def _get_jwt_secret() -> str:
+    s = os.environ.get("JWT_SECRET")
+    if not s:
+        raise RuntimeError("JWT_SECRET env var is required — set a strong random value, no fallback")
+    return s
 # For revocation: token_version per user (Redis user:{id}:tv), embedded in JWT as `tv`
 
 ADJECTIVES = ["Quiet","Bright","Calm","Swift","Bold","Kind","Wise","Neat","Lively","Hazy","Cool","Warm","Merry","Sly","Keen","Gentle","Amber","Crimson","Silver","Golden"]
@@ -42,7 +46,8 @@ def verify_google_id_token(id_token_str: str) -> dict:
     return info
 
 def generate_username_candidate() -> str:
-    return f"{random.choice(ADJECTIVES)}{random.choice(NOUNS)}{random.randint(10,99)}"
+    import secrets
+    return f"{secrets.choice(ADJECTIVES)}{secrets.choice(NOUNS)}{secrets.randbelow(90)+10}"
 
 def create_jwt(user_id: str, email: str) -> str:
     # Embed token_version for revocation (Redis user:{id}:tv)
@@ -59,21 +64,33 @@ def create_jwt(user_id: str, email: str) -> str:
         "exp": datetime.now(timezone.utc) + timedelta(days=JWT_EXP_DAYS),
         "iat": datetime.now(timezone.utc),
     }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+    return jwt.encode(payload, _get_jwt_secret(), algorithm=JWT_ALG)
 
 def decode_jwt(token: str) -> dict:
-    payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+    payload = jwt.decode(token, _get_jwt_secret(), algorithms=[JWT_ALG])
     # Check revocation: tv must match current version
+    # Fail-closed when Redis is configured but unavailable (prevents revoked token reuse)
     try:
-        from cache import get_token_version
+        from cache import get_token_version, _is_redis_configured
+        from cache import get_redis as _get_redis_check
+
+        if _is_redis_configured():
+            r = _get_redis_check()
+            if r is None:
+                logger.error("decode_jwt fail-closed for sub=%s: Redis configured but unavailable", payload.get("sub"))
+                raise jwt.JWTError("Token revoked - auth store unavailable")
         current = get_token_version(payload.get("sub", ""))
+        # Re-check after get_token_version: if Redis went down between the two calls, fail closed
+        if _is_redis_configured() and _get_redis_check() is None:
+            logger.error("decode_jwt fail-closed for sub=%s: Redis became unavailable", payload.get("sub"))
+            raise jwt.JWTError("Token revoked - auth store unavailable")
         if payload.get("tv", 0) != current:
             raise jwt.JWTError("Token revoked")
     except jwt.JWTError:
         raise
     except Exception as e:
-        # Redis down → fail open but visible
         if os.environ.get("REDIS_URL"):
-            logger.warning("decode_jwt fail-open for sub=%s: Redis unavailable (%s)", payload.get("sub"), e)
+            logger.warning("decode_jwt error for sub=%s: %s", payload.get("sub"), e)
+            raise jwt.JWTError("Token verification unavailable")
         pass
     return payload

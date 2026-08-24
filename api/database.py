@@ -110,7 +110,7 @@ def get_conn():
 
 
 @contextmanager
-def db_cursor(commit: bool = False) -> Generator[psycopg2.extensions.cursor, None, None]:
+def db_cursor(commit: bool = False, cursor_factory=None) -> Generator[psycopg2.extensions.cursor, None, None]:
     """Yield a cursor with automatic commit/rollback and connection return.
 
     Usage:
@@ -121,11 +121,20 @@ def db_cursor(commit: bool = False) -> Generator[psycopg2.extensions.cursor, Non
 
         with db_cursor(commit=True) as cur:
             cur.execute("INSERT ...")
+
+        with db_cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT ...")
+            row = cur.fetchone()  # dict
     """
     conn = get_conn()
     try:
-        with conn.cursor() as cur:
-            yield cur
+        # cursor_factory=None -> default tuple cursor; RealDictCursor -> dict rows
+        if cursor_factory is not None:
+            with conn.cursor(cursor_factory=cursor_factory) as cur:
+                yield cur
+        else:
+            with conn.cursor() as cur:
+                yield cur
         if commit:
             conn.commit()
     except Exception:
@@ -177,6 +186,20 @@ def fetch_one(sql: str, params=None):
 
 def fetch_all(sql: str, params=None):
     with db_cursor() as cur:
+        cur.execute(sql, params)
+        return cur.fetchall()
+
+
+def fetch_one_dict(sql: str, params=None):
+    """Fetch one row as dict (RealDictCursor)."""
+    with db_cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(sql, params)
+        return cur.fetchone()
+
+
+def fetch_all_dict(sql: str, params=None):
+    """Fetch all rows as dicts (RealDictCursor)."""
+    with db_cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(sql, params)
         return cur.fetchall()
 

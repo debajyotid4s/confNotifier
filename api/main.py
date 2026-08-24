@@ -9,13 +9,21 @@ from routers import bookmarks as bm_router
 from routers import devices as dev_router
 from routers import internal as internal_router
 
-logging.basicConfig(level=logging.INFO)
+# Logging — guard against double basicConfig when imported in tests
+if not logging.getLogger().hasHandlers():
+    logging.basicConfig(level=logging.INFO)
+
 app = FastAPI(title="Call4Paper API", version="0.1.0")
 
 import os
 
 # Restrict CORS — wildcard + credentials is rejected by browsers and overly permissive
-_cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "https://confnotifier.onrender.com,http://localhost:3000,http://127.0.0.1:8000").split(",") if o.strip()]
+def _get_cors_origins() -> list[str]:
+    raw = os.environ.get("CORS_ORIGINS", "https://confnotifier.onrender.com,http://localhost:3000,http://127.0.0.1:8000")
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+
+_cors_origins = _get_cors_origins()
 
 app.add_middleware(
     CORSMiddleware,
