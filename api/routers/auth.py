@@ -30,7 +30,7 @@ class AuthLoginIn(BaseModel):
     device_info: str | None = None
 
 def get_current_user(authorization: str = Header(None)):
-    if not authorization or not authorization.strip() == "" or not authorization.startswith("Bearer "):
+    if not authorization or authorization.strip() == "" or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing token")
     # Extract token after "Bearer " and validate non-empty
     token = authorization[7:].strip() if len(authorization) > 7 else ""

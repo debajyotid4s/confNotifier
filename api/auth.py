@@ -1,5 +1,5 @@
 import os
-import random
+import secrets
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -46,7 +46,6 @@ def verify_google_id_token(id_token_str: str) -> dict:
     return info
 
 def generate_username_candidate() -> str:
-    import secrets
     return f"{secrets.choice(ADJECTIVES)}{secrets.choice(NOUNS)}{secrets.randbelow(90)+10}"
 
 def create_jwt(user_id: str, email: str) -> str:

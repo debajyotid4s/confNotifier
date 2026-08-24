@@ -33,14 +33,15 @@ def calendar(month: str = Query(..., pattern=r"^\d{4}-\d{2}$")):
                 (start, end),
             )
         except Exception as e:
-            # Table not yet migrated on prod — fallback to wide columns
-            import logging, psycopg2.errors
+            import psycopg2.errors
 
             if isinstance(e, psycopg2.errors.UndefinedTable):
+                import logging
+
                 logging.getLogger(__name__).warning("calendar: conference_deadlines missing, fallback to wide cols")
+                cd_rows = None
             else:
-                logging.getLogger(__name__).warning("calendar: conference_deadlines query failed: %s", e)
-            cd_rows = None
+                raise
         if cd_rows:
             conf_ids = list({r[0] for r in cd_rows})
             rows = fetch_all_dict(f"{CONF_SELECT} WHERE id = ANY(%s)", (conf_ids,))
@@ -78,13 +79,15 @@ def upcoming(limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0))
                 (limit, offset),
             )
         except Exception as e:
-            import logging, psycopg2.errors
+            import psycopg2.errors
 
             if isinstance(e, psycopg2.errors.UndefinedTable):
+                import logging
+
                 logging.getLogger(__name__).warning("upcoming: conference_deadlines missing, fallback to wide cols")
+                cd_rows = None
             else:
-                logging.getLogger(__name__).warning("upcoming: conference_deadlines query failed: %s", e)
-            cd_rows = None
+                raise
         if cd_rows:
             conf_ids = [r[0] for r in cd_rows]
             rows = fetch_all_dict(f"{CONF_SELECT} WHERE id = ANY(%s)", (conf_ids,))

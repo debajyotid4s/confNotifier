@@ -72,6 +72,23 @@ def invalidate_prefix(prefix: str):
     except Exception as e:
         logger.warning("Redis invalidate %s* failed: %s", prefix, e)
 
+
+def invalidate_exact(key: str):
+    r = get_redis()
+    if r is None:
+        return
+    try:
+        r.delete(key)
+    except Exception as e:
+        logger.warning("Redis delete %s failed: %s", key, e)
+
+
+def invalidate_conf(conference_id: int):
+    """Invalidate cached conference detail for a given id — exact + per-user variants."""
+    # Exact unauth key `conf:{id}` + per-user `conf:{id}:*` without colliding `conf:1` vs `conf:10`
+    invalidate_exact(f"conf:{conference_id}")
+    invalidate_prefix(f"conf:{conference_id}:")
+
 def check_rate_limit(key: str, limit: int, window_sec: int) -> bool:
     """
     Return True if allowed, False if rate-limited.
