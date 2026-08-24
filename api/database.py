@@ -7,8 +7,12 @@ connect only if pool was never initialized (dev without DATABASE_URL).
 import os
 import time
 import logging
+from contextlib import contextmanager
+from typing import Generator
+
 import psycopg2
 import psycopg2.pool
+import psycopg2.extras
 
 logger = logging.getLogger(__name__)
 
@@ -103,3 +107,82 @@ def get_conn():
             if attempt < 2:
                 time.sleep(2)
     raise RuntimeError("DB unavailable after 3 attempts")
+
+
+@contextmanager
+def db_cursor(commit: bool = False) -> Generator[psycopg2.extensions.cursor, None, None]:
+    """Yield a cursor with automatic commit/rollback and connection return.
+
+    Usage:
+        with db_cursor() as cur:
+            cur.execute("SELECT ...")
+            row = cur.fetchone()
+        # commit=False by default — read-only
+
+        with db_cursor(commit=True) as cur:
+            cur.execute("INSERT ...")
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            yield cur
+        if commit:
+            conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@contextmanager
+def db_transaction() -> Generator[psycopg2.extensions.cursor, None, None]:
+    """Yield a cursor inside a single transaction — commit on success, rollback on error.
+
+    Usage:
+        with db_transaction() as cur:
+            cur.execute("SELECT ...")
+            cur.execute("UPDATE ...")
+        # auto-commit
+    """
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            yield cur
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def fetch_one(sql: str, params=None):
+    with db_cursor() as cur:
+        cur.execute(sql, params)
+        return cur.fetchone()
+
+
+def fetch_all(sql: str, params=None):
+    with db_cursor() as cur:
+        cur.execute(sql, params)
+        return cur.fetchall()
+
+
+def execute(sql: str, params=None, commit: bool = True):
+    """Execute a single statement (INSERT/UPDATE/DELETE) with auto-commit."""
+    with db_cursor(commit=commit) as cur:
+        cur.execute(sql, params)
+        return cur.rowcount
