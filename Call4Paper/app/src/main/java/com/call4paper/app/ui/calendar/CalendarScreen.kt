@@ -13,14 +13,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material3.*
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
@@ -28,58 +25,14 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
-import com.call4paper.app.data.local.ConferenceEntity
-import com.call4paper.app.data.repository.ConferenceRepository
 import com.call4paper.app.ui.theme.urgencyColorFor
 import com.call4paper.app.ui.theme.urgencyColorForDate
-import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.TextStyle
 import java.util.Locale
-import javax.inject.Inject
-
-private val CardBg = Color(0xFFF2F2F7)
-@Composable private fun calendarCardBg() = MaterialTheme.colorScheme.surfaceVariant
-
-data class CalendarUiState(val month: YearMonth = YearMonth.now(), val selected: LocalDate = LocalDate.now(), val items: List<ConferenceEntity> = emptyList(), val loading: Boolean = false, val error: String? = null)
-
-@HiltViewModel
-class CalendarViewModel @Inject constructor(private val repo: ConferenceRepository) : ViewModel() {
-    private val _month = MutableStateFlow(YearMonth.now())
-    private val _selected = MutableStateFlow(LocalDate.now())
-    private val _state = MutableStateFlow(CalendarUiState())
-    val state: StateFlow<CalendarUiState> = _state.asStateFlow()
-    init {
-        viewModelScope.launch {
-            combine(_month, _selected, repo.observeAll()) { m, sel, list ->
-                val monthStr = String.format("%04d-%02d", m.year, m.monthValue)
-                CalendarUiState(month = m, selected = sel, items = list.filter {
-                    it.abstractDeadline?.startsWith(monthStr) == true || it.fullPaperDeadline?.startsWith(monthStr) == true
-                })
-            }.collect { _state.value = it }
-        }
-        viewModelScope.launch { _month.collect { refresh(it) } }
-    }
-    fun setMonth(m: YearMonth) { _month.value = m }
-    fun select(date: LocalDate) { _selected.value = date }
-    fun prev() { _month.value = _month.value.minusMonths(1) }
-    fun next() { _month.value = _month.value.plusMonths(1) }
-    fun refresh(m: YearMonth = _month.value) {
-        viewModelScope.launch {
-            _state.value = _state.value.copy(loading = true)
-            try { repo.refreshCalendar(String.format("%04d-%02d", m.year, m.monthValue)) } catch (_: Exception) { _state.value = _state.value.copy(error = "Could not load calendar — check your connection") }
-            _state.value = _state.value.copy(loading = false)
-        }
-    }
-}
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -90,7 +43,6 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
             .mapNotNull { runCatching { LocalDate.parse(it) }.getOrNull() }.toSet()
     }
     val listState = rememberLazyListState()
-    // Responsive: derivedStateOf prevents recomposition on every pixel; only when progress changes
     val rawProgress by remember {
         derivedStateOf {
             val off = if (listState.firstVisibleItemIndex == 0) listState.firstVisibleItemScrollOffset else 999
@@ -103,7 +55,6 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
     val calendarOffset by remember { derivedStateOf { if (listState.firstVisibleItemIndex == 0) -(listState.firstVisibleItemScrollOffset * 0.18f) else -180f } }
     val cardElevation by remember(eased) { derivedStateOf { (8 * (1f - eased * 0.7f)).dp } }
 
-    // All deadlines for this month, sorted
     val allDeadlines = remember(s.items) {
         s.items.flatMap { c ->
             listOfNotNull(
@@ -115,7 +66,7 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
     val selStr = s.selected.toString()
     val forDay = allDeadlines.filter { it.first == selStr }
 
-    val themedCardBg = calendarCardBg()
+    val themedCardBg = MaterialTheme.colorScheme.surfaceVariant
     PullToRefreshBox(
         isRefreshing = s.loading,
         onRefresh = { vm.refresh() },
@@ -126,7 +77,6 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 16.dp)
         ) {
-        // Calendar card — polished collapse: eased alpha + scale + parallax
         item {
             Box(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 16.dp)
@@ -168,7 +118,7 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
                                     val date = if (isInMonth) s.month.atDay(curDay) else null
                                     val isSelected = date != null && date == s.selected
                                     val hasConf = date != null && conferenceDates.contains(date)
-                                    val dotColor = if (hasConf && date != null) urgencyColorForDate(date) else Color.Transparent
+                                    val dotColor = if (hasConf) urgencyColorForDate(date) else Color.Transparent
                                     val selectedBg = if (hasConf) dotColor else MaterialTheme.colorScheme.primary
                                     Box(
                                         Modifier.weight(1f).aspectRatio(1f).padding(2.dp).clip(RoundedCornerShape(8.dp))
@@ -192,7 +142,6 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
                 }
             }
         }
-        // Month selector
         item {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                 for (m in 1..12) {
@@ -230,7 +179,6 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
             }
         }
 
-        // Selected day agenda — only deadlines on the selected date, not all month
         item {
             Column(Modifier.padding(horizontal = 16.dp)) {
                 if (forDay.isNotEmpty()) {

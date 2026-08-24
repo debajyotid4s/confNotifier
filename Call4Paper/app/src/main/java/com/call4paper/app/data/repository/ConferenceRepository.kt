@@ -3,6 +3,8 @@ package com.call4paper.app.data.repository
 import android.util.Log
 import com.call4paper.app.data.local.ConferenceDao
 import com.call4paper.app.data.local.ConferenceEntity
+import com.call4paper.app.data.mappers.toEntities
+import com.call4paper.app.data.mappers.toEntity
 import com.call4paper.app.data.remote.ApiService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -11,9 +13,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val TAG = "ConferenceRepo"
-private const val DETAIL_TTL_MS = 60 * 60 * 1000L // 1h
-private const val CALENDAR_FRESHNESS_MS = 15 * 60 * 1000L // 15min per month
-private const val PRUNE_AFTER_MS = 7 * 24 * 60 * 60 * 1000L // keep 7d of past data
+private const val DETAIL_TTL_MS = 60 * 60 * 1000L
+private const val CALENDAR_FRESHNESS_MS = 15 * 60 * 1000L
 
 @Singleton
 class ConferenceRepository @Inject constructor(
@@ -33,8 +34,7 @@ class ConferenceRepository @Inject constructor(
         }
         Log.d(TAG, "refreshCalendar: $month")
         try {
-            val dtos = api.getCalendar(month)
-            val entities = dtos.map { it.toEntity() }
+            val entities = api.getCalendar(month).toEntities()
             dao.insertAll(entities)
             calendarLastFetch[month] = now
             Log.i(TAG, "refreshCalendar: cached ${entities.size} for $month")
@@ -47,8 +47,7 @@ class ConferenceRepository @Inject constructor(
     suspend fun refreshUpcoming(limit: Int = 30): List<ConferenceEntity> = withContext(Dispatchers.IO) {
         Log.d(TAG, "refreshUpcoming limit=$limit")
         try {
-            val dtos = api.getUpcoming(limit)
-            val entities = dtos.map { it.toEntity() }
+            val entities = api.getUpcoming(limit).toEntities()
             dao.insertAll(entities)
             entities
         } catch (e: Exception) {
@@ -73,17 +72,3 @@ class ConferenceRepository @Inject constructor(
         }
     }
 }
-
-private fun com.call4paper.app.data.remote.ConferenceDto.toEntity() = ConferenceEntity(
-    id = id,
-    title = name,
-    website = website,
-    startDate = start_date,
-    endDate = end_date,
-    city = location,
-    organizer = organizer,
-    category = category,
-    abstractDeadline = abstract_deadline,
-    fullPaperDeadline = full_paper_deadline,
-    description = description
-)

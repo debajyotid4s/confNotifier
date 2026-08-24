@@ -16,42 +16,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
-import com.call4paper.app.data.local.ConferenceEntity
-import com.call4paper.app.data.repository.ConferenceRepository
-import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.launch
-import java.time.LocalDate
-import java.time.temporal.ChronoUnit
+import com.call4paper.app.data.deadlineDisplayLong
+import com.call4paper.app.data.isTba
 import com.call4paper.app.ui.theme.TbaGray
-import com.call4paper.app.ui.theme.isTbaEntity
 import com.call4paper.app.ui.theme.urgencyForEntity
-import javax.inject.Inject
-
-@HiltViewModel
-class UpcomingViewModel @Inject constructor(private val repo: ConferenceRepository) : ViewModel() {
-    private val _state = MutableStateFlow<List<ConferenceEntity>>(emptyList())
-    val state: StateFlow<List<ConferenceEntity>> = _state.asStateFlow()
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error.asStateFlow()
-    private val _isRefreshing = MutableStateFlow(false)
-    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
-    init { refresh() }
-    fun refresh() {
-        viewModelScope.launch {
-            _isRefreshing.value = true
-            _error.value = null
-            try { _state.value = repo.refreshUpcoming(50) }
-            catch (_: Exception) { _error.value = "Could not load — check your connection" }
-            _isRefreshing.value = false
-        }
-    }
-}
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -66,7 +34,7 @@ fun UpcomingScreen(onConference: (Int) -> Unit, vm: UpcomingViewModel = hiltView
             when {
                 err != null -> {
                     Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer), modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(Modifier.padding(20.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             Icon(Icons.Filled.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.size(36.dp))
                             Text("Couldn't load upcoming", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onErrorContainer)
                             Text(err ?: "", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
@@ -86,23 +54,9 @@ fun UpcomingScreen(onConference: (Int) -> Unit, vm: UpcomingViewModel = hiltView
                 else -> {
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) {
                         items(items, key = { it.id }) { c ->
-                            val tba = isTbaEntity(c)
+                            val tba = c.isTba()
                             val urgency = urgencyForEntity(c)
-
-                            val deadlineText: String
-                            val deadlineLabel: String
-                            if (tba) {
-                                deadlineText = "To be announced"
-                                deadlineLabel = ""
-                            } else {
-                                val dl = c.abstractDeadline ?: c.fullPaperDeadline
-                                deadlineLabel = when {
-                                    c.abstractDeadline != null -> "Abstract submission"
-                                    c.fullPaperDeadline != null -> "Full paper submission"
-                                    else -> "Starts"
-                                }
-                                deadlineText = dl ?: c.startDate ?: ""
-                            }
+                            val displayText = c.deadlineDisplayLong()
 
                             Card(
                                 shape = RoundedCornerShape(12.dp),
@@ -130,8 +84,7 @@ fun UpcomingScreen(onConference: (Int) -> Unit, vm: UpcomingViewModel = hiltView
                                                 }
                                             }
                                         }
-                                        if (deadlineText.isNotEmpty()) {
-                                            val displayText = if (deadlineLabel.isNotEmpty()) "$deadlineLabel: $deadlineText" else deadlineText
+                                        if (displayText.isNotEmpty()) {
                                             Text(displayText, style = MaterialTheme.typography.labelMedium, color = urgency)
                                         }
                                         if (c.description != null) {

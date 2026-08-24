@@ -20,12 +20,6 @@ interface ConferenceDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(item: ConferenceEntity)
-
-    @Query("DELETE FROM conferences WHERE updatedAt < :cutoff")
-    suspend fun pruneOlderThan(cutoff: Long)
-
-    @Query("DELETE FROM conferences")
-    suspend fun clear()
 }
 
 @Database(entities = [ConferenceEntity::class], version = 2, exportSchema = true)
