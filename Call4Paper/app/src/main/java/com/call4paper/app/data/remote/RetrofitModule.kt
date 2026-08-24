@@ -12,6 +12,7 @@ import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
+import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 
 @Module
@@ -29,6 +30,9 @@ object NetworkModule {
             level = if (com.call4paper.app.BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BODY else HttpLoggingInterceptor.Level.NONE
         }
         return OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(15, TimeUnit.SECONDS)
             .addInterceptor(authInterceptor)
             .addInterceptor(logging)
             .build()
@@ -36,11 +40,9 @@ object NetworkModule {
 
     @Provides @Singleton
     fun provideRetrofit(okHttp: OkHttpClient): Retrofit {
-        // Prod: live Render backend — https://confnotifier.onrender.com
         val baseUrl = "https://confnotifier.onrender.com/"
-        val url = System.getProperty("apiBaseUrl") ?: baseUrl
         return Retrofit.Builder()
-            .baseUrl(url)
+            .baseUrl(baseUrl)
             .client(okHttp)
             .addConverterFactory(Json { ignoreUnknownKeys = true }.asConverterFactory("application/json".toMediaType()))
             .build()

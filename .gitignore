@@ -57,6 +57,8 @@ db/
 *.key
 *.p12
 *.jks
+*.keystore
+keystore.properties
 secrets*
 credentials*
 service-account*.json
@@ -72,7 +74,6 @@ Call4Paper/.idea/
 Call4Paper/*.iml
 Call4Paper/app/*.iml
 Call4Paper/local.properties
-Call4Paper/gradle.properties
 Call4Paper/app/google-services.json
 Call4Paper/.kotlin/
 Call4Paper/captures/

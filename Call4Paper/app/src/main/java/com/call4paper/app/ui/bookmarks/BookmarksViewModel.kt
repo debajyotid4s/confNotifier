@@ -6,6 +6,7 @@ import com.call4paper.app.data.local.ConferenceEntity
 import com.call4paper.app.data.mappers.toEntities
 import com.call4paper.app.data.remote.ApiService
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,7 +30,8 @@ class BookmarksViewModel @Inject constructor(private val api: ApiService) : View
             _state.update { it.copy(loading = true, error = null) }
             try {
                 _state.update { it.copy(items = api.getBookmarks().toEntities(), loading = false) }
-            } catch (_: Exception) {
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) {
                 _state.update { it.copy(error = "Could not load bookmarks — check your connection", loading = false) }
             }
         }

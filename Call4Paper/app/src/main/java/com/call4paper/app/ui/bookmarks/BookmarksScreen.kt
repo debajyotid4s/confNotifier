@@ -16,20 +16,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.call4paper.app.data.deadlineLabel
 import com.call4paper.app.ui.theme.urgencyForEntity
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BookmarksScreen(onConference: (Int) -> Unit, vm: BookmarksViewModel = hiltViewModel()) {
-    val s by vm.state.collectAsState()
+    val s by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.refresh() }
     PullToRefreshBox(isRefreshing = s.loading, onRefresh = { vm.refresh() }, modifier = Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().padding(16.dp)) {
             Text("Bookmarks", style = MaterialTheme.typography.headlineSmall)
             Spacer(Modifier.height(12.dp))
             when {
-                s.error != null -> ErrorCard(s.error!!) { vm.refresh() }
+                s.error != null -> s.error?.let { ErrorCard(it) { vm.refresh() } }
                 !s.loading && s.items.isEmpty() -> EmptyCard()
                 else -> BookmarkList(s.items, onConference)
             }

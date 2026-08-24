@@ -7,6 +7,7 @@ import com.call4paper.app.data.mappers.toEntity
 import com.call4paper.app.data.remote.ApiService
 import com.call4paper.app.data.repository.ConferenceRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,10 +38,10 @@ class ConferenceViewModel @Inject constructor(
             try {
                 val dto = api.getConference(id)
                 _state.update { it.copy(conference = dto.toEntity(), bookmarked = dto.bookmarked == true, isRefreshing = false) }
-            } catch (_: Exception) {
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) {
                 val cached = repo.getDetail(id)
-                val bm = try { api.getBookmarks().any { it.id == id } } catch (_: Exception) { false }
-                _state.update { it.copy(conference = cached, bookmarked = bm, isRefreshing = false) }
+                _state.update { it.copy(conference = cached, isRefreshing = false) }
             }
         }
     }
@@ -54,7 +55,8 @@ class ConferenceViewModel @Inject constructor(
                 val wasBookmarked = _state.value.bookmarked
                 if (wasBookmarked) api.removeBookmark(id) else api.addBookmark(id)
                 _state.update { it.copy(bookmarked = !wasBookmarked) }
-            } catch (_: Exception) {
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) {
                 _state.update { it.copy(bookmarkError = "Bookmark failed — check your connection") }
             }
         }

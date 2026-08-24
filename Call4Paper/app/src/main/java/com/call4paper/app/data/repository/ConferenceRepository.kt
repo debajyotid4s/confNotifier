@@ -8,6 +8,8 @@ import com.call4paper.app.data.mappers.toEntity
 import com.call4paper.app.data.remote.ApiService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -22,25 +24,28 @@ class ConferenceRepository @Inject constructor(
     private val dao: ConferenceDao
 ) {
     private val calendarLastFetch = mutableMapOf<String, Long>()
+    private val calendarMutex = Mutex()
 
     fun observeAll(): Flow<List<ConferenceEntity>> = dao.observeAll()
 
     suspend fun refreshCalendar(month: String, force: Boolean = false) = withContext(Dispatchers.IO) {
-        val now = System.currentTimeMillis()
-        val last = calendarLastFetch[month] ?: 0L
-        if (!force && now - last < CALENDAR_FRESHNESS_MS) {
-            Log.d(TAG, "refreshCalendar: skipping $month (fresh ${ (now-last)/1000 }s ago)")
-            return@withContext
-        }
-        Log.d(TAG, "refreshCalendar: $month")
-        try {
-            val entities = api.getCalendar(month).toEntities()
-            dao.insertAll(entities)
-            calendarLastFetch[month] = now
-            Log.i(TAG, "refreshCalendar: cached ${entities.size} for $month")
-        } catch (e: Exception) {
-            Log.e(TAG, "refreshCalendar failed for $month", e)
-            throw e
+        calendarMutex.withLock {
+            val now = System.currentTimeMillis()
+            val last = calendarLastFetch[month] ?: 0L
+            if (!force && now - last < CALENDAR_FRESHNESS_MS) {
+                Log.d(TAG, "refreshCalendar: skipping $month (fresh ${(now - last) / 1000}s ago)")
+                return@withContext
+            }
+            Log.d(TAG, "refreshCalendar: $month")
+            try {
+                val entities = api.getCalendar(month).toEntities()
+                dao.insertAll(entities)
+                calendarLastFetch[month] = now
+                Log.i(TAG, "refreshCalendar: cached ${entities.size} for $month")
+            } catch (e: Exception) {
+                Log.e(TAG, "refreshCalendar failed for $month", e)
+                throw e
+            }
         }
     }
 

@@ -53,9 +53,8 @@ fun LoginScreen(
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) {
-        PendingLoginEmail.email?.let { e ->
+        vm.consumePendingLoginEmail()?.let { e ->
             vm.onEmailChange(e)
-            PendingLoginEmail.email = null
         }
     }
     LaunchedEffect(state.isLoggedIn) { if (state.isLoggedIn) { Log.d(TAG, "LoginScreen: already logged in"); onLoggedIn() } }

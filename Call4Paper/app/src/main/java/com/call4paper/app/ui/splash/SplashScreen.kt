@@ -40,15 +40,13 @@ class SplashViewModel @Inject constructor(
             } else {
                 onOffline()
                 var waited = 0
-                while (waited < 5000) {
+                var isOnline = false
+                while (waited < 5000 && !isOnline) {
                     delay(500)
                     waited += 500
-                    if (networkMonitor.isOnline.first()) {
-                        decide(onAuth, onLogin)
-                        return@launch
-                    }
+                    isOnline = networkMonitor.currentlyOnline()
                 }
-                onTimeout()
+                if (isOnline) decide(onAuth, onLogin) else onTimeout()
             }
         }
     }
@@ -56,25 +54,8 @@ class SplashViewModel @Inject constructor(
     private fun decide(onAuth: () -> Unit, onLogin: () -> Unit) {
         viewModelScope.launch {
             val t = tokens.peek()
-            if (t != null && isJwtValid(t)) onAuth() else {
-                if (t != null) tokens.clear()
-                onLogin()
-            }
+            if (t != null) onAuth() else onLogin()
         }
-    }
-
-    private fun isJwtValid(token: String): Boolean {
-        return try {
-            val parts = token.split(".")
-            if (parts.size != 3) return false
-            val payloadJson = String(android.util.Base64.decode(parts[1], android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP), Charsets.UTF_8)
-            val exp = org.json.JSONObject(payloadJson).optLong("exp", 0L)
-            if (exp == 0L) true
-            else {
-                val nowSec = System.currentTimeMillis() / 1000L
-                exp > nowSec + 60
-            }
-        } catch (_: Exception) { false }
     }
 }
 

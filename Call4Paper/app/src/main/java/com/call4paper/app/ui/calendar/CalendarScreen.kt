@@ -26,6 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.call4paper.app.ui.theme.urgencyColorFor
 import com.call4paper.app.ui.theme.urgencyColorForDate
 import java.time.DayOfWeek
@@ -37,7 +38,7 @@ import java.util.Locale
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltViewModel()) {
-    val s by vm.state.collectAsState()
+    val s by vm.state.collectAsStateWithLifecycle()
     val conferenceDates = remember(s.items) {
         s.items.flatMap { listOfNotNull(it.abstractDeadline, it.fullPaperDeadline) }
             .mapNotNull { runCatching { LocalDate.parse(it) }.getOrNull() }.toSet()
