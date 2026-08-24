@@ -14,9 +14,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 def _client_ip(request: Request) -> str:
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
+    # Trust XFF only when behind trusted proxy (Render, etc.). Default 1 for prod.
+    # Set TRUST_PROXY=0 if running without proxy to avoid spoofed IP bypassing rate limit.
+    if os.environ.get("TRUST_PROXY", "1") == "1":
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            # XFF may be "client, proxy1, proxy2" — first is original client
+            return xff.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
 
 class AuthLoginIn(BaseModel):
@@ -26,15 +30,39 @@ class AuthLoginIn(BaseModel):
     device_info: str | None = None
 
 def get_current_user(authorization: str = Header(None)):
-    if not authorization or not authorization.startswith("Bearer "):
+    if not authorization or not authorization.strip() == "" or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing token")
-    token = authorization.split(" ", 1)[1]
+    # Extract token after "Bearer " and validate non-empty
+    token = authorization[7:].strip() if len(authorization) > 7 else ""
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing token")
     try:
         payload = decode_jwt(token)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.warning("get_current_user: jwt decode failed: %s", e)
         raise HTTPException(status_code=401, detail="Invalid token")
-    return payload  # {sub, email, exp, iat}
+    return payload  # {sub, email, exp, iat, tv}
+
+
+def get_optional_user(authorization: str = Header(None)):
+    """For public endpoints: None if no header, 401 if header present but invalid."""
+    if not authorization:
+        return None
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid token")
+    token = authorization[7:].strip() if len(authorization) > 7 else ""
+    if not token:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    try:
+        payload = decode_jwt(token)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("get_optional_user: jwt decode failed: %s", e)
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return payload.get("sub")
 
 def _rate_limit_or_429(request: Request, key_prefix: str):
     try:
@@ -48,6 +76,17 @@ def _rate_limit_or_429(request: Request, key_prefix: str):
         pass
 
 GRACE_PERIOD_DAYS = 7
+GRACE_PERIOD = timedelta(days=GRACE_PERIOD_DAYS)
+
+
+def _grace_remaining_seconds(deleted_at: datetime, now: datetime) -> float:
+    """Seconds until grace expires; >0 means still in grace."""
+    # Ensure deleted_at is tz-aware (DB returns tz-aware TIMESTAMPTZ)
+    if deleted_at.tzinfo is None:
+        deleted_at = deleted_at.replace(tzinfo=timezone.utc)
+    expires_at = deleted_at + GRACE_PERIOD
+    return (expires_at - now).total_seconds()
+
 
 def _upsert_user(*, lookup_col: str, lookup_val: str, email: str, body, client_ip, user_agent, log_id: str):
     """Shared upsert for Google and Firebase — single place for login-metadata handling."""
@@ -58,19 +97,27 @@ def _upsert_user(*, lookup_col: str, lookup_val: str, email: str, body, client_i
             row = fetch_one(f"SELECT id, username, email, deleted_at FROM users WHERE {lookup_col} = %s", (lookup_val,))
             if row:
                 uid, username, db_email, deleted_at = row
-                # Soft-deleted user: check grace period
+                # Soft-deleted user: check grace period with precise interval (not floor days)
                 if deleted_at is not None:
-                    days_since = (datetime.now(timezone.utc) - deleted_at).days
-                    if days_since < GRACE_PERIOD_DAYS:
-                        remaining = GRACE_PERIOD_DAYS - days_since
+                    if deleted_at.tzinfo is None:
+                        deleted_at = deleted_at.replace(tzinfo=timezone.utc)
+                    now = datetime.now(timezone.utc)
+                    remaining_sec = _grace_remaining_seconds(deleted_at, now)
+                    if remaining_sec > 0:
+                        import math
+
+                        remaining_days = math.ceil(remaining_sec / 86400)
+                        days_since = (now - deleted_at).total_seconds() / 86400
+                        # ceil ensures 6d23h shows as 1 day remaining, not 0
                         raise HTTPException(
                             status_code=403,
-                            detail=f"Account was deleted {days_since} day(s) ago. Contact admin to restore, or try again in {remaining} day(s)."
+                            detail=f"Account was deleted {int(days_since)} day(s) ago. Contact admin to restore, or try again in {remaining_days} day(s).",
                         )
                     # Grace period expired — reactivate account
                     from database import execute
+
                     execute("UPDATE users SET deleted_at = NULL WHERE id = %s", (uid,))
-                    logger.info("%s: reactivated user %s after %d-day grace period", log_id, uid, days_since)
+                    logger.info("%s: reactivated user %s after grace period (deleted_at=%s)", log_id, uid, deleted_at)
                 try:
                     from database import execute
                     execute(
@@ -79,6 +126,16 @@ def _upsert_user(*, lookup_col: str, lookup_val: str, email: str, body, client_i
                     )
                 except Exception as e:
                     logger.warning("%s: update login info failed for %s: %s", log_id, lookup_val, e)
+                # History table (migration_004) — best-effort, don't block login
+                try:
+                    from database import execute as _exec_hist
+
+                    _exec_hist(
+                        "INSERT INTO login_events (user_id, ip_address, user_agent, phone_model, device_info) VALUES (%s,%s,%s,%s,%s)",
+                        (uid, client_ip, user_agent, body.phone_model, body.device_info),
+                    )
+                except Exception as e:
+                    logger.warning("%s: login_events insert failed for %s: %s", log_id, uid, e)
                 token = create_jwt(str(uid), db_email)
                 logger.info("%s: login %s=%s username=%s ip=%s phone=%s", log_id, lookup_col, lookup_val, username, client_ip, body.phone_model)
                 return login_response(token, uid, username, db_email)
@@ -90,6 +147,16 @@ def _upsert_user(*, lookup_col: str, lookup_val: str, email: str, body, client_i
                         (lookup_val, email, candidate, body.phone_model, client_ip, user_agent, body.device_info, client_ip)
                     )
                     uid, username = cur.fetchone()
+                # Initial login history for new user — best-effort
+                try:
+                    from database import execute as _exec_hist2
+
+                    _exec_hist2(
+                        "INSERT INTO login_events (user_id, ip_address, user_agent, phone_model, device_info) VALUES (%s,%s,%s,%s,%s)",
+                        (uid, client_ip, user_agent, body.phone_model, body.device_info),
+                    )
+                except Exception as e:
+                    logger.warning("%s: login_events insert failed for new %s: %s", log_id, uid, e)
                 token = create_jwt(str(uid), email)
                 logger.info("%s: created %s=%s username=%s ip=%s phone=%s", log_id, lookup_col, lookup_val, username, client_ip, body.phone_model)
                 return login_response(token, uid, username, email)

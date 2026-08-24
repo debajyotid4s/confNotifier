@@ -119,10 +119,12 @@ def notify_bookmarks(x_notify_secret: str = Header(None)):
             FROM device_tokens dt
             JOIN bookmarks b ON b.user_id = dt.user_id
             JOIN conferences conf ON conf.id = b.conference_id
+            LEFT JOIN conference_deadlines cd_abs ON cd_abs.conference_id = conf.id AND cd_abs.type = 'abstract'
+            LEFT JOIN conference_deadlines cd_full ON cd_full.conference_id = conf.id AND cd_full.type = 'full_paper'
             CROSS JOIN LATERAL (
                 VALUES
-                    ('abstract',         conf.abstract_deadline,         conf.abstract_deadline_previous),
-                    ('full_paper',       conf.full_paper_deadline,       conf.full_paper_deadline_previous)
+                    ('abstract',   COALESCE(cd_abs.deadline,  conf.abstract_deadline),  COALESCE(cd_abs.deadline_previous,  conf.abstract_deadline_previous)),
+                    ('full_paper', COALESCE(cd_full.deadline, conf.full_paper_deadline), COALESCE(cd_full.deadline_previous, conf.full_paper_deadline_previous))
             ) AS dl(dl_type, deadline_date, previous_date)
             LEFT JOIN notification_log nl
               ON nl.user_id = dt.user_id

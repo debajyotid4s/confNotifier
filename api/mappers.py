@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel
 
-from database import fetch_all
+from database import fetch_all, fetch_all_dict  # noqa: F401 - fetch_all_dict used by callers via mappers
 
 
 # ---------------------------------------------------------------------------
@@ -65,31 +65,72 @@ def deadlines_for_ids(conf_ids: list[int]) -> dict[int, dict[str, date]]:
     return m
 
 
+def _row_get(row, key: str, idx: int):
+    """Dict-safe accessor: prefers dict key, falls back to tuple index for legacy callers."""
+    if isinstance(row, dict):
+        return row.get(key)
+    return row[idx]
+
+
 def conference_row_to_out(row, dl_map: dict[int, dict], today: date, bookmarked: bool | None = None) -> dict:
     """Map a canonical conferences SELECT row + deadline map to a response dict.
 
-    Row indices: 0=id 1=title 2=date_start 3=date_end 4=website 5=city
-                6=organizer 7=category 8=description 9=abstract_deadline 10=full_paper_deadline
+    Supports both dict rows (RealDictCursor) and legacy tuple rows.
+    Dict keys: id, title, date_start, date_end, website, city, organizer, category,
+               description, abstract_deadline, full_paper_deadline
+    Legacy indices: 0=id 1=title 2=date_start 3=date_end 4=website 5=city
+                    6=organizer 7=category 8=description 9=abstract_deadline 10=full_paper_deadline
     Priority: child table > wide columns.
     """
-    cid = row[0]
-    abs_dl = dl_map.get(cid, {}).get("abstract") or row[9]
-    full_dl = dl_map.get(cid, {}).get("full_paper") or row[10]
+    # Validate shape to catch SELECT reorder early
+    if isinstance(row, dict):
+        required = {"id", "title", "date_start", "date_end", "website", "city", "organizer", "category", "description", "abstract_deadline", "full_paper_deadline"}
+        missing = required - row.keys()
+        if missing:
+            raise ValueError(f"conference row missing keys: {missing}")
+        cid = row["id"]
+        abs_wide = row["abstract_deadline"]
+        full_wide = row["full_paper_deadline"]
+        title = row["title"]
+        date_start = row["date_start"]
+        date_end = row["date_end"]
+        website = row["website"]
+        city = row["city"]
+        organizer = row["organizer"]
+        category = row["category"]
+        description = row["description"]
+    else:
+        if len(row) < 11:
+            raise ValueError(f"conference row tuple too short: {len(row)} < 11")
+        cid = row[0]
+        abs_wide = row[9]
+        full_wide = row[10]
+        title = row[1]
+        date_start = row[2]
+        date_end = row[3]
+        website = row[4]
+        city = row[5]
+        organizer = row[6]
+        category = row[7]
+        description = row[8]
+
+    abs_dl = dl_map.get(cid, {}).get("abstract") or abs_wide
+    full_dl = dl_map.get(cid, {}).get("full_paper") or full_wide
     soonest = abs_dl or full_dl
     status = "upcoming" if soonest and soonest >= today else "past" if soonest else None
     return {
         "id": cid,
-        "name": row[1],
-        "start_date": _iso(row[2]),
-        "end_date": _iso(row[3]),
+        "name": title,
+        "start_date": _iso(date_start),
+        "end_date": _iso(date_end),
         "status": status,
-        "website": row[4],
-        "location": row[5],
-        "organizer": row[6],
-        "category": row[7],
+        "website": website,
+        "location": city,
+        "organizer": organizer,
+        "category": category,
         "abstract_deadline": _iso(abs_dl),
         "full_paper_deadline": _iso(full_dl),
-        "description": row[8],
+        "description": description,
         "bookmarked": bookmarked,
     }
 
@@ -98,9 +139,11 @@ def conference_rows_to_out(rows, today: date | None = None, user_id=None) -> lis
     """Map a batch of conference rows to dicts, optionally including bookmark state."""
     if today is None:
         today = date.today()
-    bm_ids = bookmarked_ids_for_user(user_id, [r[0] for r in rows]) if user_id else set()
-    dl_map = deadlines_for_ids([r[0] for r in rows])
-    return [conference_row_to_out(r, dl_map, today, bookmarked=(r[0] in bm_ids) if user_id else None) for r in rows]
+    # Support both dict and tuple rows for id extraction
+    ids = [r["id"] if isinstance(r, dict) else r[0] for r in rows]
+    bm_ids = bookmarked_ids_for_user(user_id, ids) if user_id else set()
+    dl_map = deadlines_for_ids(ids)
+    return [conference_row_to_out(r, dl_map, today, bookmarked=((r["id"] if isinstance(r, dict) else r[0]) in bm_ids) if user_id else None) for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -110,9 +153,15 @@ def conference_rows_to_out(rows, today: date | None = None, user_id=None) -> lis
 def user_row_to_out(row) -> dict:
     """Map a users SELECT row to the /me response dict.
 
-    Expects: id, username, email, created_at  (4 columns).
+    Accepts both tuple (id, username, email, created_at) and dict rows.
     """
-    uid, username, email, created_at = row
+    if isinstance(row, dict):
+        uid = row.get("id") or row.get("uid")
+        username = row.get("username")
+        email = row.get("email")
+        created_at = row.get("created_at")
+    else:
+        uid, username, email, created_at = row
     return {
         "id": str(uid),
         "username": username,

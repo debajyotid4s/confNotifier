@@ -2,24 +2,17 @@ from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query, Depends, Header
 
-from database import fetch_all, fetch_one
+from database import fetch_all, fetch_all_dict, fetch_one, fetch_one_dict
 from cache import get_or_set
 from mappers import CONF_SELECT, deadlines_for_ids, conference_row_to_out, bookmarked_ids_for_user
-from routers.auth import get_current_user
+from routers.auth import get_current_user, get_optional_user
 
 router = APIRouter()
 
 
 def _optional_user(authorization: str = Header(None)):
-    """Extract user_id from JWT if present; return None otherwise (public endpoint)."""
-    if not authorization or not authorization.startswith("Bearer "):
-        return None
-    try:
-        from auth import decode_jwt
-        payload = decode_jwt(authorization.split(" ", 1)[1])
-        return payload.get("sub")
-    except Exception:
-        return None
+    """Wrapper to keep Depends(_optional_user) signature stable; delegates to auth.get_optional_user."""
+    return get_optional_user(authorization)
 
 
 @router.get("/conferences/calendar")
@@ -39,23 +32,24 @@ def calendar(month: str = Query(..., pattern=r"^\d{4}-\d{2}$")):
         )
         if cd_rows:
             conf_ids = list({r[0] for r in cd_rows})
-            rows = fetch_all(f"{CONF_SELECT} WHERE id = ANY(%s)", (conf_ids,))
+            rows = fetch_all_dict(f"{CONF_SELECT} WHERE id = ANY(%s)", (conf_ids,))
             dl_map = deadlines_for_ids(conf_ids)
             today = date.today()
             rows.sort(key=lambda r: (
-                dl_map.get(r[0], {}).get("abstract")
-                or dl_map.get(r[0], {}).get("full_paper")
-                or r[9] or r[10] or date.max
+                dl_map.get(r["id"], {}).get("abstract")
+                or dl_map.get(r["id"], {}).get("full_paper")
+                or r["abstract_deadline"] or r["full_paper_deadline"] or date.max,
+                r["id"],
             ))
             return [conference_row_to_out(r, dl_map, today) for r in rows]
 
-        rows = fetch_all(
+        rows = fetch_all_dict(
             f"{CONF_SELECT} WHERE (abstract_deadline >= %s AND abstract_deadline < %s) "
             "OR (full_paper_deadline >= %s AND full_paper_deadline < %s) "
-            "ORDER BY COALESCE(abstract_deadline, full_paper_deadline) ASC",
+            "ORDER BY COALESCE(abstract_deadline, full_paper_deadline) ASC, id ASC",
             (start, end, start, end),
         )
-        dl_map = deadlines_for_ids([r[0] for r in rows])
+        dl_map = deadlines_for_ids([r["id"] for r in rows])
         today = date.today()
         return [conference_row_to_out(r, dl_map, today) for r in rows]
 
@@ -67,29 +61,29 @@ def upcoming(limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0))
     def _fetch():
         cd_rows = fetch_all(
             "SELECT conference_id, deadline FROM conference_deadlines "
-            "WHERE deadline >= CURRENT_DATE ORDER BY deadline ASC LIMIT %s OFFSET %s",
+            "WHERE deadline >= CURRENT_DATE ORDER BY deadline ASC, conference_id ASC LIMIT %s OFFSET %s",
             (limit, offset),
         )
         if cd_rows:
             conf_ids = [r[0] for r in cd_rows]
-            rows = fetch_all(f"{CONF_SELECT} WHERE id = ANY(%s)", (conf_ids,))
-            row_by_id = {r[0]: r for r in rows}
+            rows = fetch_all_dict(f"{CONF_SELECT} WHERE id = ANY(%s)", (conf_ids,))
+            row_by_id = {r["id"]: r for r in rows}
             dl_map = deadlines_for_ids(conf_ids)
             today = date.today()
             ordered = [row_by_id[cid] for cid in conf_ids if cid in row_by_id]
             return [conference_row_to_out(r, dl_map, today) for r in ordered]
 
-        rows = fetch_all(
+        rows = fetch_all_dict(
             f"{CONF_SELECT} WHERE (date_start >= CURRENT_DATE) "
             "OR (abstract_deadline >= CURRENT_DATE) "
             "OR (full_paper_deadline >= CURRENT_DATE) "
             "OR (date_start IS NULL AND abstract_deadline IS NULL AND full_paper_deadline IS NULL) "
             "ORDER BY CASE WHEN date_start IS NULL THEN 1 ELSE 0 END, "
-            "date_start ASC, COALESCE(abstract_deadline, full_paper_deadline) ASC "
+            "date_start ASC, COALESCE(abstract_deadline, full_paper_deadline) ASC, id ASC "
             "LIMIT %s OFFSET %s",
             (limit, offset),
         )
-        dl_map = deadlines_for_ids([r[0] for r in rows])
+        dl_map = deadlines_for_ids([r["id"] for r in rows])
         today = date.today()
         return [conference_row_to_out(r, dl_map, today) for r in rows]
 
@@ -101,7 +95,7 @@ def get_conference(conf_id: int, user_id: str | None = Depends(_optional_user)):
     cache_key = f"conf:{conf_id}:{user_id}" if user_id else f"conf:{conf_id}"
 
     def _fetch():
-        row = fetch_one(f"{CONF_SELECT} WHERE id = %s", (conf_id,))
+        row = fetch_one_dict(f"{CONF_SELECT} WHERE id = %s", (conf_id,))
         if not row:
             raise HTTPException(status_code=404, detail="Not found")
         dl_map = deadlines_for_ids([conf_id])
