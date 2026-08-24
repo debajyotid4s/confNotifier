@@ -1,5 +1,10 @@
 package com.call4paper.app.navigation
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.navigationBars
@@ -14,6 +19,8 @@ import androidx.compose.material.icons.filled.List
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -45,6 +52,20 @@ fun AppNavGraph() {
     val backStack by nav.currentBackStackEntryAsState()
     val current = backStack?.destination?.route
     val showBottom = current in listOf(Route.Calendar.route, Route.Upcoming.route, Route.Bookmarks.route, Route.Account.route)
+    val ctx = LocalContext.current
+
+    val notifPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> }
+
+    fun navigateAfterAuth() {
+        nav.navigate(Route.Calendar.route) {
+            popUpTo(nav.graph.findStartDestination().id) { inclusive = true }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     Scaffold(
         contentWindowInsets = WindowInsets.statusBars.union(WindowInsets.navigationBars).union(WindowInsets.displayCutout),
@@ -70,7 +91,7 @@ fun AppNavGraph() {
         ) {
             composable(Route.Splash.route) {
                 SplashScreen(
-                    onAuth = { nav.navigate(Route.Calendar.route) { popUpTo(Route.Splash.route) { inclusive = true } } },
+                    onAuth = { navigateAfterAuth() },
                     onLogin = { nav.navigate(Route.Login.route) { popUpTo(Route.Splash.route) { inclusive = true } } }
                 )
             }
@@ -80,13 +101,13 @@ fun AppNavGraph() {
             ) {
                 LoginScreen(
                     onNavigateToSignUp = { nav.navigate(Route.Signup.route) },
-                    onLoggedIn = { nav.navigate(Route.Calendar.route) { popUpTo(Route.Login.route) { inclusive = true } } }
+                    onLoggedIn = { navigateAfterAuth() }
                 )
             }
             composable(Route.Signup.route) {
                 SignUpScreen(
                     onNavigateToLogin = { nav.popBackStack() },
-                    onSignedUp = { nav.navigate(Route.Calendar.route) { popUpTo(Route.Login.route) { inclusive = true } } }
+                    onSignedUp = { navigateAfterAuth() }
                 )
             }
             composable(Route.Calendar.route) { CalendarScreen(onConference = { id -> nav.navigate("conference/$id") }) }
