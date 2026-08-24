@@ -6,7 +6,8 @@ import androidx.lifecycle.viewModelScope
 import com.call4paper.app.data.auth.AuthRepository
 import com.call4paper.app.data.local.TokenManager
 import com.call4paper.app.data.remote.ApiService
-import com.call4paper.app.data.remote.GoogleAuthRequest
+import com.call4paper.app.data.remote.AuthRequest
+import com.call4paper.app.data.remote.AuthResponse
 import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
 import com.google.firebase.auth.FirebaseAuthUserCollisionException
 import com.google.firebase.auth.FirebaseAuthWeakPasswordException
@@ -22,7 +23,6 @@ import javax.inject.Inject
 
 private const val TAG = "AuthViewModel"
 
-// Holds the email from a collision so Login can pre-fill it (separate VMs per destination)
 object PendingLoginEmail { var email: String? = null }
 
 data class AuthUiState(
@@ -52,10 +52,8 @@ class AuthViewModel @Inject constructor(
 
     init {
         Log.d(TAG, "init: currentUser=${repo.currentUser?.email} uid=${repo.currentUser?.uid}")
-        // Don't treat Firebase user as logged in — JWT is source of truth; check it async
         viewModelScope.launch {
             val hasJwt = try { tokens.peek() != null } catch (_: Exception) { false }
-            // Only mark logged in if we actually have a JWT; Splash handles routing anyway
             if (hasJwt) _uiState.value = _uiState.value.copy(isLoggedIn = true)
         }
     }
@@ -85,78 +83,168 @@ class AuthViewModel @Inject constructor(
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Shared session routine — token exchange + device registration
+    // -------------------------------------------------------------------------
+
+    private data class SessionInfo(val provider: String, val idToken: String)
+
+    private suspend fun performSession(info: SessionInfo): AuthResponse {
+        val phoneModel = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}".trim()
+        val deviceInfo = "Android ${android.os.Build.VERSION.RELEASE} (${android.os.Build.DEVICE})"
+        val resp = api.login(AuthRequest(provider = info.provider, id_token = info.idToken, phone_model = phoneModel, device_info = deviceInfo))
+        tokens.save(resp.token)
+        registerDevice()
+        Log.i(TAG, "performSession: ${info.provider} login success user=${resp.user.username}")
+        return resp
+    }
+
+    private suspend fun registerDevice() {
+        try {
+            val fcm = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
+            api.postDevice(mapOf("fcm_token" to fcm))
+            com.google.firebase.messaging.FirebaseMessaging.getInstance().subscribeToTopic("all_users")
+        } catch (_: Exception) {}
+    }
+
+    private fun parseServerError(e: Throwable): String {
+        return try {
+            if (e is retrofit2.HttpException) {
+                val body = e.response()?.errorBody()?.string() ?: ""
+                val json = org.json.JSONObject(body)
+                json.optString("detail", e.message() ?: "Server error")
+            } else {
+                "Authentication failed — check your connection and try again"
+            }
+        } catch (_: Exception) {
+            "Authentication failed — check your connection and try again"
+        }
+    }
+
+    private fun isNotVerifiedError(e: Throwable): Boolean {
+        val msg = e.message ?: ""
+        return msg.contains("not verified", ignoreCase = true) || msg.contains("403")
+    }
+
+    // -------------------------------------------------------------------------
+    // Sign-up
+    // -------------------------------------------------------------------------
+
     fun signUp(onSuccess: () -> Unit) {
         val err = validate(true)
         if (err != null) { _uiState.value = _uiState.value.copy(errorMessage = err); Log.w(TAG, "signUp: validation failed: $err"); return }
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, infoMessage = null)
-            Log.d(TAG, "signUp: launching for ${_uiState.value.email}")
             val email = _uiState.value.email
             val res = repo.signUp(email, _uiState.value.password)
             res.onSuccess { fbUser ->
-                // Link-based flow: don't mint backend JWT yet — require email verification first
                 Log.i(TAG, "signUp: Firebase user created ${fbUser.email}, verification sent")
                 _uiState.value = _uiState.value.copy(
-                    isLoading = false,
-                    verificationPending = true,
+                    isLoading = false, verificationPending = true,
                     verificationEmail = fbUser.email ?: email,
                     infoMessage = "Verification email sent to ${fbUser.email ?: email} — tap the link in your inbox, then press 'I've verified'",
                     errorMessage = null
                 )
                 startResendCooldown(120)
-                // Keep Firebase user signed in so resend/reload works; don't call backend yet
             }.onFailure { e ->
                 if (e is FirebaseAuthUserCollisionException) {
-                    Log.w(TAG, "signUp: collision for ${_uiState.value.email} — suggest login")
                     PendingLoginEmail.email = _uiState.value.email
                     _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "Email already registered — try signing in", suggestLogin = true)
                 } else {
-                    val msg = mapError(e)
-                    Log.e(TAG, "signUp: error $msg", e)
-                    _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = msg)
+                    _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = mapError(e))
                 }
             }
         }
     }
+
+    // -------------------------------------------------------------------------
+    // Sign-in (Firebase email/password)
+    // -------------------------------------------------------------------------
+
+    fun signIn(onSuccess: () -> Unit) {
+        val err = validate(false)
+        if (err != null) { _uiState.value = _uiState.value.copy(errorMessage = err); Log.w(TAG, "signIn: validation failed: $err"); return }
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
+            val res = repo.signIn(_uiState.value.email, _uiState.value.password)
+            res.onSuccess { fbUser ->
+                try {
+                    val fbToken = fbUser.getIdToken(false).await().token ?: throw IllegalStateException("No Firebase token")
+                    performSession(SessionInfo("firebase", fbToken))
+                    _uiState.value = _uiState.value.copy(isLoading = false, isLoggedIn = true)
+                    onSuccess()
+                } catch (e: retrofit2.HttpException) {
+                    _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = parseServerError(e))
+                } catch (e: Exception) {
+                    if (isNotVerifiedError(e)) {
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false, verificationPending = true, verificationEmail = fbUser.email,
+                            errorMessage = "Email not verified — tap the link in your inbox",
+                            infoMessage = "Press 'I've verified' after clicking the link, or resend"
+                        )
+                    } else {
+                        _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "Signed in to Firebase but backend session failed — try again")
+                        try { repo.signOut() } catch (_: Exception) {}
+                    }
+                }
+            }.onFailure { e ->
+                _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = mapError(e))
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Sign-in (Google)
+    // -------------------------------------------------------------------------
+
+    fun signInWithGoogle(idToken: String, onSuccess: () -> Unit) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
+            try {
+                performSession(SessionInfo("google", idToken))
+                _uiState.value = _uiState.value.copy(isLoading = false, isLoggedIn = true)
+                onSuccess()
+            } catch (e: retrofit2.HttpException) {
+                _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = parseServerError(e))
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "Google sign-in failed — try again")
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Post-verification sign-in
+    // -------------------------------------------------------------------------
 
     fun checkVerificationAndProceed(onSuccess: () -> Unit) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
             val verified = repo.reloadAndCheckVerified()
             if (!verified) {
-                Log.w(TAG, "checkVerification: not yet verified")
                 _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "Not verified yet — tap the link in your email, then try again")
                 return@launch
             }
-            // Verified — now exchange Firebase token for backend JWT (force refresh so email_verified claim is fresh)
             try {
                 val fbUser = repo.currentUser ?: throw IllegalStateException("No Firebase user")
                 val fbToken = fbUser.getIdToken(true).await().token ?: throw IllegalStateException("No Firebase token")
-                val phoneModel = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}".trim()
-                val deviceInfo = "Android ${android.os.Build.VERSION.RELEASE} (${android.os.Build.DEVICE})"
-                val resp = api.authFirebase(com.call4paper.app.data.remote.FirebaseAuthRequest(fbToken, phoneModel, deviceInfo))
-                tokens.save(resp.token)
-                try {
-                    val fcm = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
-                    api.postDevice(mapOf("fcm_token" to fcm))
-                    com.google.firebase.messaging.FirebaseMessaging.getInstance().subscribeToTopic("all_users")
-                } catch (_: Exception) {}
-                Log.i(TAG, "checkVerification: backend JWT saved for ${resp.user.username}")
+                performSession(SessionInfo("firebase", fbToken))
                 _uiState.value = _uiState.value.copy(isLoading = false, isLoggedIn = true, verificationPending = false, verificationEmail = null, infoMessage = null)
                 onSuccess()
+            } catch (e: retrofit2.HttpException) {
+                _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = parseServerError(e))
             } catch (e: Exception) {
-                Log.e(TAG, "checkVerification: backend exchange failed", e)
-                val m = e.message ?: ""
-                val stillNotVerified = m.contains("not verified", ignoreCase = true) || m.contains("403")
-                if (stillNotVerified) {
+                if (isNotVerifiedError(e)) {
                     _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "Still not verified — wait 10s and tap 'I've verified' again")
                 } else {
-                    // Likely Render cold start / network — keep pending so user can retry
                     _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "Verified, but backend is waking up — tap 'I've verified' again in a few seconds")
                 }
             }
         }
     }
+
+    // -------------------------------------------------------------------------
+    // Misc
+    // -------------------------------------------------------------------------
 
     fun resendVerification() {
         if (_uiState.value.resendCooldown > 0) return
@@ -170,8 +258,7 @@ class AuthViewModel @Inject constructor(
     fun sendPasswordReset(onSent: () -> Unit = {}) {
         val email = _uiState.value.email.trim()
         if (email.isBlank() || !android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches()) {
-            _uiState.value = _uiState.value.copy(errorMessage = "Enter your email first")
-            return
+            _uiState.value = _uiState.value.copy(errorMessage = "Enter your email first"); return
         }
         if (_uiState.value.resendCooldown > 0) return
         viewModelScope.launch {
@@ -187,92 +274,7 @@ class AuthViewModel @Inject constructor(
         }
     }
 
-    fun signIn(onSuccess: () -> Unit) {
-        val err = validate(false)
-        if (err != null) { _uiState.value = _uiState.value.copy(errorMessage = err); Log.w(TAG, "signIn: validation failed: $err"); return }
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
-            Log.d(TAG, "signIn: launching for ${_uiState.value.email}")
-            val res = repo.signIn(_uiState.value.email, _uiState.value.password)
-            res.onSuccess { fbUser ->
-                try {
-                    val fbToken = fbUser.getIdToken(false).await().token ?: throw IllegalStateException("No Firebase token")
-                    val phoneModel = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}".trim()
-                    val deviceInfo = "Android ${android.os.Build.VERSION.RELEASE} (${android.os.Build.DEVICE})"
-                    val resp = api.authFirebase(com.call4paper.app.data.remote.FirebaseAuthRequest(fbToken, phoneModel, deviceInfo))
-                    tokens.save(resp.token)
-                    try {
-                        val fcm = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
-                        api.postDevice(mapOf("fcm_token" to fcm))
-                        com.google.firebase.messaging.FirebaseMessaging.getInstance().subscribeToTopic("all_users")
-                    } catch (_: Exception) {}
-                    Log.i(TAG, "signIn: backend JWT saved for ${resp.user.username}")
-                    _uiState.value = _uiState.value.copy(isLoading = false, isLoggedIn = true)
-                    onSuccess()
-                } catch (e: Exception) {
-                    // Surface email-not-verified specifically; otherwise generic
-                    val msg = e.message ?: ""
-                    val isNotVerified = msg.contains("not verified", ignoreCase = true) || msg.contains("403")
-                    Log.e(TAG, "signIn: backend exchange failed", e)
-                    if (isNotVerified) {
-                        // Keep Firebase user signed in so resend/reload works
-                        _uiState.value = _uiState.value.copy(
-                            isLoading = false,
-                            verificationPending = true,
-                            verificationEmail = fbUser.email,
-                            errorMessage = "Email not verified — tap the link in your inbox",
-                            infoMessage = "Press 'I've verified' after clicking the link, or resend"
-                        )
-                    } else {
-                        _uiState.value = _uiState.value.copy(
-                            isLoading = false,
-                            errorMessage = "Signed in to Firebase but backend session failed — try again",
-                            infoMessage = null
-                        )
-                        try { repo.signOut() } catch (_: Exception) {}
-                    }
-                }
-            }.onFailure { e ->
-                val msg = mapError(e)
-                Log.e(TAG, "signIn: error $msg", e)
-                // Do not leak raw token/network internals — mapError already sanitizes
-                _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = msg)
-            }
-        }
-    }
-
-    fun signInWithGoogle(idToken: String, onSuccess: () -> Unit) {
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
-            Log.d(TAG, "signInWithGoogle: verifying via backend")
-            try {
-                val phoneModel = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}".trim()
-                val deviceInfo = "Android ${android.os.Build.VERSION.RELEASE} (${android.os.Build.DEVICE})"
-                val resp = api.authGoogle(GoogleAuthRequest(idToken, phoneModel, deviceInfo))
-                // Do not log token
-                tokens.save(resp.token)
-                Log.i(TAG, "signInWithGoogle: success user=${resp.user.username}")
-                // Send FCM token for push notifications
-                try {
-                    val fcmToken = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
-                    api.postDevice(mapOf("fcm_token" to fcmToken))
-                    com.google.firebase.messaging.FirebaseMessaging.getInstance().subscribeToTopic("all_users")
-                    Log.d(TAG, "FCM token registered: ${fcmToken.take(12)}...")
-                } catch (e: Exception) {
-                    Log.w(TAG, "FCM token post failed (will retry on token refresh)", e)
-                }
-                _uiState.value = _uiState.value.copy(isLoading = false, isLoggedIn = true)
-                onSuccess()
-            } catch (e: Exception) {
-                Log.e(TAG, "signInWithGoogle: failed", e)
-                // Do not surface raw exception (may contain token/network internals)
-                _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "Google sign-in failed — try again")
-            }
-        }
-    }
-
-    // Local sign-out (used for session-expiry cleanup) — does not call backend
-    fun signOut() { resendJob?.cancel(); repo.signOut(); viewModelScope.launch { tokens.clear() }; _uiState.value = AuthUiState(); Log.d(TAG, "signOut: cleared state") }
+    fun signOut() { resendJob?.cancel(); repo.signOut(); viewModelScope.launch { tokens.clear() }; _uiState.value = AuthUiState() }
 
     override fun onCleared() { resendJob?.cancel(); super.onCleared() }
 

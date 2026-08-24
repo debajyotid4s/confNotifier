@@ -4,14 +4,8 @@ import kotlinx.serialization.Serializable
 import retrofit2.http.*
 
 @Serializable
-data class GoogleAuthRequest(
-    val id_token: String,
-    val phone_model: String? = null,
-    val device_info: String? = null
-)
-
-@Serializable
-data class FirebaseAuthRequest(
+data class AuthRequest(
+    val provider: String,
     val id_token: String,
     val phone_model: String? = null,
     val device_info: String? = null
@@ -36,15 +30,13 @@ data class ConferenceDto(
     val category: String? = null,
     val abstract_deadline: String? = null,
     val full_paper_deadline: String? = null,
-    val description: String? = null
+    val description: String? = null,
+    val bookmarked: Boolean? = null
 )
 
 interface ApiService {
-    @POST("auth/google")
-    suspend fun authGoogle(@Body body: GoogleAuthRequest): AuthResponse
-
-    @POST("auth/firebase")
-    suspend fun authFirebase(@Body body: FirebaseAuthRequest): AuthResponse
+    @POST("auth/login")
+    suspend fun login(@Body body: AuthRequest): AuthResponse
 
     @POST("auth/logout")
     suspend fun logout()
@@ -67,9 +59,6 @@ interface ApiService {
     @GET("me/bookmarks")
     suspend fun getBookmarks(): List<ConferenceDto>
 
-    @GET("me/bookmarks/{id}")
-    suspend fun getBookmark(@Path("id") id: Int): Map<String, Boolean>
-
     @POST("me/bookmarks/{id}")
     suspend fun addBookmark(@Path("id") id: Int): Map<String, Boolean>
 
@@ -78,7 +67,4 @@ interface ApiService {
 
     @POST("me/devices")
     suspend fun postDevice(@Body body: Map<String, String>): Map<String, Boolean>
-
-    @retrofit2.http.DELETE("me/devices/{token}")
-    suspend fun deleteDevice(@Path("token") token: String)
 }

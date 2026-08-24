@@ -244,7 +244,6 @@ private fun AuthForm(
     var confirmVisible by remember { mutableStateOf(false) }
     var emailFocused by remember { mutableStateOf(false) }
     var passFocused by remember { mutableStateOf(false) }
-    var confirmFocused by remember { mutableStateOf(false) }
     val focus = LocalFocusManager.current
     val emailScale by animateFloatAsState(if (emailFocused) 1.02f else 1f, label = "emailFocus")
     val passScale by animateFloatAsState(if (passFocused) 1.02f else 1f, label = "passFocus")
@@ -356,7 +355,7 @@ private fun AuthForm(
                     },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(onDone = { onSubmit() }),
-                    modifier = Modifier.fillMaxWidth().onFocusChanged { confirmFocused = it.isFocused }
+                    modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(Modifier.height(14.dp))
             }
