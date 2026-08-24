@@ -32,18 +32,73 @@ def get_current_user(authorization: str = Header(None)):
         raise HTTPException(status_code=401, detail="Invalid token")
     return payload  # {sub, email, exp, iat}
 
-@router.post("/auth/google")
-def auth_google(body: GoogleAuthIn, request: Request):
-    # Per-IP rate limiting: 10 req / 60s (Redis, fail-open if no Redis) — use X-Forwarded-For behind Render LB
+def _rate_limit_or_429(request: Request, key_prefix: str):
     try:
         from cache import check_rate_limit
         ip = _client_ip(request)
-        if not check_rate_limit(f"rl:auth:google:{ip}", 10, 60):
+        if not check_rate_limit(f"rl:auth:{key_prefix}:{ip}", 10, 60):
             raise HTTPException(status_code=429, detail="Too many requests — try again later")
     except HTTPException:
         raise
     except Exception:
         pass
+
+def _upsert_user(*, lookup_col: str, lookup_val: str, email: str, body, client_ip, user_agent, log_id: str):
+    """Shared upsert for Google (google_subject_id) and Firebase (firebase_uid).
+
+    `lookup_col` must be a trusted column name (hardcoded caller), `lookup_val` is parameterized.
+    Loops 10x on UniqueViolation (username collision) and returns {"token":..., "user":...}.
+    """
+    if lookup_col not in ("google_subject_id", "firebase_uid"):
+        raise ValueError(f"Invalid lookup_col: {lookup_col}")
+    for attempt in range(10):
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute(f"SELECT id, username, email FROM users WHERE {lookup_col} = %s", (lookup_val,))
+            row = cur.fetchone()
+            if row:
+                uid, username, db_email = row
+                try:
+                    cur.execute(
+                        "UPDATE users SET last_login_at = now(), last_login_ip = %s, ip_address = %s, phone_model = COALESCE(%s, phone_model), user_agent = %s, device_info = COALESCE(%s, device_info) WHERE id = %s",
+                        (client_ip, client_ip, body.phone_model, user_agent, body.device_info, uid)
+                    )
+                    conn.commit()
+                except Exception as e:
+                    logger.warning("%s: update login info failed for %s: %s", log_id, lookup_val, e)
+                    conn.rollback()
+                cur.close(); conn.close()
+                token = create_jwt(str(uid), db_email)
+                logger.info("%s: login %s=%s username=%s ip=%s phone=%s", log_id, lookup_col, lookup_val, username, client_ip, body.phone_model)
+                return {"token": token, "user": {"id": str(uid), "username": username, "email": db_email}}
+            candidate = generate_username_candidate()
+            try:
+                cur.execute(
+                    f"INSERT INTO users ({lookup_col}, email, username, phone_model, ip_address, user_agent, device_info, last_login_at, last_login_ip) VALUES (%s,%s,%s,%s,%s,%s,%s, now(), %s) RETURNING id, username",
+                    (lookup_val, email, candidate, body.phone_model, client_ip, user_agent, body.device_info, client_ip)
+                )
+                uid, username = cur.fetchone()
+                conn.commit()
+                cur.close(); conn.close()
+                token = create_jwt(str(uid), email)
+                logger.info("%s: created %s=%s username=%s ip=%s phone=%s", log_id, lookup_col, lookup_val, username, client_ip, body.phone_model)
+                return {"token": token, "user": {"id": str(uid), "username": username, "email": email}}
+            except psycopg2.errors.UniqueViolation as e:
+                conn.rollback()
+                logger.warning("%s: unique violation attempt %d for %s: %s", log_id, attempt, candidate, e)
+                cur.close(); conn.close()
+                continue
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("%s error: %s", log_id, e)
+            raise HTTPException(status_code=500, detail="auth failed")
+    raise HTTPException(status_code=500, detail="Could not generate unique username")
+
+@router.post("/auth/google")
+def auth_google(body: GoogleAuthIn, request: Request):
+    _rate_limit_or_429(request, "google")
     info = verify_google_id_token(body.id_token)
     sub = info.get("sub")
     email = info.get("email")
@@ -53,56 +108,7 @@ def auth_google(body: GoogleAuthIn, request: Request):
     if client_ip == "unknown":
         client_ip = None
     user_agent = request.headers.get("user-agent")
-    # Loop on INSERT conflict — UNIQUE is the authority, not SELECT pre-check
-    for attempt in range(10):
-        try:
-            conn = get_conn()
-            cur = conn.cursor()
-            # Try lookup first
-            cur.execute("SELECT id, username, email FROM users WHERE google_subject_id = %s", (sub,))
-            row = cur.fetchone()
-            if row:
-                uid, username, db_email = row
-                # Update last login info
-                try:
-                    cur.execute(
-                        "UPDATE users SET last_login_at = now(), last_login_ip = %s, ip_address = %s, phone_model = COALESCE(%s, phone_model), user_agent = %s, device_info = COALESCE(%s, device_info) WHERE id = %s",
-                        (client_ip, client_ip, body.phone_model, user_agent, body.device_info, uid)
-                    )
-                    conn.commit()
-                except Exception as e:
-                    logger.warning("auth_google: update login info failed for %s: %s", sub, e)
-                    conn.rollback()
-                cur.close(); conn.close()
-                token = create_jwt(str(uid), db_email)
-                logger.info("auth_google: login sub=%s username=%s ip=%s phone=%s", sub, username, client_ip, body.phone_model)
-                return {"token": token, "user": {"id": str(uid), "username": username, "email": db_email}}
-            # Not found → generate username and INSERT
-            candidate = generate_username_candidate()
-            try:
-                cur.execute(
-                    "INSERT INTO users (google_subject_id, email, username, phone_model, ip_address, user_agent, device_info, last_login_at, last_login_ip) VALUES (%s,%s,%s,%s,%s,%s,%s, now(), %s) RETURNING id, username",
-                    (sub, email, candidate, body.phone_model, client_ip, user_agent, body.device_info, client_ip)
-                )
-                uid, username = cur.fetchone()
-                conn.commit()
-                cur.close(); conn.close()
-                token = create_jwt(str(uid), email)
-                logger.info("auth_google: created sub=%s username=%s ip=%s phone=%s", sub, username, client_ip, body.phone_model)
-                return {"token": token, "user": {"id": str(uid), "username": username, "email": email}}
-            except psycopg2.errors.UniqueViolation as e:
-                conn.rollback()
-                # Could be google_subject_id or username or email collision — retry
-                # If it's google_subject_id, another concurrent request created it → loop will find it next iteration
-                logger.warning("auth_google: unique violation attempt %d for %s: %s", attempt, candidate, e)
-                cur.close(); conn.close()
-                continue
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error("auth_google error: %s", e)
-            raise HTTPException(status_code=500, detail="auth failed")
-    raise HTTPException(status_code=500, detail="Could not generate unique username")
+    return _upsert_user(lookup_col="google_subject_id", lookup_val=sub, email=email, body=body, client_ip=client_ip, user_agent=user_agent, log_id="auth_google")
 
 class FirebaseAuthIn(BaseModel):
     id_token: str
@@ -111,17 +117,7 @@ class FirebaseAuthIn(BaseModel):
 
 @router.post("/auth/firebase")
 def auth_firebase(body: FirebaseAuthIn, request: Request):
-    # Per-IP rate limiting: 10 req / 60s — use X-Forwarded-For
-    try:
-        from cache import check_rate_limit
-        ip = _client_ip(request)
-        if not check_rate_limit(f"rl:auth:firebase:{ip}", 10, 60):
-            raise HTTPException(status_code=429, detail="Too many requests — try again later")
-    except HTTPException:
-        raise
-    except Exception:
-        pass
-    # Exchange Firebase ID token for app JWT — for email/password users
+    _rate_limit_or_429(request, "firebase")
     try:
         import firebase_admin.auth as fb_auth
         from routers.internal import _ensure_firebase
@@ -143,50 +139,7 @@ def auth_firebase(body: FirebaseAuthIn, request: Request):
     if client_ip == "unknown":
         client_ip = None
     user_agent = request.headers.get("user-agent")
-    for attempt in range(10):
-        try:
-            conn = get_conn()
-            cur = conn.cursor()
-            cur.execute("SELECT id, username, email FROM users WHERE firebase_uid = %s", (fb_uid,))
-            row = cur.fetchone()
-            if row:
-                uid, username, db_email = row
-                try:
-                    cur.execute(
-                        "UPDATE users SET last_login_at = now(), last_login_ip = %s, ip_address = %s, phone_model = COALESCE(%s, phone_model), user_agent = %s, device_info = COALESCE(%s, device_info) WHERE id = %s",
-                        (client_ip, client_ip, body.phone_model, user_agent, body.device_info, uid)
-                    )
-                    conn.commit()
-                except Exception as e:
-                    logger.warning("auth_firebase update failed for %s: %s", fb_uid, e)
-                    conn.rollback()
-                cur.close(); conn.close()
-                token = create_jwt(str(uid), db_email)
-                logger.info("auth_firebase: login fb_uid=%s username=%s", fb_uid, username)
-                return {"token": token, "user": {"id": str(uid), "username": username, "email": db_email}}
-            candidate = generate_username_candidate()
-            try:
-                cur.execute(
-                    "INSERT INTO users (firebase_uid, email, username, phone_model, ip_address, user_agent, device_info, last_login_at, last_login_ip) VALUES (%s,%s,%s,%s,%s,%s,%s, now(), %s) RETURNING id, username",
-                    (fb_uid, email, candidate, body.phone_model, client_ip, user_agent, body.device_info, client_ip)
-                )
-                uid, username = cur.fetchone()
-                conn.commit()
-                cur.close(); conn.close()
-                token = create_jwt(str(uid), email)
-                logger.info("auth_firebase: created fb_uid=%s username=%s", fb_uid, username)
-                return {"token": token, "user": {"id": str(uid), "username": username, "email": email}}
-            except psycopg2.errors.UniqueViolation as e:
-                conn.rollback()
-                logger.warning("auth_firebase unique violation %d for %s: %s", attempt, candidate, e)
-                cur.close(); conn.close()
-                continue
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error("auth_firebase error: %s", e)
-            raise HTTPException(status_code=500, detail="auth failed")
-    raise HTTPException(status_code=500, detail="Could not generate username")
+    return _upsert_user(lookup_col="firebase_uid", lookup_val=fb_uid, email=email, body=body, client_ip=client_ip, user_agent=user_agent, log_id="auth_firebase")
 
 @router.post("/auth/logout")
 def auth_logout(user=Depends(get_current_user)):
