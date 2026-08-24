@@ -15,7 +15,8 @@ import javax.inject.Singleton
 
 @Singleton
 class NetworkMonitor @Inject constructor(@ApplicationContext context: Context) {
-    private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        ?: throw IllegalStateException("ConnectivityManager not available")
 
     val isOnline: Flow<Boolean> = callbackFlow {
         val callback = object : ConnectivityManager.NetworkCallback() {
@@ -35,7 +36,7 @@ class NetworkMonitor @Inject constructor(@ApplicationContext context: Context) {
         awaitClose { cm.unregisterNetworkCallback(callback) }
     }.conflate()
 
-    private fun currentlyOnline(): Boolean {
+    fun currentlyOnline(): Boolean {
         val network = cm.activeNetwork ?: return false
         val caps = cm.getNetworkCapabilities(network) ?: return false
         return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)

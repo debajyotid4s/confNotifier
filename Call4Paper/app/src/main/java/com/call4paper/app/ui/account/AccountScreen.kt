@@ -1,5 +1,10 @@
 package com.call4paper.app.ui.account
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -14,13 +19,20 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AccountScreen(onLogout: () -> Unit, onBookmarks: () -> Unit, vm: AccountViewModel = hiltViewModel()) {
-    val s by vm.state.collectAsState()
+    val s by vm.state.collectAsStateWithLifecycle()
+    val ctx = LocalContext.current
+    val notifPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        vm.toggleNotifications(granted)
+    }
     LaunchedEffect(Unit) { vm.load() }
     PullToRefreshBox(isRefreshing = s.isRefreshing, onRefresh = { vm.refresh() }, modifier = Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -41,7 +53,13 @@ fun AccountScreen(onLogout: () -> Unit, onBookmarks: () -> Unit, vm: AccountView
                     ListItem(
                         headlineContent = { Text("Notifications", style = MaterialTheme.typography.titleSmall) },
                         supportingContent = { Text("Manage push preferences", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                        trailingContent = { Switch(checked = s.notificationsEnabled, onCheckedChange = { vm.toggleNotifications(it) }) }
+                        trailingContent = { Switch(checked = s.notificationsEnabled, onCheckedChange = { enabled ->
+                            if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                                notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            } else {
+                                vm.toggleNotifications(enabled)
+                            }
+                        }) }
                     )
                     HorizontalDivider()
                     ListItem(headlineContent = { Text("Logout", style = MaterialTheme.typography.titleSmall) }, modifier = Modifier.clickable { vm.logout(onLogout) })

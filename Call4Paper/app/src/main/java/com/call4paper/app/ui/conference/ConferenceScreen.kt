@@ -17,13 +17,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.call4paper.app.data.deadlineLabel
 import com.call4paper.app.ui.theme.urgencyForEntity
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConferenceScreen(id: Int, vm: ConferenceViewModel = hiltViewModel()) {
-    val s by vm.state.collectAsState()
+    val s by vm.state.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     val snackbarHost = remember { SnackbarHostState() }
     LaunchedEffect(s.bookmarkError) { s.bookmarkError?.let { snackbarHost.showSnackbar(it); vm.clearBookmarkError() } }
@@ -37,15 +38,19 @@ fun ConferenceScreen(id: Int, vm: ConferenceViewModel = hiltViewModel()) {
                 when {
                     s.conference == null && s.isRefreshing -> LoadingCard()
                     s.conference == null -> ErrorCard { vm.refresh() }
-                    else -> {
-                        val c = s.conference!!
+                    else -> s.conference?.let { c ->
                         val urgency = urgencyForEntity(c)
                         ConferenceHeader(c, urgency)
                         ConferenceActions(
                             bookmarked = s.bookmarked,
                             onToggleBookmark = { vm.toggleBookmark(id) },
                             website = c.website,
-                            onOpenWebsite = { url -> ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                            onOpenWebsite = { url ->
+                                val uri = Uri.parse(url)
+                                if (uri.scheme == "http" || uri.scheme == "https") {
+                                    ctx.startActivity(Intent(Intent.ACTION_VIEW, uri))
+                                }
+                            }
                         )
                     }
                 }

@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.call4paper.app.data.deadlineDisplayLong
 import com.call4paper.app.data.isTba
 import com.call4paper.app.ui.theme.TbaGray
@@ -24,9 +25,9 @@ import com.call4paper.app.ui.theme.urgencyForEntity
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 fun UpcomingScreen(onConference: (Int) -> Unit, vm: UpcomingViewModel = hiltViewModel()) {
-    val items by vm.state.collectAsState()
-    val err by vm.error.collectAsState()
-    val isRefreshing by vm.isRefreshing.collectAsState()
+    val items by vm.state.collectAsStateWithLifecycle()
+    val err by vm.error.collectAsStateWithLifecycle()
+    val isRefreshing by vm.isRefreshing.collectAsStateWithLifecycle()
     PullToRefreshBox(isRefreshing = isRefreshing, onRefresh = { vm.refresh() }, modifier = Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().padding(16.dp)) {
             Text("Upcoming — soonest first", style = MaterialTheme.typography.titleLarge)

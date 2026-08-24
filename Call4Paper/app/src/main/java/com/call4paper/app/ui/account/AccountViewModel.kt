@@ -7,6 +7,7 @@ import com.call4paper.app.data.local.TokenManager
 import com.call4paper.app.data.remote.ApiService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,9 +32,20 @@ class AccountViewModel @Inject constructor(
     private val tokens: TokenManager,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
-    private val prefs by lazy { appContext.getSharedPreferences("settings", Context.MODE_PRIVATE) }
-    private val _state = MutableStateFlow(AccountUiState(notificationsEnabled = prefs.getBoolean("notifications_enabled", true)))
+    private val prefs by lazy {
+        appContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    }
+    private val _state = MutableStateFlow(AccountUiState())
     val state: StateFlow<AccountUiState> = _state.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            val enabled = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                prefs.getBoolean("notifications_enabled", true)
+            }
+            _state.value = _state.value.copy(notificationsEnabled = enabled)
+        }
+    }
 
     fun load() {
         viewModelScope.launch {
@@ -41,7 +53,8 @@ class AccountViewModel @Inject constructor(
             try {
                 val u = api.getMe()
                 _state.update { it.copy(username = u.username, email = u.email, createdAt = u.created_at, error = null, isRefreshing = false) }
-            } catch (e: Exception) {
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
                 _state.update { it.copy(error = "Failed to load profile — ${e.message?.take(80) ?: "check connection"}", isRefreshing = false) }
             }
         }
@@ -58,7 +71,8 @@ class AccountViewModel @Inject constructor(
 
     fun logout(onDone: () -> Unit) {
         viewModelScope.launch {
-            try { api.logout() } catch (_: Exception) {}
+            try { api.logout() } catch (e: Exception) { android.util.Log.w("AccountVM", "logout API failed", e) }
+            try { com.google.firebase.messaging.FirebaseMessaging.getInstance().unsubscribeFromTopic("all_users") } catch (e: Exception) { android.util.Log.w("AccountVM", "FCM unsubscribe failed", e) }
             tokens.clear()
             _state.update { it.copy(error = null) }
             onDone()
@@ -76,7 +90,8 @@ class AccountViewModel @Inject constructor(
                 tokens.clear()
                 _state.update { it.copy(showDeleteConfirm = false, error = null) }
                 onDone()
-            } catch (e: retrofit2.HttpException) {
+            } catch (e: CancellationException) { throw e }
+            catch (e: retrofit2.HttpException) {
                 val msg = try {
                     val body = e.response()?.errorBody()?.string()
                     org.json.JSONObject(body ?: "{}").optString("detail", "Delete failed")

@@ -11,7 +11,9 @@ import com.call4paper.app.data.remote.AuthResponse
 import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
 import com.google.firebase.auth.FirebaseAuthUserCollisionException
 import com.google.firebase.auth.FirebaseAuthWeakPasswordException
+import androidx.lifecycle.SavedStateHandle
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,8 +24,6 @@ import kotlinx.coroutines.tasks.await
 import javax.inject.Inject
 
 private const val TAG = "AuthViewModel"
-
-object PendingLoginEmail { var email: String? = null }
 
 data class AuthUiState(
     val email: String = "",
@@ -43,7 +43,8 @@ data class AuthUiState(
 class AuthViewModel @Inject constructor(
     private val repo: AuthRepository,
     private val api: ApiService,
-    private val tokens: TokenManager
+    private val tokens: TokenManager,
+    private val savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(AuthUiState(isLoggedIn = false))
@@ -59,6 +60,7 @@ class AuthViewModel @Inject constructor(
     }
 
     fun onEmailChange(v: String) { _uiState.value = _uiState.value.copy(email = v, errorMessage = null, suggestLogin = false, infoMessage = null) }
+    fun consumePendingLoginEmail(): String? = savedStateHandle.remove<String>("pendingLoginEmail")
     fun onPasswordChange(v: String) { _uiState.value = _uiState.value.copy(password = v, errorMessage = null, suggestLogin = false) }
     fun onConfirmPasswordChange(v: String) { _uiState.value = _uiState.value.copy(confirmPassword = v, errorMessage = null) }
     fun clearSuggestLogin() { _uiState.value = _uiState.value.copy(suggestLogin = false) }
@@ -104,7 +106,8 @@ class AuthViewModel @Inject constructor(
             val fcm = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
             api.postDevice(mapOf("fcm_token" to fcm))
             com.google.firebase.messaging.FirebaseMessaging.getInstance().subscribeToTopic("all_users")
-        } catch (_: Exception) {}
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { Log.w(TAG, "registerDevice failed", e) }
     }
 
     private fun parseServerError(e: Throwable): String {
@@ -147,8 +150,9 @@ class AuthViewModel @Inject constructor(
                 )
                 startResendCooldown(120)
             }.onFailure { e ->
+                if (e is CancellationException) throw e
                 if (e is FirebaseAuthUserCollisionException) {
-                    PendingLoginEmail.email = _uiState.value.email
+                    savedStateHandle["pendingLoginEmail"] = _uiState.value.email
                     _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "Email already registered — try signing in", suggestLogin = true)
                 } else {
                     _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = mapError(e))
@@ -173,7 +177,8 @@ class AuthViewModel @Inject constructor(
                     performSession(SessionInfo("firebase", fbToken))
                     _uiState.value = _uiState.value.copy(isLoading = false, isLoggedIn = true)
                     onSuccess()
-                } catch (e: retrofit2.HttpException) {
+                } catch (e: CancellationException) { throw e }
+                catch (e: retrofit2.HttpException) {
                     _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = parseServerError(e))
                 } catch (e: Exception) {
                     if (isNotVerifiedError(e)) {
@@ -184,7 +189,7 @@ class AuthViewModel @Inject constructor(
                         )
                     } else {
                         _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "Signed in to Firebase but backend session failed — try again")
-                        try { repo.signOut() } catch (_: Exception) {}
+                        try { repo.signOut() } catch (e: Exception) { Log.w(TAG, "signOut failed", e) }
                     }
                 }
             }.onFailure { e ->
@@ -204,7 +209,8 @@ class AuthViewModel @Inject constructor(
                 performSession(SessionInfo("google", idToken))
                 _uiState.value = _uiState.value.copy(isLoading = false, isLoggedIn = true)
                 onSuccess()
-            } catch (e: retrofit2.HttpException) {
+            } catch (e: CancellationException) { throw e }
+            catch (e: retrofit2.HttpException) {
                 _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = parseServerError(e))
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "Google sign-in failed — try again")
@@ -230,7 +236,8 @@ class AuthViewModel @Inject constructor(
                 performSession(SessionInfo("firebase", fbToken))
                 _uiState.value = _uiState.value.copy(isLoading = false, isLoggedIn = true, verificationPending = false, verificationEmail = null, infoMessage = null)
                 onSuccess()
-            } catch (e: retrofit2.HttpException) {
+            } catch (e: CancellationException) { throw e }
+            catch (e: retrofit2.HttpException) {
                 _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = parseServerError(e))
             } catch (e: Exception) {
                 if (isNotVerifiedError(e)) {
@@ -268,7 +275,8 @@ class AuthViewModel @Inject constructor(
                 startResendCooldown(120)
                 _uiState.value = _uiState.value.copy(isLoading = false, infoMessage = "Reset link sent to $email — check inbox (and Spam)")
                 onSent()
-            }.onFailure {
+            }.onFailure { e ->
+                if (e is CancellationException) throw e
                 _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "Could not send reset link — check email and try again")
             }
         }

@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.call4paper.app.data.local.ConferenceEntity
 import com.call4paper.app.data.repository.ConferenceRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.time.LocalDate
@@ -43,7 +44,7 @@ class CalendarViewModel @Inject constructor(private val repo: ConferenceReposito
     fun refresh(m: YearMonth = _month.value) {
         viewModelScope.launch {
             _state.value = _state.value.copy(loading = true)
-            try { repo.refreshCalendar(String.format("%04d-%02d", m.year, m.monthValue)) } catch (_: Exception) { _state.value = _state.value.copy(error = "Could not load calendar — check your connection") }
+            try { repo.refreshCalendar(String.format("%04d-%02d", m.year, m.monthValue)) } catch (e: CancellationException) { throw e } catch (_: Exception) { _state.value = _state.value.copy(error = "Could not load calendar — check your connection") }
             _state.value = _state.value.copy(loading = false)
         }
     }

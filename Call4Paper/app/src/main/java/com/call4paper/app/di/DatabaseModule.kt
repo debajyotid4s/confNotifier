@@ -26,7 +26,6 @@ object DatabaseModule {
     fun provideDb(@ApplicationContext ctx: Context): AppDatabase =
         Room.databaseBuilder(ctx, AppDatabase::class.java, "call4paper.db")
             .addMigrations(MIGRATION_1_2)
-            .fallbackToDestructiveMigrationOnDowngrade()
             .build()
 
     @Provides fun provideDao(db: AppDatabase) = db.conferenceDao()

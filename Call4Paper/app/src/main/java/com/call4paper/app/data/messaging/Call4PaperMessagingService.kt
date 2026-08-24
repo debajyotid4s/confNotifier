@@ -9,25 +9,28 @@ import androidx.core.app.NotificationCompat
 import com.call4paper.app.MainActivity
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 
 class Call4PaperMessagingService : FirebaseMessagingService() {
 
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     override fun onNewToken(token: String) {
         android.util.Log.d("FCM", "onNewToken: ${token.take(12)}...")
-        // Subscribe to broadcast topic for digest notifications
-        com.google.firebase.messaging.FirebaseMessaging.getInstance()
-            .subscribeToTopic("all_users")
-        // Try to register with backend if user is logged in (JWT exists)
-        // Uses EntryPoint to get TokenManager and ApiService without Hilt injection in Service
+        // Register with backend if user is logged in (JWT exists)
+        // Topic subscription is handled in AuthViewModel.registerDevice() after login
         try {
             val entry = dagger.hilt.android.EntryPointAccessors.fromApplication(
                 applicationContext, MessagingEntryPoint::class.java
             )
             val tokenManager = entry.tokenManager()
             val api = entry.apiService()
-            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            scope.launch {
                 try {
                     val jwt = tokenManager.tokenFlow.firstOrNull()
                     if (jwt != null) {
@@ -45,6 +48,11 @@ class Call4PaperMessagingService : FirebaseMessagingService() {
         }
     }
 
+    override fun onDestroy() {
+        scope.cancel()
+        super.onDestroy()
+    }
+
     @dagger.hilt.EntryPoint
     @dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
     interface MessagingEntryPoint {
@@ -55,8 +63,9 @@ class Call4PaperMessagingService : FirebaseMessagingService() {
     override fun onMessageReceived(msg: RemoteMessage) {
         val title = msg.notification?.title ?: msg.data["title"] ?: "Call4Paper"
         val body = msg.notification?.body ?: msg.data["body"] ?: ""
-        val type = msg.data["type"] ?: "conference" // conference | deadline_change | reminder
+        val type = msg.data["type"] ?: "conference"
         val conferenceId = msg.data["conference_id"] ?: msg.data["id"]
+        android.util.Log.i("FCM", "onMessageReceived type=$type conferenceId=$conferenceId")
         showNotification(title, body, type, conferenceId)
     }
 
@@ -72,11 +81,13 @@ class Call4PaperMessagingService : FirebaseMessagingService() {
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
             data = android.net.Uri.parse("call4paper://conference$conferencePath")
-            // Also pass as extra for in-app routing fallback
             conferenceId?.let { putExtra("conference_id", it) }
         }
         val pi = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 
+        val notifId = conferenceId?.hashCode() ?: System.currentTimeMillis().toInt()
+
+        val nm = getSystemService(NOTIFICATION_SERVICE) as? NotificationManager ?: return
         val notif = NotificationCompat.Builder(this, channelId)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(title)
@@ -86,8 +97,8 @@ class Call4PaperMessagingService : FirebaseMessagingService() {
             .setAutoCancel(true)
             .build()
 
-        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
-            .notify(System.currentTimeMillis().toInt(), notif)
+        nm.notify(notifId, notif)
+        android.util.Log.i("FCM", "Notification shown: id=$notifId channel=$channelId")
     }
 
     private fun titleFor(id: String) = when (id) {
@@ -103,8 +114,9 @@ class Call4PaperMessagingService : FirebaseMessagingService() {
                 "conference" -> NotificationManager.IMPORTANCE_DEFAULT
                 else -> NotificationManager.IMPORTANCE_LOW
             }
+            val nm = getSystemService(NOTIFICATION_SERVICE) as? NotificationManager ?: return
             val ch = NotificationChannel(id, name, importance)
-            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(ch)
+            nm.createNotificationChannel(ch)
         }
     }
 }

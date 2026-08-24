@@ -24,13 +24,12 @@ class TokenManager @Inject constructor(@ApplicationContext private val ctx: Cont
         )
     }
     private val _flow = MutableStateFlow<String?>(null)
+    val tokenFlow: Flow<String?> = _flow.map { it }
+    val currentToken: String? get() = _flow.value
+
     init {
-        // Seed flow from encrypted prefs (synchronous, so currentToken is available immediately)
         _flow.value = prefs.getString("app_token", null)
     }
-    val tokenFlow: Flow<String?> = _flow.map { it }
-    // Synchronous accessor for OkHttp interceptor (avoid runBlocking)
-    val currentToken: String? get() = _flow.value
 
     suspend fun save(token: String) = withContext(Dispatchers.IO) {
         prefs.edit().putString("app_token", token).apply()
