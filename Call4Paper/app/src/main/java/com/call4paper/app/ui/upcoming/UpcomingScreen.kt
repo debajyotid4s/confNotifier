@@ -28,28 +28,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
+import com.call4paper.app.ui.theme.TbaGray
+import com.call4paper.app.ui.theme.isTbaEntity
+import com.call4paper.app.ui.theme.urgencyForEntity
 import javax.inject.Inject
-
-private val WarningAmber = androidx.compose.ui.graphics.Color(0xFFF9A825)
-private val TbaGray = androidx.compose.ui.graphics.Color(0xFF9E9E9E)
-
-private fun isTba(c: ConferenceEntity): Boolean {
-    return c.abstractDeadline == null && c.fullPaperDeadline == null && c.startDate == null
-}
-
-@Composable
-private fun urgencyForEntity(c: ConferenceEntity): androidx.compose.ui.graphics.Color {
-    if (isTba(c)) return TbaGray
-    val dl = c.abstractDeadline ?: c.fullPaperDeadline ?: c.startDate ?: return MaterialTheme.colorScheme.outlineVariant
-    val d = runCatching { LocalDate.parse(dl) }.getOrNull() ?: return MaterialTheme.colorScheme.outlineVariant
-    val days = ChronoUnit.DAYS.between(LocalDate.now(), d)
-    return when {
-        days < 0 -> MaterialTheme.colorScheme.outlineVariant
-        days < 3 -> MaterialTheme.colorScheme.error
-        days <= 14 -> WarningAmber
-        else -> MaterialTheme.colorScheme.outlineVariant
-    }
-}
 
 @HiltViewModel
 class UpcomingViewModel @Inject constructor(private val repo: ConferenceRepository) : ViewModel() {
@@ -104,7 +86,7 @@ fun UpcomingScreen(onConference: (Int) -> Unit, vm: UpcomingViewModel = hiltView
                 else -> {
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) {
                         items(items, key = { it.id }) { c ->
-                            val tba = isTba(c)
+                            val tba = isTbaEntity(c)
                             val urgency = urgencyForEntity(c)
 
                             val deadlineText: String

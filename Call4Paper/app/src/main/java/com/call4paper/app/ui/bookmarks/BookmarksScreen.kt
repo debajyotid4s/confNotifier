@@ -20,26 +20,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.call4paper.app.data.local.ConferenceEntity
 import com.call4paper.app.data.remote.ApiService
+import com.call4paper.app.ui.theme.urgencyForEntity
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.launch
-import java.time.LocalDate
-import java.time.temporal.ChronoUnit
 import javax.inject.Inject
-
-private val WarningAmber = androidx.compose.ui.graphics.Color(0xFFF9A825)
-
-@Composable
-private fun urgencyFor(c: ConferenceEntity): androidx.compose.ui.graphics.Color {
-    val dl = c.abstractDeadline ?: c.fullPaperDeadline ?: c.startDate ?: return MaterialTheme.colorScheme.outlineVariant
-    val d = runCatching { LocalDate.parse(dl) }.getOrNull() ?: return MaterialTheme.colorScheme.outlineVariant
-    val days = ChronoUnit.DAYS.between(LocalDate.now(), d)
-    return when {
-        days < 0 -> MaterialTheme.colorScheme.outlineVariant
-        days < 3 -> MaterialTheme.colorScheme.error
-        days <= 14 -> WarningAmber
-        else -> MaterialTheme.colorScheme.outlineVariant
-    }
-}
 
 @HiltViewModel
 class BookmarksViewModel @Inject constructor(private val api: ApiService) : ViewModel() {
@@ -103,7 +87,7 @@ fun BookmarksScreen(onConference: (Int) -> Unit, vm: BookmarksViewModel = hiltVi
                 else -> {
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) {
                         items(vm.items, key = { it.id }) { c ->
-                            val urgency = urgencyFor(c)
+                            val urgency = urgencyForEntity(c)
                             val deadline = c.abstractDeadline ?: c.fullPaperDeadline
                             val label = when {
                                 c.abstractDeadline != null -> "Abstract"

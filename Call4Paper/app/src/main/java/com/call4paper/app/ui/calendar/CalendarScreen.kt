@@ -34,6 +34,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.call4paper.app.data.local.ConferenceEntity
 import com.call4paper.app.data.repository.ConferenceRepository
+import com.call4paper.app.ui.theme.urgencyColorFor
+import com.call4paper.app.ui.theme.urgencyColorForDate
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -41,40 +43,11 @@ import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.TextStyle
-import java.time.temporal.ChronoUnit
 import java.util.Locale
 import javax.inject.Inject
 
-private val Red = Color(0xFFE53935)
-private val WarningAmber = Color(0xFFF9A825)
 private val CardBg = Color(0xFFF2F2F7)
-// Theme-aware helpers — ink/navy seed, red only for urgency
-@Composable private fun calendarRed() = MaterialTheme.colorScheme.error
 @Composable private fun calendarCardBg() = MaterialTheme.colorScheme.surfaceVariant
-@Composable private fun warningAmber() = WarningAmber
-@Composable private fun calmNeutral() = MaterialTheme.colorScheme.outlineVariant
-
-@Composable
-private fun urgencyColorFor(deadlineStr: String, today: LocalDate = LocalDate.now()): Color {
-    val d = runCatching { LocalDate.parse(deadlineStr) }.getOrNull() ?: return MaterialTheme.colorScheme.outlineVariant
-    val days = ChronoUnit.DAYS.between(today, d)
-    return when {
-        days < 0 -> MaterialTheme.colorScheme.outlineVariant // past - muted
-        days < 3 -> calendarRed() // urgent — error red
-        days <= 14 -> WarningAmber // warning — amber
-        else -> MaterialTheme.colorScheme.outlineVariant // calm
-    }
-}
-@Composable
-private fun urgencyColorForDate(date: LocalDate, today: LocalDate = LocalDate.now()): Color {
-    val days = ChronoUnit.DAYS.between(today, date)
-    return when {
-        days < 0 -> MaterialTheme.colorScheme.outlineVariant
-        days < 3 -> calendarRed()
-        days <= 14 -> WarningAmber
-        else -> MaterialTheme.colorScheme.outlineVariant
-    }
-}
 
 data class CalendarUiState(val month: YearMonth = YearMonth.now(), val selected: LocalDate = LocalDate.now(), val items: List<ConferenceEntity> = emptyList(), val loading: Boolean = false, val error: String? = null)
 
@@ -142,7 +115,6 @@ fun CalendarScreen(onConference: (Int) -> Unit, vm: CalendarViewModel = hiltView
     val selStr = s.selected.toString()
     val forDay = allDeadlines.filter { it.first == selStr }
 
-    val themedRed = calendarRed()
     val themedCardBg = calendarCardBg()
     PullToRefreshBox(
         isRefreshing = s.loading,
