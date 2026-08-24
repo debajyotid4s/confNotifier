@@ -21,6 +21,11 @@ android {
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
+        // Not a secret (Google OAuth client ID is public), but keep in BuildConfig for flavor flexibility
+        val webId = (project.findProperty("WEB_CLIENT_ID") as String?)
+            ?: System.getenv("WEB_CLIENT_ID")
+            ?: "203119671824-n3jbcp0paouibc1dbg1v4dmnpf9sm16s.apps.googleusercontent.com"
+        buildConfigField("String", "WEB_CLIENT_ID", "\"$webId\"")
     }
 
     buildFeatures { compose = true; buildConfig = true }

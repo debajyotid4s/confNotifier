@@ -4,6 +4,10 @@ on:
     - cron: '0 2 * * *'   # 08:00 BDT (UTC+6)
   workflow_dispatch: {}
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   notify:
     runs-on: ubuntu-latest

@@ -200,7 +200,7 @@ def _discover_candidates(playwright, stats: RunStats) -> list[str]:
     except Exception as e:
         logger.error("special failed: %s", e)
 
-    unique = list(set(candidates))
+    unique = sorted(set(candidates))
     with stats._lock:
         stats.conferences_discovered = len(unique)
     return unique
@@ -214,13 +214,13 @@ def _requeue_previous_runs(candidates: list[str]) -> tuple[list[str], set[str]]:
     pending = db.load_pending_urls()
     if pending:
         logger.info("Re-queued %d pending URLs from previous runs", len(pending))
-    candidates = list(set(candidates + pending))
+    candidates = sorted(set(candidates + pending))
 
     retryable = db.load_retryable_urls()
     retryable_url_set = {url for url, _ in retryable}
     if retryable_url_set:
         logger.info("Re-queued %d retryable URLs from previous runs", len(retryable_url_set))
-    candidates = list(set(candidates + list(retryable_url_set)))
+    candidates = sorted(set(candidates + list(retryable_url_set)))
 
     return candidates, retryable_url_set
 

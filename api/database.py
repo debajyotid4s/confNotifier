@@ -76,16 +76,14 @@ def get_conn():
         for attempt in range(3):
             try:
                 conn = pool.getconn()
-                # Pre-ping: ensure idle-killed conns are refreshed
-                try:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT 1")
-                except psycopg2.Error:
+                # Fast path: rely on keepalives + rollback-on-close; no per-checkout SELECT 1
+                # If conn is already closed (Neon idle kill), put it away and retry
+                if getattr(conn, "closed", 0) != 0:
                     try:
                         pool.putconn(conn, close=True)
                     except Exception:
                         pass
-                    raise
+                    raise psycopg2.OperationalError("pooled conn closed")
                 return _PooledConnection(conn, pool)
             except psycopg2.Error as e:
                 logger.error("DB pool getconn attempt %d/3 failed: %s", attempt + 1, e)

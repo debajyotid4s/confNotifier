@@ -34,6 +34,41 @@ app.include_router(internal_router.router)
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    checks = {"ok": True}
+    # DB
+    try:
+        from database import get_conn
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
+        checks["db"] = "ok"
+    except Exception as e:
+        checks["db"] = f"error: {str(e)[:200]}"
+        checks["ok"] = False
+    # Redis
+    try:
+        from cache import get_redis
+        r = get_redis()
+        if r is not None:
+            r.ping()
+            checks["redis"] = "ok"
+        else:
+            checks["redis"] = "not_configured" if not os.environ.get("REDIS_URL") else "unavailable"
+    except Exception as e:
+        checks["redis"] = f"error: {str(e)[:200]}"
+        checks["ok"] = False
+    # Firebase
+    try:
+        from routers.internal import _ensure_firebase
+        checks["firebase"] = "ok" if _ensure_firebase() else "not_configured"
+    except Exception as e:
+        checks["firebase"] = f"error: {str(e)[:200]}"
+    from fastapi.responses import JSONResponse
+    return JSONResponse(content=checks, status_code=200 if checks["ok"] else 503)
 
 # Ownership boundary documented in models.py
