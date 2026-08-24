@@ -20,28 +20,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.call4paper.app.data.remote.ApiService
 import com.call4paper.app.data.repository.ConferenceRepository
+import com.call4paper.app.ui.theme.urgencyForEntity
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import java.time.LocalDate
-import java.time.temporal.ChronoUnit
 import javax.inject.Inject
-
-private val WarningAmber = androidx.compose.ui.graphics.Color(0xFFF9A825)
-
-@Composable
-private fun urgencyForDetail(c: com.call4paper.app.data.local.ConferenceEntity?): androidx.compose.ui.graphics.Color {
-    val dl = c?.abstractDeadline ?: c?.fullPaperDeadline ?: return MaterialTheme.colorScheme.outlineVariant
-    val d = runCatching { LocalDate.parse(dl) }.getOrNull() ?: return MaterialTheme.colorScheme.outlineVariant
-    val days = ChronoUnit.DAYS.between(LocalDate.now(), d)
-    return when {
-        days < 0 -> MaterialTheme.colorScheme.outlineVariant
-        days < 3 -> MaterialTheme.colorScheme.error
-        days <= 14 -> WarningAmber
-        else -> MaterialTheme.colorScheme.outlineVariant
-    }
-}
 
 @HiltViewModel
 class ConferenceViewModel @Inject constructor(private val repo: ConferenceRepository, private val api: ApiService) : ViewModel() {
@@ -117,7 +101,7 @@ fun ConferenceScreen(id: Int, vm: ConferenceViewModel = hiltViewModel()) {
                         }
                     }
                 } else {
-                    val urgency = urgencyForDetail(c)
+                    val urgency = urgencyForEntity(c!!)
                     Card(
                         shape = RoundedCornerShape(12.dp),
                         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
