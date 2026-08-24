@@ -21,7 +21,10 @@ import androidx.lifecycle.viewModelScope
 import com.call4paper.app.data.local.ConferenceEntity
 import com.call4paper.app.data.repository.ConferenceRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
@@ -61,7 +64,7 @@ class UpcomingViewModel @Inject constructor(private val repo: ConferenceReposito
         viewModelScope.launch {
             _isRefreshing.value = true
             _error.value = null
-            try { repo.refreshUpcoming(50); _state.value = repo.observeAll().first() }
+            try { _state.value = repo.refreshUpcoming(50) }
             catch (_: Exception) { _error.value = "Could not load — check your connection" }
             _isRefreshing.value = false
         }

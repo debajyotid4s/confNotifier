@@ -44,11 +44,13 @@ class ConferenceRepository @Inject constructor(
         }
     }
 
-    suspend fun refreshUpcoming(limit: Int = 30) = withContext(Dispatchers.IO) {
+    suspend fun refreshUpcoming(limit: Int = 30): List<ConferenceEntity> = withContext(Dispatchers.IO) {
         Log.d(TAG, "refreshUpcoming limit=$limit")
         try {
             val dtos = api.getUpcoming(limit)
-            dao.insertAll(dtos.map { it.toEntity() })
+            val entities = dtos.map { it.toEntity() }
+            dao.insertAll(entities)
+            entities
         } catch (e: Exception) {
             Log.e(TAG, "refreshUpcoming failed", e); throw e
         }

@@ -119,10 +119,14 @@ def notify_bookmarks(x_notify_secret: str = Header(None)):
         cur = conn.cursor()
         # Find bookmarked conferences with approaching or changed deadlines,
         # excluding already-notified combinations via notification_log.
-        # Queries flat columns (scraper writes here); UNION ALL per deadline type.
+        # Includes deadline_date in dedup key so A→B→C each gets a fresh slot.
         cur.execute("""
             SELECT dt.fcm_token, dt.user_id, conf.id AS conf_id, conf.title,
-                   dl.dl_type, dl.deadline_date, dl.reason
+                   dl.dl_type, dl.deadline_date,
+                   CASE
+                     WHEN dl.previous_date IS DISTINCT FROM dl.deadline_date AND dl.previous_date IS NOT NULL THEN 'changed'
+                     WHEN dl.deadline_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '3 days' THEN 'approaching'
+                   END AS reason
             FROM device_tokens dt
             JOIN bookmarks b ON b.user_id = dt.user_id
             JOIN conferences conf ON conf.id = b.conference_id
@@ -135,13 +139,17 @@ def notify_bookmarks(x_notify_secret: str = Header(None)):
               ON nl.user_id = dt.user_id
              AND nl.conference_id = conf.id
              AND nl.deadline_type = dl.dl_type
-             AND nl.reason = dl.reason
+             AND nl.deadline_date = dl.deadline_date
+             AND nl.reason = CASE
+                   WHEN dl.previous_date IS DISTINCT FROM dl.deadline_date AND dl.previous_date IS NOT NULL THEN 'changed'
+                   WHEN dl.deadline_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '3 days' THEN 'approaching'
+                 END
             WHERE dl.deadline_date IS NOT NULL
+              AND CASE
+                    WHEN dl.previous_date IS DISTINCT FROM dl.deadline_date AND dl.previous_date IS NOT NULL THEN 'changed'
+                    WHEN dl.deadline_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '3 days' THEN 'approaching'
+                  END IS NOT NULL
               AND nl.id IS NULL
-              AND (
-                  dl.deadline_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '3 days'
-                  OR (dl.previous_date IS DISTINCT FROM dl.deadline_date AND dl.previous_date IS NOT NULL)
-              )
         """)
         rows = cur.fetchall()
         cur.close()
@@ -163,6 +171,8 @@ def notify_bookmarks(x_notify_secret: str = Header(None)):
             user_payloads.setdefault(user_id, []).append((conf_id, title, dl_type, reason, deadline_date))
 
         sent = 0
+        # Track which users actually received at least one token success — only log those
+        succeeded_users = set()
         for user_id, tokens_set in user_tokens.items():
             token_list = list(tokens_set)
             payloads = user_payloads[user_id]
@@ -187,6 +197,7 @@ def notify_bookmarks(x_notify_secret: str = Header(None)):
                 body = f"Deadlines approaching: {names}{suffix}"
                 data = {"type": "deadline_change", "screen": "upcoming"}
 
+            user_success = False
             for i in range(0, len(token_list), 500):
                 batch = token_list[i:i + 500]
                 msg = fcm.MulticastMessage(
@@ -195,35 +206,71 @@ def notify_bookmarks(x_notify_secret: str = Header(None)):
                     tokens=batch,
                 )
                 resp = fcm.send_each_for_multicast(msg)
-                sent += resp.success_count
+                # Per-token detail — don't count batch as success if all tokens in batch failed
+                batch_success = 0
+                try:
+                    for idx, r in enumerate(resp.responses):
+                        if r.success:
+                            batch_success += 1
+                        else:
+                            # Log stale token for cleanup; exception holds the error
+                            tok = batch[idx] if idx < len(batch) else "unknown"
+                            logger.info("notify-bookmarks token failed user=%s token=%s.. err=%s", user_id, tok[:12], r.exception)
+                except Exception as e:
+                    logger.warning("notify-bookmarks response parse failed user=%s: %s", user_id, e)
+                    batch_success = resp.success_count
 
-                # Clean up invalid tokens on failure
+                sent += batch_success
+                if batch_success > 0:
+                    user_success = True
+
                 if resp.failure_count:
                     logger.warning("notify-bookmarks user %s batch %d: %d failures",
                                    user_id, i // 500, resp.failure_count)
 
-        # Record what we sent so we don't spam next run
-        cur2 = conn.cursor()
+            if user_success:
+                succeeded_users.add(user_id)
+
+        # Record only what was actually delivered — per-row commit so one FK race doesn't wipe 1..49
+        # Also, when a 'changed' fires, delete any prior 'approaching' for same (user, conference, type) so the 3-day warning can fire again for the new date
         inserted = 0
+        cur2 = conn.cursor()
         for r in rows:
             fcm_token, user_id, conf_id, title, dl_type, deadline_date, reason = r
+            if user_id not in succeeded_users:
+                continue
             try:
+                if reason == "changed":
+                    # Allow the approaching countdown to restart for the new date
+                    cur2.execute(
+                        "DELETE FROM notification_log WHERE user_id=%s AND conference_id=%s AND deadline_type=%s AND reason='approaching'",
+                        (user_id, conf_id, dl_type)
+                    )
                 cur2.execute("""
-                    INSERT INTO notification_log (user_id, conference_id, deadline_type, reason)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (user_id, conference_id, deadline_type, reason) DO NOTHING
-                """, (user_id, conf_id, dl_type, reason))
-                inserted += cur2.rowcount
-            except Exception:
-                conn.rollback()
-                break
-        conn.commit()
+                    INSERT INTO notification_log (user_id, conference_id, deadline_type, deadline_date, reason)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (user_id, conference_id, deadline_type, reason, deadline_date) DO NOTHING
+                """, (user_id, conf_id, dl_type, deadline_date, reason))
+                if cur2.rowcount:
+                    inserted += 1
+                conn.commit()
+            except Exception as e:
+                logger.error("notify-bookmarks log insert failed user=%s conf=%s type=%s reason=%s date=%s: %s", user_id, conf_id, dl_type, reason, deadline_date, e)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                # Continue to next row — don't break and wipe previous commits
+                continue
         cur2.close()
 
         logger.info("notify-bookmarks: %d targets, %d sent, %d logged", len(rows), sent, inserted)
         return {"ok": True, "targets": len(rows), "sent": sent, "logged": inserted}
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 @router.post("/internal/notify-digest")
