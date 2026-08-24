@@ -1,5 +1,6 @@
 package com.call4paper.app.ui.account
 
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -21,17 +22,25 @@ import androidx.lifecycle.viewModelScope
 import com.call4paper.app.data.local.TokenManager
 import com.call4paper.app.data.remote.ApiService
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
-class AccountViewModel @Inject constructor(private val api: ApiService, private val tokens: TokenManager) : ViewModel() {
+class AccountViewModel @Inject constructor(
+    private val api: ApiService,
+    private val tokens: TokenManager,
+    @ApplicationContext private val appContext: Context
+) : ViewModel() {
+    private val prefs by lazy { appContext.getSharedPreferences("settings", Context.MODE_PRIVATE) }
     private val _user = MutableStateFlow<Triple<String,String,String?>>(Triple("","",""))
     val user: StateFlow<Triple<String,String,String?>> = _user
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing
+    private val _notificationsEnabled = MutableStateFlow(prefs.getBoolean("notifications_enabled", true))
+    val notificationsEnabled: StateFlow<Boolean> = _notificationsEnabled
     fun load() {
         viewModelScope.launch {
             _isRefreshing.value = true
@@ -50,6 +59,14 @@ class AccountViewModel @Inject constructor(private val api: ApiService, private 
     fun refresh() { load() }
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
+
+    fun toggleNotifications(enabled: Boolean) {
+        _notificationsEnabled.value = enabled
+        prefs.edit().putBoolean("notifications_enabled", enabled).apply()
+        val fcm = com.google.firebase.messaging.FirebaseMessaging.getInstance()
+        if (enabled) fcm.subscribeToTopic("all_users")
+        else fcm.unsubscribeFromTopic("all_users")
+    }
 
     fun logout(onDone: () -> Unit) {
         viewModelScope.launch {
@@ -84,6 +101,7 @@ fun AccountScreen(onLogout: () -> Unit, onBookmarks: () -> Unit, vm: AccountView
     val u by vm.user.collectAsState()
     val err by vm.error.collectAsState()
     val isRefreshing by vm.isRefreshing.collectAsState()
+    val notificationsEnabled by vm.notificationsEnabled.collectAsState()
     LaunchedEffect(Unit) { vm.load() }
     PullToRefreshBox(isRefreshing = isRefreshing, onRefresh = { vm.refresh() }, modifier = Modifier.fillMaxSize()) {
         Column(
@@ -136,11 +154,6 @@ fun AccountScreen(onLogout: () -> Unit, onBookmarks: () -> Unit, vm: AccountView
                         supportingContent = { Text("Saved conferences", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) },
                         modifier = Modifier.clickable { onBookmarks() }
                     )
-                    HorizontalDivider()
-                    ListItem(
-                        headlineContent = { Text("Submission deadlines", style = MaterialTheme.typography.titleSmall) },
-                        supportingContent = { Text("Track your followed deadlines", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                    )
                 }
             }
             Text("Settings", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
@@ -153,7 +166,7 @@ fun AccountScreen(onLogout: () -> Unit, onBookmarks: () -> Unit, vm: AccountView
                     ListItem(
                         headlineContent = { Text("Notifications", style = MaterialTheme.typography.titleSmall) },
                         supportingContent = { Text("Manage push preferences", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                        trailingContent = { Switch(checked = true, onCheckedChange = {}) }
+                        trailingContent = { Switch(checked = notificationsEnabled, onCheckedChange = { vm.toggleNotifications(it) }) }
                     )
                     HorizontalDivider()
                     ListItem(headlineContent = { Text("Logout", style = MaterialTheme.typography.titleSmall) }, modifier = Modifier.clickable { vm.logout(onLogout) })
