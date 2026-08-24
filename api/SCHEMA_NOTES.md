@@ -28,11 +28,11 @@ Confirmed `DEADLINE_TYPES = [abstract, full_paper, notification_of_acceptance, c
 
 **New tables this project adds (Phase 1):** `users(id UUID, google_subject_id UNIQUE, email UNIQUE, username UNIQUE)`, `bookmarks(user_id, conference_id FK, PK composite)`, `device_tokens(id UUID, user_id FK, fcm_token UNIQUE)`, `telegram_messages(website, message_id UNIQUE, message_type, chat_id)` — all additive migrations.
 
-## 0.2 Connection strategy
+## 0.2 Connection strategy (updated 2026-08-23)
 
-Neon kills idle connections (known issue fixed in scraper via per-operation `psycopg2.connect()` in `scraper/db.py:get_connection()` — open, use, close per query).
+Neon kills idle connections. Scraper keeps per-operation `psycopg2.connect()` (open/close per query). **FastAPI now uses `psycopg2.pool.SimpleConnectionPool(1,10)` with `keepalives_idle=30` in `api/database.py` plus `keepalives` on direct fallback — no `SELECT 1` pre-ping per checkout, relies on `keepalives` + `rollback()` on `INERROR` before `putconn()`. Pool is wrapped via `_PooledConnection` so `conn.close()` returns to pool. Falls back to direct `psycopg2.connect` only if pool never initialized. Prefer Neon's pooled `DATABASE_URL` (pgbouncer) when available.
 
-**FastAPI will do the same:** no long-lived pool. Use `psycopg2` (or `asyncpg` with `min_size=0`) and open/close per request, or `pgbouncer` in transaction mode if Neon requires it. No `DATABASE_URL` in APK — only backend env.
+**Deadline storage:** `conferences` wide columns remain for scraper writes, but `conference_deadlines` child table (`conference_id, type, deadline`) is now the indexed source for `GET /conferences/calendar|upcoming` (see `migration_005`). Scraper upserts both (see `scraper/db.py:save_conference`).
 
 ## 0.3 Ownership boundary
 

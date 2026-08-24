@@ -10,6 +10,12 @@ from auth import verify_google_id_token, generate_username_candidate, create_jwt
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+def _client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
 class GoogleAuthIn(BaseModel):
     id_token: str
     phone_model: str | None = None
@@ -28,10 +34,10 @@ def get_current_user(authorization: str = Header(None)):
 
 @router.post("/auth/google")
 def auth_google(body: GoogleAuthIn, request: Request):
-    # Per-IP rate limiting: 10 req / 60s (Redis, fail-open if no Redis)
+    # Per-IP rate limiting: 10 req / 60s (Redis, fail-open if no Redis) — use X-Forwarded-For behind Render LB
     try:
         from cache import check_rate_limit
-        ip = request.client.host if request.client else "unknown"
+        ip = _client_ip(request)
         if not check_rate_limit(f"rl:auth:google:{ip}", 10, 60):
             raise HTTPException(status_code=429, detail="Too many requests — try again later")
     except HTTPException:
@@ -43,7 +49,9 @@ def auth_google(body: GoogleAuthIn, request: Request):
     email = info.get("email")
     if not sub or not email:
         raise HTTPException(status_code=400, detail="Google token missing sub/email")
-    client_ip = request.client.host if request.client else None
+    client_ip = _client_ip(request)
+    if client_ip == "unknown":
+        client_ip = None
     user_agent = request.headers.get("user-agent")
     # Loop on INSERT conflict — UNIQUE is the authority, not SELECT pre-check
     for attempt in range(10):
@@ -103,10 +111,10 @@ class FirebaseAuthIn(BaseModel):
 
 @router.post("/auth/firebase")
 def auth_firebase(body: FirebaseAuthIn, request: Request):
-    # Per-IP rate limiting: 10 req / 60s
+    # Per-IP rate limiting: 10 req / 60s — use X-Forwarded-For
     try:
         from cache import check_rate_limit
-        ip = request.client.host if request.client else "unknown"
+        ip = _client_ip(request)
         if not check_rate_limit(f"rl:auth:firebase:{ip}", 10, 60):
             raise HTTPException(status_code=429, detail="Too many requests — try again later")
     except HTTPException:
@@ -131,7 +139,9 @@ def auth_firebase(body: FirebaseAuthIn, request: Request):
     except Exception as e:
         logger.error("auth_firebase verify failed: %s", e)
         raise HTTPException(status_code=401, detail="Invalid Firebase token")
-    client_ip = request.client.host if request.client else None
+    client_ip = _client_ip(request)
+    if client_ip == "unknown":
+        client_ip = None
     user_agent = request.headers.get("user-agent")
     for attempt in range(10):
         try:

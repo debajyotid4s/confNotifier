@@ -11,8 +11,9 @@ import kotlinx.coroutines.withContext
 
 private const val TAG = "GoogleAuth"
 
-// Web client ID from Firebase console → Project settings → General → Web SDK configuration
-private const val WEB_CLIENT_ID = "203119671824-n3jbcp0paouibc1dbg1v4dmnpf9sm16s.apps.googleusercontent.com"
+// Web client ID is public (Google OAuth) — keep in BuildConfig for flavor flexibility, default is Firebase Web SDK config
+private val WEB_CLIENT_ID: String
+    get() = try { com.call4paper.app.BuildConfig.WEB_CLIENT_ID } catch (_: Exception) { "203119671824-n3jbcp0paouibc1dbg1v4dmnpf9sm16s.apps.googleusercontent.com" }
 
 suspend fun getGoogleIdToken(ctx: Context): String? = withContext(Dispatchers.Main) {
     try {

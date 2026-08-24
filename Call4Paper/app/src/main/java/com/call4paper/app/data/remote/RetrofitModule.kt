@@ -5,8 +5,6 @@ import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
@@ -23,9 +21,7 @@ object NetworkModule {
     @Provides @Singleton
     fun provideOkHttp(tokenManager: TokenManager): OkHttpClient {
         val authInterceptor = Interceptor { chain ->
-            val token = runBlocking {
-                try { tokenManager.tokenFlow.first() } catch (e: Exception) { null }
-            }
+            val token = tokenManager.currentToken
             val req = if (!token.isNullOrBlank()) chain.request().newBuilder().addHeader("Authorization", "Bearer $token").build() else chain.request()
             chain.proceed(req)
         }

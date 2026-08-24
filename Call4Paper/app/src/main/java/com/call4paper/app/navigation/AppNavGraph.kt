@@ -93,14 +93,22 @@ fun AppNavGraph() {
             composable(Route.Upcoming.route) { UpcomingScreen(onConference = { id -> nav.navigate("conference/$id") }) }
             composable(Route.Bookmarks.route) { com.call4paper.app.ui.bookmarks.BookmarksScreen(onConference = { id -> nav.navigate("conference/$id") }) }
             composable(
+                "conference/open",
+                deepLinks = listOf(navDeepLink { uriPattern = "call4paper://conference/open" })
+            ) {
+                UpcomingScreen(onConference = { id -> nav.navigate("conference/$id") })
+            }
+            composable(
                 "conference/{id}",
-                deepLinks = listOf(
-                    navDeepLink { uriPattern = "call4paper://conference/{id}" },
-                    navDeepLink { uriPattern = "call4paper://conference/open" }
-                )
+                deepLinks = listOf(navDeepLink { uriPattern = "call4paper://conference/{id}" })
             ) { backStack ->
-                val id = backStack.arguments?.getString("id")?.toIntOrNull() ?: 0
-                ConferenceScreen(id = id)
+                val raw = backStack.arguments?.getString("id")
+                val id = raw?.toIntOrNull()
+                if (id == null || id == 0) {
+                    UpcomingScreen(onConference = { nid -> nav.navigate("conference/$nid") })
+                } else {
+                    ConferenceScreen(id = id)
+                }
             }
             composable(Route.Account.route) {
                 AccountScreen(

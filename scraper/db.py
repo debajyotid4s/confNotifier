@@ -300,10 +300,26 @@ def save_conference(conf: dict) -> tuple[bool, bool, int | None]:
         ]
         cur.execute(sql, base_vals + dl_vals)
         row = cur.fetchone()
+        conf_id = row[1] if row else None
+        # Keep normalized child table in sync (indexed for upcoming/calendar)
+        if conf_id:
+            for typ in DEADLINE_TYPES:
+                dl = conf.get(f"{typ}_deadline")
+                label = conf.get(f"{typ}_deadline_label")
+                try:
+                    if dl:
+                        cur.execute("""
+                            INSERT INTO conference_deadlines (conference_id, type, deadline, deadline_label)
+                            VALUES (%s,%s,%s,%s)
+                            ON CONFLICT (conference_id, type) DO UPDATE SET deadline=EXCLUDED.deadline, deadline_label=EXCLUDED.deadline_label
+                        """, (conf_id, typ, dl, label))
+                    else:
+                        cur.execute("DELETE FROM conference_deadlines WHERE conference_id=%s AND type=%s", (conf_id, typ))
+                except Exception as e:
+                    logger.warning("conference_deadlines upsert failed for %s %s: %s", conf_id, typ, e)
         conn.commit()
         cur.close()
         was_inserted = bool(row and row[0])
-        conf_id = row[1] if row else None
         return True, was_inserted, conf_id
     except Exception as e:
         logger.error("save_conference error: %s", e)

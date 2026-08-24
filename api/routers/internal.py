@@ -232,38 +232,58 @@ def notify_bookmarks(x_notify_secret: str = Header(None)):
             if user_success:
                 succeeded_users.add(user_id)
 
-        # Record only what was actually delivered — per-row commit so one FK race doesn't wipe 1..49
+        # Record only what was actually delivered — batch insert so we don't pay N commits
         # Also, when a 'changed' fires, delete any prior 'approaching' for same (user, conference, type) so the 3-day warning can fire again for the new date
         inserted = 0
-        cur2 = conn.cursor()
+        # Collect rows to log (only succeeded users, with deadline_date for dedup)
+        to_insert = []
+        to_delete_approaching = []
         for r in rows:
-            fcm_token, user_id, conf_id, title, dl_type, deadline_date, reason = r
+            _, user_id, conf_id, _, dl_type, deadline_date, reason = r
             if user_id not in succeeded_users:
                 continue
+            to_insert.append((user_id, conf_id, dl_type, deadline_date, reason))
+            if reason == "changed":
+                to_delete_approaching.append((user_id, conf_id, dl_type))
+
+        cur2 = conn.cursor()
+        try:
+            if to_delete_approaching:
+                for uid, cid, typ in to_delete_approaching:
+                    try:
+                        cur2.execute("DELETE FROM notification_log WHERE user_id=%s AND conference_id=%s AND deadline_type=%s AND reason='approaching'", (uid, cid, typ))
+                    except Exception as e:
+                        logger.warning("delete approaching failed %s %s %s: %s", uid, cid, typ, e)
+            if to_insert:
+                from psycopg2.extras import execute_values
+                execute_values(cur2,
+                    "INSERT INTO notification_log (user_id, conference_id, deadline_type, deadline_date, reason) VALUES %s ON CONFLICT (user_id, conference_id, deadline_type, reason, deadline_date) DO NOTHING",
+                    to_insert)
+                inserted = cur2.rowcount if cur2.rowcount != -1 else len(to_insert)
+            conn.commit()
+        except Exception as e:
+            logger.error("notify-bookmarks batch log insert failed: %s", e)
             try:
-                if reason == "changed":
-                    # Allow the approaching countdown to restart for the new date
-                    cur2.execute(
-                        "DELETE FROM notification_log WHERE user_id=%s AND conference_id=%s AND deadline_type=%s AND reason='approaching'",
-                        (user_id, conf_id, dl_type)
-                    )
-                cur2.execute("""
-                    INSERT INTO notification_log (user_id, conference_id, deadline_type, deadline_date, reason)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (user_id, conference_id, deadline_type, reason, deadline_date) DO NOTHING
-                """, (user_id, conf_id, dl_type, deadline_date, reason))
-                if cur2.rowcount:
-                    inserted += 1
-                conn.commit()
-            except Exception as e:
-                logger.error("notify-bookmarks log insert failed user=%s conf=%s type=%s reason=%s date=%s: %s", user_id, conf_id, dl_type, reason, deadline_date, e)
+                conn.rollback()
+            except Exception:
+                pass
+            # Fallback to per-row with savepoints if batch fails
+            inserted = 0
+            for uid, cid, typ, dl_date, rsn in to_insert:
                 try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                # Continue to next row — don't break and wipe previous commits
-                continue
-        cur2.close()
+                    cur2.execute("INSERT INTO notification_log (user_id, conference_id, deadline_type, deadline_date, reason) VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING", (uid, cid, typ, dl_date, rsn))
+                    if cur2.rowcount:
+                        inserted += 1
+                    conn.commit()
+                except Exception as e2:
+                    logger.error("per-row fallback failed %s %s %s: %s", uid, cid, typ, e2)
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    continue
+        finally:
+            cur2.close()
 
         logger.info("notify-bookmarks: %d targets, %d sent, %d logged", len(rows), sent, inserted)
         return {"ok": True, "targets": len(rows), "sent": sent, "logged": inserted}
