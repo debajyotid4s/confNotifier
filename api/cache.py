@@ -10,15 +10,25 @@ logger = logging.getLogger(__name__)
 
 _redis = None
 _redis_available = None  # None=unknown, True/False
+_redis_last_try = 0
+
+def _is_redis_configured() -> bool:
+    return bool(os.environ.get("REDIS_URL"))
 
 def get_redis():
-    global _redis, _redis_available
-    if _redis_available is not None:
-        return _redis
-    url = os.environ.get("REDIS_URL")
-    if not url:
+    global _redis, _redis_available, _redis_last_try
+    import time
+    # If not configured, fail fast (dev without Redis)
+    if not _is_redis_configured():
         _redis_available = False
         return None
+    # If previously failed, retry after 30s instead of caching forever
+    if _redis_available is False and (time.time() - _redis_last_try) < 30:
+        return None
+    if _redis is not None and _redis_available is True:
+        return _redis
+    _redis_last_try = time.time()
+    url = os.environ.get("REDIS_URL")
     try:
         import redis
         _redis = redis.from_url(url, decode_responses=True, socket_connect_timeout=2, socket_timeout=2)
@@ -27,7 +37,7 @@ def get_redis():
         logger.info("Redis connected")
         return _redis
     except Exception as e:
-        logger.warning("Redis unavailable (%s) — caching/rate-limit disabled", e)
+        logger.warning("Redis unavailable (%s) — caching/rate-limit degraded", e)
         _redis_available = False
         return None
 
@@ -69,6 +79,8 @@ def check_rate_limit(key: str, limit: int, window_sec: int) -> bool:
     """
     r = get_redis()
     if r is None:
+        if _is_redis_configured():
+            logger.warning("rate limit %s fail-open: Redis configured but unavailable", key)
         return True
     try:
         pipe = r.pipeline()
@@ -86,19 +98,24 @@ def check_rate_limit(key: str, limit: int, window_sec: int) -> bool:
 def get_token_version(user_id: str) -> int:
     r = get_redis()
     if r is None:
+        if _is_redis_configured():
+            logger.warning("get_token_version fail-open for %s: Redis configured but unavailable", user_id)
         return 0
     try:
         v = r.get(f"user:{user_id}:tv")
         return int(v) if v is not None else 0
-    except Exception:
+    except Exception as e:
+        logger.warning("get_token_version failed for %s: %s", user_id, e)
         return 0
 
 def bump_token_version(user_id: str) -> int:
     r = get_redis()
     if r is None:
+        if _is_redis_configured():
+            raise RuntimeError("Redis unavailable — cannot revoke token")
         return 0
     try:
         return r.incr(f"user:{user_id}:tv")
     except Exception as e:
         logger.warning("Redis bump tv %s failed: %s", user_id, e)
-        return 0
+        raise

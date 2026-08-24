@@ -111,7 +111,8 @@ def notify_scraper_run(x_notify_secret: str = Header(None)):
 
 @router.post("/internal/notify-bookmarks")
 def notify_bookmarks(x_notify_secret: str = Header(None)):
-    if not hmac.compare_digest(x_notify_secret or "", os.environ.get("NOTIFY_SECRET", "")):
+    expected = os.environ.get("NOTIFY_SECRET", "")
+    if not expected or not x_notify_secret or not hmac.compare_digest(x_notify_secret, expected):
         raise HTTPException(status_code=401, detail="Invalid secret")
 
     conn = get_conn()
@@ -275,7 +276,8 @@ def notify_bookmarks(x_notify_secret: str = Header(None)):
 
 @router.post("/internal/notify-digest")
 def notify_digest(time_of_day: str = "morning", x_notify_secret: str = Header(None)):
-    if not hmac.compare_digest(x_notify_secret or "", os.environ.get("NOTIFY_SECRET", "")):
+    expected = os.environ.get("NOTIFY_SECRET", "")
+    if not expected or not x_notify_secret or not hmac.compare_digest(x_notify_secret, expected):
         raise HTTPException(status_code=401, detail="Invalid secret")
     if time_of_day not in ("morning", "evening"):
         raise HTTPException(status_code=400, detail="time_of_day must be 'morning' or 'evening'")

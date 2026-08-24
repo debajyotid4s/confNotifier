@@ -1,4 +1,5 @@
 import logging
+import os
 from fastapi import APIRouter, HTTPException, Depends, Header, Request
 from pydantic import BaseModel
 import psycopg2
@@ -183,6 +184,9 @@ def auth_logout(user=Depends(get_current_user)):
         from cache import bump_token_version
         bump_token_version(user.get("sub"))
     except Exception as e:
-        logger.warning("logout bump tv failed: %s", e)
+        if os.environ.get("REDIS_URL"):
+            logger.error("logout bump tv failed (Redis configured): %s", e)
+            raise HTTPException(status_code=503, detail="Logout failed — try again")
+        logger.warning("logout bump tv failed (no Redis): %s", e)
     logger.info("logout sub=%s (token revoked)", user.get("sub"))
     return {"ok": True}

@@ -103,6 +103,28 @@ class GoogleRateLimiter:
             )
             time.sleep(max(wait_seconds, 0.5))
 
+    def release_last(self):
+        """Release the last acquired slot — for parse failures that shouldn't burn quota."""
+        with self._lock:
+            if self._request_timestamps:
+                self._request_timestamps.pop()
+            if self._daily_count > 0:
+                self._daily_count -= 1
+            logger.info("Rate limiter: released last slot (daily now %d/%d)", self._daily_count, self.RPD_LIMIT)
+
+
+def _strip_json_fences(text: str) -> str:
+    """Strip ```json fences that Gemini often wraps around JSON."""
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines)
+    return text.strip()
+
 
 # ── API key rotation — load all available keys ──
 
@@ -253,7 +275,8 @@ def _call_gemini(
                     },
                 )
 
-                result = json.loads(response.choices[0].message.content)
+                raw = response.choices[0].message.content
+                result = json.loads(_strip_json_fences(raw))
                 _current_key_idx = key_idx  # remember last working key
                 return result
 
@@ -262,6 +285,11 @@ def _call_gemini(
                     "extractor: JSON parse failed for %s (attempt %d): %s",
                     source_url, attempt, e
                 )
+                # Don't burn quota on parse failure (often fence-wrapped JSON)
+                try:
+                    limiter.release_last()
+                except Exception:
+                    pass
                 time.sleep(2)
                 continue
 

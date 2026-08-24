@@ -32,7 +32,7 @@ from scraper.extractor import extract, daily_quota_exhausted, total_requests_tod
 from scraper.notifier import notify, notify_pending
 from scraper.schema import SUBMISSION_TYPES
 from scraper.sources import homepage_links, special
-from scraper.validation import _check_deadline_context
+from scraper.validation import _check_deadline_context, _check_deadline_swap
 from scraper.verifier import verify_deadlines
 
 logging.basicConfig(
@@ -295,10 +295,34 @@ def _extract_candidate(url: str, playwright, stats: RunStats) -> dict | None:
 
 
 def _validate_result(result: dict) -> str | None:
-    """Run submission context validation; return reason when invalid, else None."""
+    """Run submission context + swap validation; return reason when invalid, else None."""
     mismatches = _check_deadline_context(result)
     if mismatches:
         return f"Context mismatch for fields {mismatches}"
+    # Swap check against stored DB values if conference already exists (catch initial misplacement)
+    try:
+        website = db.normalize_website(result.get("website", "")) if result.get("website") else None
+        if website:
+            conn = db.get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT abstract_deadline, full_paper_deadline FROM conferences WHERE website=%s LIMIT 1", (website,))
+                    row = cur.fetchone()
+                    if row:
+                        stored_vals = {"abstract": row[0].isoformat() if row[0] else None, "full_paper": row[1].isoformat() if row[1] else None}
+                        new_vals = {t: result.get(f"{t}_deadline") for t in SUBMISSION_TYPES}
+                        if any(new_vals.values()) and any(stored_vals.values()):
+                            swapped = _check_deadline_swap(new_vals, stored_vals)
+                            if swapped:
+                                return f"Deadline swap detected for {swapped}"
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    except Exception as e:
+        # Don't fail validation on DB lookup error — just log and continue
+        logging.getLogger(__name__).debug("swap check skipped for %s: %s", result.get("website"), e)
     return None
 
 

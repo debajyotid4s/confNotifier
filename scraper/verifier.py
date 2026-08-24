@@ -84,8 +84,8 @@ def _should_run_verification() -> bool:
             return False
         return True
     except Exception as e:
-        logger.error("deadline_verification: guard check error: %s", e)
-        return False
+        logger.error("deadline_verification: guard check error (proceeding to verify): %s", e)
+        return True
     finally:
         if conn:
             try:
