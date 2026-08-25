@@ -71,8 +71,6 @@ def notify_scraper_run(x_notify_secret: str = Header(None)):
         if r and r.get("notify:scraper-run:last") is not None:
             logger.warning("notify-scraper-run rate-limited: already sent within hour")
             return {"ok": True, "devices": 0, "sent": 0, "message": "Rate limited — already sent within hour"}
-        if r:
-            r.setex("notify:scraper-run:last", 3600, "1")
     except Exception:
         pass
     rows = fetch_all("SELECT fcm_token FROM device_tokens")
@@ -130,6 +128,13 @@ def notify_scraper_run(x_notify_secret: str = Header(None)):
             if resp.failure_count:
                 logger.warning("FCM batch %d: %d failures", i//500, resp.failure_count)
         logger.info("FCM daily digest sent to %d/%d: %s", sent, count, body[:50])
+        try:
+            from cache import get_redis
+            r = get_redis()
+            if r and sent > 0:
+                r.setex("notify:scraper-run:last", 3600, "1")
+        except Exception:
+            pass
         return {"ok": True, "devices": count, "sent": sent, "message": body}
     except Exception as e:
         logger.error("FCM send failed: %s", e)
@@ -682,4 +687,11 @@ def notify_daily(x_notify_secret: str = Header(None)):
 
     results["ok"] = True
     results["message"] = "Daily aggressive notifications sent — check Firebase console for delivery"
+    try:
+        from cache import get_redis
+        r = get_redis()
+        if r:
+            r.setex(f"notify:daily:{date.today().isoformat()}", 24*3600, "1")
+    except Exception:
+        pass
     return results
