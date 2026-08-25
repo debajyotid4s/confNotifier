@@ -47,21 +47,17 @@ def get_current_user(authorization: str = Header(None)):
 
 
 def get_optional_user(authorization: str = Header(None)):
-    """For public endpoints: None if no header, 401 if header present but invalid."""
-    if not authorization:
+    """For public endpoints: None if no header or invalid token (treated as anon)."""
+    if not authorization or not authorization.startswith("Bearer "):
         return None
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid token")
     token = authorization[7:].strip() if len(authorization) > 7 else ""
     if not token:
-        raise HTTPException(status_code=401, detail="Invalid token")
+        return None
     try:
         payload = decode_jwt(token)
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.warning("get_optional_user: jwt decode failed: %s", e)
-        raise HTTPException(status_code=401, detail="Invalid token")
+        logger.warning("get_optional_user: jwt decode failed, treating as anon: %s", e)
+        return None
     return payload.get("sub")
 
 def _rate_limit_or_429(request: Request, key_prefix: str):

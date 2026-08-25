@@ -97,22 +97,14 @@ def upcoming(limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0))
             ordered = [row_by_id[cid] for cid in conf_ids if cid in row_by_id]
             return [conference_row_to_out(r, dl_map, today) for r in ordered]
 
-        # Deadline-only fallback: past deadlines with future date_start must NOT appear (was the bug with id=25 past 2026-07-15 but date_start 2026-09-18)
-        # TBA (both deadlines NULL) stays upcoming via date_start, otherwise require at least one deadline >= today
+        # Deadline-only: no garbage — only conferences with at least one submission deadline >= today
+        # TBA (both NULL) excluded from upcoming; past deadlines with future date_start excluded (was bug id=25)
         rows = fetch_all_dict(
-            f"""{CONF_SELECT} WHERE (
-                    (abstract_deadline IS NOT NULL OR full_paper_deadline IS NOT NULL)
-                    AND (abstract_deadline >= CURRENT_DATE OR full_paper_deadline >= CURRENT_DATE)
-                ) OR (
-                    abstract_deadline IS NULL AND full_paper_deadline IS NULL
-                    AND (date_start >= CURRENT_DATE OR date_start IS NULL)
-                )
+            f"""{CONF_SELECT} WHERE (abstract_deadline >= CURRENT_DATE OR full_paper_deadline >= CURRENT_DATE)
             ORDER BY COALESCE(
                 LEAST(abstract_deadline, full_paper_deadline),
                 abstract_deadline,
-                full_paper_deadline,
-                date_start,
-                '9999-12-31'::date
+                full_paper_deadline
             ) ASC, id ASC
             LIMIT %s OFFSET %s""",
             (limit, offset),
