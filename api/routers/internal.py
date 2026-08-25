@@ -64,6 +64,17 @@ def notify_scraper_run(x_notify_secret: str = Header(None)):
     expected = os.environ.get("NOTIFY_SECRET", "")
     if not expected or not x_notify_secret or not hmac.compare_digest(x_notify_secret, expected):
         raise HTTPException(status_code=401, detail="Invalid secret")
+    # Anti-spam: only once per hour for scraper-run
+    try:
+        from cache import get_redis
+        r = get_redis()
+        if r and r.get("notify:scraper-run:last") is not None:
+            logger.warning("notify-scraper-run rate-limited: already sent within hour")
+            return {"ok": True, "devices": 0, "sent": 0, "message": "Rate limited — already sent within hour"}
+        if r:
+            r.setex("notify:scraper-run:last", 3600, "1")
+    except Exception:
+        pass
     rows = fetch_all("SELECT fcm_token FROM device_tokens")
     tokens = [r[0] for r in rows if r[0]]
     count = len(tokens)
@@ -130,6 +141,16 @@ def notify_bookmarks(x_notify_secret: str = Header(None)):
     expected = os.environ.get("NOTIFY_SECRET", "")
     if not expected or not x_notify_secret or not hmac.compare_digest(x_notify_secret, expected):
         raise HTTPException(status_code=401, detail="Invalid secret")
+    # Anti-spam: per-day dedup for bookmarked — even if DB log fails, Redis will prevent every-minute spam
+    try:
+        from cache import get_redis
+        r = get_redis()
+        today = date.today().isoformat()
+        if r and r.get(f"notify:bookmarks:{today}") is not None:
+            logger.warning("notify-bookmarks rate-limited: already sent today")
+            return {"ok": True, "targets": 0, "sent": 0, "message": "Rate limited — already sent today"}
+    except Exception:
+        pass
 
     # Aggressive: changed (once), urgent 24h (deadline tomorrow), approaching 7d daily, plus fallback
     # Prefer normalized table with fallback for pre-migration prod (conference_deadlines / deadline_date may not exist yet)
@@ -416,6 +437,15 @@ def notify_bookmarks(x_notify_secret: str = Header(None)):
                 continue
 
     logger.info("notify-bookmarks: %d targets, %d sent, %d logged", len(rows), sent, inserted)
+    # Mark daily dedup in Redis so every-minute calls don't spam (even if DB log fails)
+    try:
+        from cache import get_redis
+        r = get_redis()
+        if r and sent > 0:
+            today = date.today().isoformat()
+            r.setex(f"notify:bookmarks:{today}", 24*3600, "1")
+    except Exception:
+        pass
     return {"ok": True, "targets": len(rows), "sent": sent, "logged": inserted}
 
 
@@ -426,6 +456,16 @@ def notify_digest(time_of_day: str = "morning", x_notify_secret: str = Header(No
         raise HTTPException(status_code=401, detail="Invalid secret")
     if time_of_day not in ("morning", "evening"):
         raise HTTPException(status_code=400, detail="time_of_day must be 'morning' or 'evening'")
+    # Anti-spam: only once per 6 hours per time_of_day (morning/evening)
+    try:
+        from cache import get_redis
+        r = get_redis()
+        key = f"notify:digest:{time_of_day}:{date.today().isoformat()}"
+        if r and r.get(key) is not None:
+            logger.warning("notify-digest rate-limited: %s already sent today", time_of_day)
+            return {"ok": True, "sent": False, "message": "Rate limited — already sent today"}
+    except Exception:
+        pass
     if not _ensure_firebase():
         return {"ok": True, "sent": False, "message": "FCM not configured"}
 
@@ -487,6 +527,13 @@ def notify_digest(time_of_day: str = "morning", x_notify_secret: str = Header(No
             topic="all_users",
         ))
         logger.info("notify-digest: sent %s digest via topic: %s", time_of_day, body[:60])
+        try:
+            from cache import get_redis
+            r = get_redis()
+            if r:
+                r.setex(f"notify:digest:{time_of_day}:{date.today().isoformat()}", 24*3600, "1")
+        except Exception:
+            pass
         return {"ok": True, "sent": True, "topic": "all_users", "body": body}
     except Exception as e:
         logger.error("notify-digest failed: %s", e)
@@ -504,6 +551,16 @@ def notify_daily(x_notify_secret: str = Header(None)):
     expected = os.environ.get("NOTIFY_SECRET", "")
     if not expected or not x_notify_secret or not hmac.compare_digest(x_notify_secret, expected):
         raise HTTPException(status_code=401, detail="Invalid secret")
+    # Anti-spam: only once per day for daily (even if called every minute)
+    try:
+        from cache import get_redis
+        r = get_redis()
+        key = f"notify:daily:{date.today().isoformat()}"
+        if r and r.get(key) is not None:
+            logger.warning("notify-daily rate-limited: already sent today")
+            return {"ok": True, "sent": False, "message": "Rate limited — already sent today"}
+    except Exception:
+        pass
 
     # Invalidate caches (like scraper-run)
     try:
