@@ -1,8 +1,9 @@
-"""
-Stand-alone daily deadline reminder sender + crt.sh discovery.
-Runs independently of the main scraper — no Selenium, no LLM.
-Queries upcoming submission deadlines and posts an HTML-formatted
-Telegram message to the channel. crt_monitor runs first (once daily).
+"""Daily job: certificate-transparency discovery, then the deadline digest.
+
+Runs without a browser or LLM, so it is cheap enough to schedule separately from
+the main scraper. Posts one Telegram message listing every submission deadline in
+the next 30 days, with a progress bar showing how much of the window has elapsed
+and a strikethrough when the deadline was extended.
 """
 
 import logging
@@ -10,12 +11,11 @@ import os
 import sys
 from datetime import date, datetime, timezone
 
-import requests
-
 from scraper import db
+from scraper.notifier import send_plain_message
+from scraper.schema import SUBMISSION_TYPES, deadline_range_checks
 from scraper.sources.crt_monitor import run as crt_monitor_run
-from scraper.schema import SUBMISSION_TYPES
-from scraper.utils import escape_html, resolve_channel
+from scraper.utils import escape_html
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,202 +24,130 @@ logging.basicConfig(
 )
 logger = logging.getLogger("send_reminders")
 
-MAX_DAYS = 30
+WINDOW_DAYS = 30
 BAR_LEN = 20
 
-
-def _within_30_days(d) -> bool:
-    if d is None:
-        return False
-    delta = (d - date.today()).days
-    return 0 <= delta <= 30
-
-
-def _loaded_pct(days_left: int) -> int:
-    pct = round(100 - (days_left / MAX_DAYS) * 100)
-    return max(0, min(100, pct))
-
-
-def _progress_bar(pct: int) -> str:
-    filled = round(pct / 100 * BAR_LEN)
-    empty = BAR_LEN - filled
-    return f"[{'█' * filled}{'░' * empty}]"
+URGENT_DAYS = 7
+SOON_DAYS = 20
 
 
 def _urgency_emoji(days_left: int) -> str:
-    if days_left <= 7:
+    if days_left <= URGENT_DAYS:
         return "🔥"
-    if days_left <= 20:
+    if days_left <= SOON_DAYS:
         return "⏳"
     return "✅"
 
 
-def send_deadline_reminders() -> None:
-    # Submission deadlines only
-    dl_select_cols = []
-    dl_date_checks = []
+def _elapsed_pct(days_left: int) -> int:
+    """How much of the 30-day window has passed, clamped to 0-100."""
+    return max(0, min(100, round(100 - (days_left / WINDOW_DAYS) * 100)))
+
+
+def _progress_bar(pct: int) -> str:
+    filled = round(pct / 100 * BAR_LEN)
+    return f"[{'█' * filled}{'░' * (BAR_LEN - filled)}]"
+
+
+def _within_window(value) -> bool:
+    return value is not None and 0 <= (value - date.today()).days <= WINDOW_DAYS
+
+
+def _fetch_entries() -> list[tuple]:
+    """Every upcoming deadline as (deadline, website, title, previous_deadline).
+
+    Only the named deadline columns are read: migration_011 backfilled the legacy
+    `submission_deadline*` pair into them, and nothing writes legacy any more.
+    """
+    columns = []
     for typ in SUBMISSION_TYPES:
-        dl_select_cols.append(f"{typ}_deadline")
-        dl_select_cols.append(f"{typ}_deadline_previous")
-        dl_date_checks.append(
-            f"({typ}_deadline IS NOT NULL"
-            f" AND {typ}_deadline >= CURRENT_DATE"
-            f" AND {typ}_deadline <= CURRENT_DATE + INTERVAL '30 days')"
-        )
+        columns += [f"{typ}_deadline", f"{typ}_deadline_previous"]
+    window = " OR ".join(deadline_range_checks(WINDOW_DAYS))
 
-    # Also include legacy fields
-    dl_date_checks.append(
-        "(submission_deadline IS NOT NULL"
-        " AND submission_deadline >= CURRENT_DATE"
-        " AND submission_deadline <= CURRENT_DATE + INTERVAL '30 days')"
-    )
-    dl_date_checks.append(
-        "(submission_deadline_2 IS NOT NULL"
-        " AND submission_deadline_2 >= CURRENT_DATE"
-        " AND submission_deadline_2 <= CURRENT_DATE + INTERVAL '30 days')"
-    )
-
-    select_dl = ", ".join(dl_select_cols)
-    date_or_clause = " OR ".join(dl_date_checks)
-
-    conn = None
-    try:
-        conn = db.get_connection()
-        cur = conn.cursor()
-        cur.execute(
-            f"""
-            SELECT title, website,
-                   submission_deadline, submission_deadline_2,
-                   submission_deadline_previous, submission_deadline_2_previous,
-                   {select_dl}
+    with db.db_cursor() as cur:
+        cur.execute(f"""
+            SELECT title, website, {", ".join(columns)}
             FROM conferences
-            WHERE ({date_or_clause})
-            """
-        )
+            WHERE {window}
+        """)
         rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        conn = None
 
-        entries = []
+    entries = []
+    for row in rows:
+        title, website = row[0], row[1]
+        for i, _typ in enumerate(SUBMISSION_TYPES):
+            deadline = row[2 + i * 2]
+            previous = row[2 + i * 2 + 1]
+            if not _within_window(deadline):
+                continue
+            changed = previous is not None and previous != deadline
+            entries.append((deadline, website, title, previous if changed else None))
+    return entries
 
-        for row in rows:
-            title = row[0]
-            website = row[1]
-            leg_dl1 = row[2]
-            leg_dl2 = row[3]
-            leg_dl1_prev = row[4]
-            leg_dl2_prev = row[5]
 
-            # Submission deadlines only
-            dl_offset = 6
-            has_new_deadline = any(row[dl_offset + i * 2] is not None for i in range(len(SUBMISSION_TYPES)))
+def _render(entries: list[tuple]) -> str:
+    """Build the digest message."""
+    entries.sort(key=lambda e: (e[0], e[2]))
 
-            # Legacy columns are only used when no new-schema deadline exists yet
-            if not has_new_deadline:
-                if _within_30_days(leg_dl1):
-                    is_updated = leg_dl1_prev is not None and leg_dl1_prev != leg_dl1
-                    entries.append((leg_dl1, website, title, is_updated, leg_dl1_prev if is_updated else None))
-                if _within_30_days(leg_dl2):
-                    is_updated = leg_dl2_prev is not None and leg_dl2_prev != leg_dl2
-                    entries.append((leg_dl2, website, title, is_updated, leg_dl2_prev if is_updated else None))
+    blocks, links, seen_domains = [], [], set()
+    for deadline, website, title, previous in entries:
+        days_left = (deadline - date.today()).days
+        pct = _elapsed_pct(days_left)
+        short_title = escape_html(title.split(",")[0].split("(")[0].split(":")[0].strip())
+        link = f'<a href="{escape_html(website)}">{short_title}</a>'
+        date_str = deadline.strftime("%b %d")
 
-            for i, typ in enumerate(SUBMISSION_TYPES):
-                dl = row[dl_offset + i * 2]
-                dl_prev = row[dl_offset + i * 2 + 1]
-                if _within_30_days(dl):
-                    is_updated = dl_prev is not None and dl_prev != dl
-                    entries.append((dl, website, title, is_updated, dl_prev if is_updated else None))
-
-        if not entries:
-            logger.info("no upcoming deadlines, skipping")
-            return
-
-        entries.sort(key=lambda x: (x[0], x[2]))
-
-        deadline_lines = []
-        links = []
-        seen_websites = set()
-
-        for dl, website, title, is_updated, prev_dl in entries:
-            days_left = (dl - date.today()).days
-            pct = _loaded_pct(days_left)
-            bar = _progress_bar(pct)
-            emoji = _urgency_emoji(days_left)
-            date_str = dl.strftime("%b %d")
-            short_title = escape_html(title.split(",")[0].split("(")[0].split(":")[0].strip())
-            link = f"<a href=\"{escape_html(website)}\">{escape_html(short_title)}</a>"
-
-            if is_updated and prev_dl:
-                old_str = prev_dl.strftime("%b %d")
-                deadline_lines.append(
-                    f"{emoji} <s>{old_str}</s> → <b>{date_str}</b> 📝 <i>Updated</i> — {link}\n"
-                    f"<code>{bar} {pct}%</code>"
-                )
-            else:
-                deadline_lines.append(
-                    f"{emoji} <b>{date_str}</b> — {link}\n"
-                    f"<code>{bar} {pct}%</code>"
-                )
-
-            domain = website.replace("https://", "").replace("http://", "").rstrip("/")
-            if domain not in seen_websites:
-                seen_websites.add(domain)
-                links.append(f"- {domain}")
-
-        deadline_block = "\n\n".join(deadline_lines)
-        link_block = "\n".join(links)
-
-        now_utc = datetime.now(timezone.utc).strftime("%H:%M")
-        hashtag = f"#Bangladesh{datetime.now().year}"
-
-        message = (
-            f"<b>📚 UPCOMING DEADLINES</b>\n"
-            f"<i>Auto-tracked · updates in real time</i>\n"
-            f"━━━━━━━━━━━━━━━━━━━\n\n"
-            f"{deadline_block}\n\n"
-            f"<blockquote expandable>\n"
-            f"🔗 <b>Official Links</b>\n"
-            f"{link_block}\n"
-            f"</blockquote>\n\n"
-            f"{hashtag} #CallForPapers\n"
-            f"<i>Last synced: {now_utc} UTC</i>"
-        )
-
-        token = os.environ["TELEGRAM_BOT_TOKEN"]
-        channel = resolve_channel(
-            os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get("TELEGRAM_CHANNEL_LINK", "")
-        )
-
-        resp = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={
-                "chat_id": channel,
-                "text": message,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-            },
-            timeout=15,
-        )
-        if resp.status_code == 200:
-            logger.info("sent reminder for %d deadline entr%s", len(entries), "y" if len(entries) == 1 else "ies")
+        if previous:
+            head = (f"{_urgency_emoji(days_left)} <s>{previous.strftime('%b %d')}</s> → "
+                    f"<b>{date_str}</b> 📝 <i>Updated</i> — {link}")
         else:
-            logger.error("Telegram send failed (%d): %s", resp.status_code, resp.text)
+            head = f"{_urgency_emoji(days_left)} <b>{date_str}</b> — {link}"
+        blocks.append(f"{head}\n<code>{_progress_bar(pct)} {pct}%</code>")
 
+        domain = (website or "").replace("https://", "").replace("http://", "").rstrip("/")
+        if domain and domain not in seen_domains:
+            seen_domains.add(domain)
+            links.append(f"- {domain}")
+
+    deadline_block = "\n\n".join(blocks)
+    link_block = "\n".join(links)
+    synced_at = datetime.now(timezone.utc).strftime("%H:%M")
+
+    return (
+        f"<b>📚 UPCOMING DEADLINES</b>\n"
+        f"<i>Auto-tracked · updates in real time</i>\n"
+        f"━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{deadline_block}\n\n"
+        f"<blockquote expandable>\n"
+        f"🔗 <b>Official Links</b>\n"
+        f"{link_block}\n"
+        f"</blockquote>\n\n"
+        f"#Bangladesh{datetime.now().year} #CallForPapers\n"
+        f"<i>Last synced: {synced_at} UTC</i>"
+    )
+
+
+def send_deadline_reminders() -> None:
+    """Post the upcoming-deadline digest to the channel."""
+    try:
+        entries = _fetch_entries()
     except Exception as e:
-        logger.error("send_deadline_reminders error: %s", e)
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        logger.error("send_deadline_reminders: query failed: %s", e)
+        return
+
+    if not entries:
+        logger.info("no upcoming deadlines, skipping digest")
+        return
+
+    if send_plain_message(_render(entries)):
+        logger.info("sent reminder for %d deadline entr%s",
+                    len(entries), "y" if len(entries) == 1 else "ies")
 
 
 def main():
     logger.info("=== Daily Reminder Run Started ===")
 
-    for var in ["DATABASE_URL", "TELEGRAM_BOT_TOKEN"]:
+    for var in ("DATABASE_URL", "TELEGRAM_BOT_TOKEN"):
         if not os.environ.get(var):
             logger.critical("Missing required env var: %s", var)
             sys.exit(1)
@@ -227,12 +155,12 @@ def main():
         logger.critical("Missing TELEGRAM_CHANNEL_ID or TELEGRAM_CHANNEL_LINK")
         sys.exit(1)
 
-    # Run crt.sh discovery once daily before sending reminders
-    # Decoupled from the 5×/day scraper pipeline — certificates don't churn within hours
+    # Certificate transparency runs once daily: certificates do not churn hourly,
+    # and crt.sh is slow enough that it does not belong in the 5x/day pipeline.
     try:
-        new_candidates = crt_monitor_run()
-        if new_candidates:
-            logger.info("crt_monitor: discovered %d new candidate(s)", len(new_candidates))
+        discovered = crt_monitor_run()
+        if discovered:
+            logger.info("crt_monitor: discovered %d new candidate(s)", len(discovered))
     except Exception as e:
         logger.error("crt_monitor failed: %s", e)
 

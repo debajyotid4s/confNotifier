@@ -18,6 +18,14 @@ logger = logging.getLogger(__name__)
 
 _pool = None
 
+POOL_MIN = 1
+POOL_MAX = 10
+
+#: Server-side cap on any single statement. Without it a slow query holds a
+#: pooled connection indefinitely, and with a pool of 10 that is an outage.
+#: Overridable because the internal notification queries are heavier than reads.
+STATEMENT_TIMEOUT_MS = int(os.environ.get("DB_STATEMENT_TIMEOUT_MS", "8000"))
+
 def _get_pool():
     global _pool
     if _pool is not None:
@@ -29,12 +37,16 @@ def _get_pool():
     # but prefer it; the pool gives us keepalives and avoids per-request handshake.
     try:
         _pool = psycopg2.pool.SimpleConnectionPool(
-            1, 10,
+            POOL_MIN, POOL_MAX,
             dsn=dsn,
             keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5,
             connect_timeout=5,
+            # Applied per connection by the server, so it covers every statement
+            # without needing a SET on each checkout.
+            options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}",
         )
-        logger.info("DB pool inited (1-10, keepalives)")
+        logger.info("DB pool inited (%d-%d, keepalives, statement_timeout=%dms)",
+                    POOL_MIN, POOL_MAX, STATEMENT_TIMEOUT_MS)
     except Exception as e:
         logger.warning("DB pool init failed, falling back to per-op connect: %s", e)
         _pool = None
@@ -101,7 +113,10 @@ def get_conn():
         raise RuntimeError("DATABASE_URL not set")
     for attempt in range(3):
         try:
-            return psycopg2.connect(dsn, keepalives=1, keepalives_idle=30, connect_timeout=5)
+            return psycopg2.connect(
+                dsn, keepalives=1, keepalives_idle=30, connect_timeout=5,
+                options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}",
+            )
         except psycopg2.Error as e:
             logger.error("DB direct connect attempt %d/3 failed: %s", attempt + 1, e)
             if attempt < 2:

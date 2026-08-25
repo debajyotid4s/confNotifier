@@ -1,56 +1,41 @@
+"""Discovery source: certificate transparency logs.
+
+A university brings up `icxyz2027.univ.ac.bd`, and a TLS certificate is issued
+for it days or weeks before anything links to it. Watching CT logs therefore
+finds conferences earlier than homepage scanning, and finds the ones no homepage
+ever links.
+
+CertSpotter is the primary feed because it supports an `after` cursor, so each
+run only reads issuances newer than the last one. crt.sh is the fallback when
+CertSpotter has nothing or errors — it has no cursor and is slow, hence the
+generous timeout.
+
+Runs once a day from send_reminders.py rather than on every scraper pass:
+certificates do not churn within hours.
+"""
+
 import json
 import logging
 import os
-import re
 import time
-from datetime import datetime
-
-import requests
 from urllib.parse import urlparse
 
-from scraper.db import get_connection
+import requests
+from psycopg2.extras import execute_values
+
+from scraper import db
+from scraper.patterns import is_conference_hostname
 
 logger = logging.getLogger(__name__)
 
+#: Domains queried per run. CertSpotter's free tier is metered, and unscanned
+#: domains are prioritised so coverage advances every day.
 MAX_QUERIES_PER_RUN = 8
 CERTSPOTTER_URL = "https://api.certspotter.com/v1/issuances"
-
-# Subdomains whose newest year is older than this are past editions, not upcoming
-# conferences. Self-advancing so no manual yearly bump is needed.
-YEAR_FLOOR = datetime.now().year - 1
-
-KNOWN_JUNK_PATTERNS = [
-    "autodiscover", "cpcontacts", "convocation", "convapi",
-    "ictcell", "ictserver", "ictvm", "webdisk", "library",
-    "contact", "mail", "app", "heqep", "emss", "clab", "econ",
-    "info", "secondaryschool", "icpcdhaka", "icpcbd",
-    "ict.", "www.ict.", "ieeecomsoc", "ieee-comsoc",
-    "email", "moodle", "webmail", "vpn", "remote",
-    "portal", "sis", "erp", "accounts", "admission",
-    "campus", "registrar", "result", "notice",
-]
-
-CONF_PREFIXES = ["ic", "conf", "conference", "symposium", "workshop", "congress", "summit"]
-CONF_KEYWORDS = [
-    "ieee", "icon", "icece", "iccit", "icmiee", "icace", "icca",
-    "iciset", "peeiacon", "raaicon", "spicscon", "becithcon",
-    "icefront",
-]
-
-
-def _is_conference_subdomain(name: str) -> bool:
-    lower = name.lower().lstrip("*.")
-    if lower.startswith("www."):
-        lower = lower[4:]
-    for junk in KNOWN_JUNK_PATTERNS:
-        if lower.startswith(junk):
-            return False
-    years = re.findall(r"(20\d{2})", lower)
-    if years and max(int(y) for y in years) < YEAR_FLOOR:
-        return False
-    if any(lower.startswith(p) for p in CONF_PREFIXES):
-        return True
-    return any(kw in lower for kw in CONF_KEYWORDS)
+CRTSH_URL = "https://crt.sh/?q=%.{domain}&output=json"
+QUERY_TIMEOUT = 15
+CRTSH_TIMEOUT = 60
+INTER_QUERY_SLEEP = 0.2
 
 
 def _load_domains() -> list[str]:
@@ -59,95 +44,73 @@ def _load_domains() -> list[str]:
 
 
 def _load_cursors() -> dict[str, int]:
-    conn = get_connection()
+    """Last processed CertSpotter issuance id per domain."""
     try:
-        cur = conn.cursor()
-        cur.execute("SELECT domain, last_id FROM certspotter_cursor")
-        result = dict(cur.fetchall())
-        cur.close()
-        return result
-    finally:
-        conn.close()
-
-
-def _save_cursor(domain: str, last_id: int) -> None:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO certspotter_cursor (domain, last_id) VALUES (%s, %s) "
-            "ON CONFLICT (domain) DO UPDATE SET last_id = EXCLUDED.last_id",
-            (domain, last_id),
-        )
-        conn.commit()
-        cur.close()
+        with db.db_cursor() as cur:
+            cur.execute("SELECT domain, last_id FROM certspotter_cursor")
+            return dict(cur.fetchall())
     except Exception as e:
-        logger.error("crt_monitor: failed to save cursor for %s: %s", domain, e)
-    finally:
-        conn.close()
+        logger.error("crt_monitor: failed to load cursors: %s", e)
+        return {}
 
 
-def _load_seen_urls() -> set[str]:
-    """Return set of hostnames already seen (for dedup)."""
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT url FROM seen_links WHERE status IN "
-            "('pending', 'not_conference', 'low_confidence', 'extracted', "
-            "'failed_transient', 'failed_permanent')"
-        )
-        hostnames = set()
-        for (url,) in cur.fetchall():
-            try:
-                host = (urlparse(url).hostname or "").lower()
-                if host:
-                    hostnames.add(host)
-            except Exception:
-                continue
-        cur.close()
-        return hostnames
-    finally:
-        conn.close()
-
-
-def _save_candidates(candidates: list[str]) -> None:
-    if not candidates:
+def _save_cursors(updates: dict[str, int]) -> None:
+    """Persist every advanced cursor in one round-trip."""
+    if not updates:
         return
-    conn = get_connection()
     try:
-        cur = conn.cursor()
-        for url in candidates:
-            cur.execute(
-                "INSERT INTO seen_links (url, source, status) VALUES (%s, 'crt_monitor', 'pending') "
-                "ON CONFLICT (url) DO NOTHING",
-                (url,),
+        with db.db_cursor(commit=True) as cur:
+            execute_values(
+                cur,
+                "INSERT INTO certspotter_cursor (domain, last_id) VALUES %s "
+                "ON CONFLICT (domain) DO UPDATE SET last_id = EXCLUDED.last_id",
+                list(updates.items()),
+                template="(%s, %s)",
             )
-        conn.commit()
-        cur.close()
     except Exception as e:
-        logger.error("crt_monitor: failed to save candidates: %s", e)
-        raise
-    finally:
-        conn.close()
+        logger.error("crt_monitor: failed to save cursors: %s", e)
+
+
+def _load_seen_hostnames() -> set[str]:
+    """Hostnames already recorded in seen_links, in any status.
+
+    CT logs re-report the same name on every certificate renewal, so dedup is on
+    hostname rather than URL. Both the bare and `www.` forms are stored so either
+    spelling matches.
+    """
+    try:
+        with db.db_cursor() as cur:
+            cur.execute("SELECT url FROM seen_links")
+            hostnames = set()
+            for (url,) in cur.fetchall():
+                host = (urlparse(url).hostname or "").lower()
+                if not host:
+                    continue
+                hostnames.add(host)
+                hostnames.add(host[4:] if host.startswith("www.") else f"www.{host}")
+            return hostnames
+    except Exception as e:
+        logger.error("crt_monitor: failed to load seen hostnames: %s", e)
+        return set()
 
 
 def _query_certspotter(domain: str, after_id: int | None) -> tuple[list[str], int | None, bool]:
-    params = {
-        "domain": domain,
-        "include_subdomains": "true",
-        "match_wildcards": "true",
-    }
+    """Fetch new issuances for a domain.
+
+    Returns (dns_names, new_cursor, rate_limited). `new_cursor` is None when the
+    query failed in a way that should trigger the crt.sh fallback, and 0 when the
+    domain simply has nothing new.
+    """
+    params = {"domain": domain, "include_subdomains": "true", "match_wildcards": "true"}
     if after_id:
         params["after"] = after_id
 
     key = os.environ["CERTSPOTTER_API_KEY"]
-    headers = {"Authorization": f"Bearer {key}"}
-
-    resp = requests.get(CERTSPOTTER_URL, params=params, headers=headers, timeout=15)
+    resp = requests.get(CERTSPOTTER_URL, params=params,
+                        headers={"Authorization": f"Bearer {key}"}, timeout=QUERY_TIMEOUT)
 
     if resp.status_code == 429:
-        logger.warning("certspotter: 429 rate limited for %s", domain)
+        logger.warning("certspotter: rate limited on %s", domain)
         return [], None, True
     if resp.status_code == 404:
         return [], 0, False
@@ -163,98 +126,93 @@ def _query_certspotter(domain: str, after_id: int | None) -> tuple[list[str], in
     if not data:
         return [], 0, False
 
-    dns_names = []
+    dns_names: list[str] = []
     last_id = 0
     for item in data:
         try:
             item_id = item["id"]
         except (KeyError, TypeError):
             continue
-        if item_id > last_id:
-            last_id = item_id
-        for name in item.get("dns_names", []):
-            dns_names.append(name.strip().lower())
+        last_id = max(last_id, item_id)
+        dns_names.extend(name.strip().lower() for name in item.get("dns_names", []))
 
     return dns_names, last_id, False
 
 
 def _crtsh_fallback(domain: str) -> list[str]:
-    url = f"https://crt.sh/?q=%.{domain}&output=json"
+    """Read every certificate name for a domain from crt.sh."""
     try:
-        resp = requests.get(url, timeout=60, headers={"User-Agent": "curl/8.0"})
-        if resp.status_code == 200:
-            names = []
-            for entry in resp.json():
-                for raw in entry.get("name_value", "").split("\n"):
-                    raw = raw.strip().lower().lstrip("*.")
-                    if raw:
-                        names.append(raw)
-            return names
+        resp = requests.get(CRTSH_URL.format(domain=domain), timeout=CRTSH_TIMEOUT,
+                            headers={"User-Agent": "curl/8.0"})
+        if resp.status_code != 200:
+            return []
+        names = []
+        for entry in resp.json():
+            for raw in entry.get("name_value", "").split("\n"):
+                cleaned = raw.strip().lower().lstrip("*.")
+                if cleaned:
+                    names.append(cleaned)
+        return names
     except Exception as e:
         logger.warning("crtsh fallback failed for %s: %s", domain, e)
-    return []
+        return []
+
+
+def _batch_for_this_run(all_domains: list[str], cursors: dict) -> list[str]:
+    """Pick which domains to query, unscanned ones first."""
+    unscanned = [d for d in all_domains if d not in cursors]
+    scanned = [d for d in all_domains if d in cursors]
+    return (unscanned + scanned)[:MAX_QUERIES_PER_RUN]
 
 
 def run() -> list[str]:
+    """Query CT logs for new conference hostnames. Returns new candidate URLs."""
     if not os.environ.get("CERTSPOTTER_API_KEY"):
         logger.critical("certspotter: CERTSPOTTER_API_KEY not set")
         return []
 
-    all_domains = _load_domains()
     cursors = _load_cursors()
-    seen = _load_seen_urls()
-    candidates = []
+    seen = _load_seen_hostnames()
+    batch = _batch_for_this_run(_load_domains(), cursors)
 
-    unscanned = [d for d in all_domains if d not in cursors]
-    scanned = [d for d in all_domains if d in cursors]
-    batch = (unscanned + scanned)[:MAX_QUERIES_PER_RUN]
-
-    cursor_updates = {}
-    rate_limited = False
+    candidates: list[str] = []
+    cursor_updates: dict[str, int] = {}
 
     for domain in batch:
-        if rate_limited:
-            break
-
-        after_id = cursors.get(domain)
-        dns_names = []
-        new_cursor = None
-        is_rate_limited = False
-
+        dns_names: list[str] = []
+        new_cursor: int | None = None
         try:
-            dns_names, new_cursor, is_rate_limited = _query_certspotter(domain, after_id)
+            dns_names, new_cursor, rate_limited = _query_certspotter(domain, cursors.get(domain))
+            if rate_limited:
+                logger.warning("certspotter: stopping run early after rate limit")
+                break
         except requests.RequestException as e:
             logger.warning("certspotter: request error for %s: %s", domain, e)
-
-        if is_rate_limited:
-            rate_limited = True
-            break
 
         if dns_names:
             cursor_updates[domain] = new_cursor
         elif new_cursor is None:
-            logger.info("certspotter: fallback to crt.sh for %s", domain)
+            logger.info("certspotter: falling back to crt.sh for %s", domain)
             dns_names = _crtsh_fallback(domain)
         else:
             cursor_updates[domain] = 0
 
         for name in dns_names:
-            if not _is_conference_subdomain(name):
+            if name in seen or not is_conference_hostname(name):
                 continue
-            bare = name.replace("www.", "", 1)
-            if bare in seen or f"www.{bare}" in seen:
+            bare = name[4:] if name.startswith("www.") else name
+            if bare in seen:
                 continue
-            url = f"https://{name}"
-            candidates.append(url)
             seen.add(name)
             seen.add(bare)
-            logger.info("crt_monitor: new candidate -> %s", url)
+            candidates.append(f"https://{name}")
+            logger.info("crt_monitor: new candidate -> https://%s", name)
 
-        time.sleep(0.2)
+        time.sleep(INTER_QUERY_SLEEP)
 
-    _save_candidates(candidates)
-    for domain, last_id in cursor_updates.items():
-        _save_cursor(domain, last_id)
+    if candidates:
+        db.save_seen_links_bulk([(u, "crt_monitor", "pending") for u in candidates])
+    _save_cursors(cursor_updates)
 
     logger.info("crt_monitor: %d new candidate(s) from %d domain(s)", len(candidates), len(batch))
     return candidates

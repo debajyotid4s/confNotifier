@@ -6,22 +6,13 @@ from fastapi import APIRouter, HTTPException, Depends, Header, Request
 from pydantic import BaseModel
 import psycopg2
 
-from database import db_cursor, db_transaction, fetch_one
-from auth import verify_google_id_token, generate_username_candidate, create_jwt, decode_jwt
+from auth import create_jwt, decode_jwt, generate_username_candidate, verify_google_id_token
+from database import db_transaction, fetch_one
+from deps import AUTH_RATE_LIMIT, AUTH_RATE_WINDOW, client_ip, enforce_rate_limit
 from mappers import login_response
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-def _client_ip(request: Request) -> str:
-    # Trust XFF only when behind trusted proxy (Render, etc.). Default 1 for prod.
-    # Set TRUST_PROXY=0 if running without proxy to avoid spoofed IP bypassing rate limit.
-    if os.environ.get("TRUST_PROXY", "1") == "1":
-        xff = request.headers.get("x-forwarded-for")
-        if xff:
-            # XFF may be "client, proxy1, proxy2" — first is original client
-            return xff.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
 
 class AuthLoginIn(BaseModel):
     provider: str  # "google" or "firebase"
@@ -60,16 +51,11 @@ def get_optional_user(authorization: str = Header(None)):
         return None
     return payload.get("sub")
 
-def _rate_limit_or_429(request: Request, key_prefix: str):
-    try:
-        from cache import check_rate_limit
-        ip = _client_ip(request)
-        if not check_rate_limit(f"rl:auth:{key_prefix}:{ip}", 10, 60):
-            raise HTTPException(status_code=429, detail="Too many requests — try again later")
-    except HTTPException:
-        raise
-    except Exception:
-        pass
+def _rate_limit_or_429(request: Request, provider: str) -> None:
+    """Throttle sign-in attempts per provider per IP."""
+    enforce_rate_limit(
+        f"rl:auth:{provider}:{client_ip(request)}", AUTH_RATE_LIMIT, AUTH_RATE_WINDOW
+    )
 
 GRACE_PERIOD_DAYS = 7
 GRACE_PERIOD = timedelta(days=GRACE_PERIOD_DAYS)
@@ -84,8 +70,13 @@ def _grace_remaining_seconds(deleted_at: datetime, now: datetime) -> float:
     return (expires_at - now).total_seconds()
 
 
-def _upsert_user(*, lookup_col: str, lookup_val: str, email: str, body, client_ip, user_agent, log_id: str):
-    """Shared upsert for Google and Firebase — single place for login-metadata handling."""
+def _upsert_user(*, lookup_col: str, lookup_val: str, email: str, body, ip, user_agent,
+                 log_id: str):
+    """Find-or-create the user for a verified identity, then issue a JWT.
+
+    Shared by both providers so login metadata, the soft-delete grace period and
+    username-collision retries are handled in exactly one place.
+    """
     if lookup_col not in ("google_subject_id", "firebase_uid"):
         raise ValueError(f"Invalid lookup_col: {lookup_col}")
     for attempt in range(10):
@@ -118,7 +109,7 @@ def _upsert_user(*, lookup_col: str, lookup_val: str, email: str, body, client_i
                     from database import execute
                     execute(
                         "UPDATE users SET last_login_at = now(), last_login_ip = %s, ip_address = %s, phone_model = COALESCE(%s, phone_model), user_agent = %s, device_info = COALESCE(%s, device_info) WHERE id = %s",
-                        (client_ip, client_ip, body.phone_model, user_agent, body.device_info, uid),
+                        (ip, ip, body.phone_model, user_agent, body.device_info, uid),
                     )
                 except Exception as e:
                     logger.warning("%s: update login info failed for %s: %s", log_id, lookup_val, e)
@@ -128,19 +119,19 @@ def _upsert_user(*, lookup_col: str, lookup_val: str, email: str, body, client_i
 
                     _exec_hist(
                         "INSERT INTO login_events (user_id, ip_address, user_agent, phone_model, device_info) VALUES (%s,%s,%s,%s,%s)",
-                        (uid, client_ip, user_agent, body.phone_model, body.device_info),
+                        (uid, ip, user_agent, body.phone_model, body.device_info),
                     )
                 except Exception as e:
                     logger.warning("%s: login_events insert failed for %s: %s", log_id, uid, e)
                 token = create_jwt(str(uid), db_email)
-                logger.info("%s: login %s=%s username=%s ip=%s phone=%s", log_id, lookup_col, lookup_val, username, client_ip, body.phone_model)
+                logger.info("%s: login %s=%s username=%s ip=%s phone=%s", log_id, lookup_col, lookup_val, username, ip, body.phone_model)
                 return login_response(token, uid, username, db_email)
             candidate = generate_username_candidate()
             try:
                 with db_transaction() as cur:
                     cur.execute(
                         f"INSERT INTO users ({lookup_col}, email, username, phone_model, ip_address, user_agent, device_info, last_login_at, last_login_ip) VALUES (%s,%s,%s,%s,%s,%s,%s, now(), %s) RETURNING id, username",
-                        (lookup_val, email, candidate, body.phone_model, client_ip, user_agent, body.device_info, client_ip)
+                        (lookup_val, email, candidate, body.phone_model, ip, user_agent, body.device_info, ip)
                     )
                     uid, username = cur.fetchone()
                 # Initial login history for new user — best-effort
@@ -149,12 +140,12 @@ def _upsert_user(*, lookup_col: str, lookup_val: str, email: str, body, client_i
 
                     _exec_hist2(
                         "INSERT INTO login_events (user_id, ip_address, user_agent, phone_model, device_info) VALUES (%s,%s,%s,%s,%s)",
-                        (uid, client_ip, user_agent, body.phone_model, body.device_info),
+                        (uid, ip, user_agent, body.phone_model, body.device_info),
                     )
                 except Exception as e:
                     logger.warning("%s: login_events insert failed for new %s: %s", log_id, uid, e)
                 token = create_jwt(str(uid), email)
-                logger.info("%s: created %s=%s username=%s ip=%s phone=%s", log_id, lookup_col, lookup_val, username, client_ip, body.phone_model)
+                logger.info("%s: created %s=%s username=%s ip=%s phone=%s", log_id, lookup_col, lookup_val, username, ip, body.phone_model)
                 return login_response(token, uid, username, email)
             except psycopg2.errors.UniqueViolation as e:
                 # Distinguish email vs username vs lookup_col collision
@@ -196,9 +187,9 @@ def auth_login(body: AuthLoginIn, request: Request):
         raise HTTPException(status_code=400, detail="provider must be 'google' or 'firebase'")
 
     _rate_limit_or_429(request, provider)
-    client_ip = _client_ip(request)
-    if client_ip == "unknown":
-        client_ip = None
+    ip = client_ip(request)
+    if ip == "unknown":
+        ip = None
     user_agent = request.headers.get("user-agent")
 
     if provider == "google":
@@ -207,7 +198,7 @@ def auth_login(body: AuthLoginIn, request: Request):
         email = info.get("email")
         if not sub or not email:
             raise HTTPException(status_code=400, detail="Google token missing sub/email")
-        return _upsert_user(lookup_col="google_subject_id", lookup_val=sub, email=email, body=body, client_ip=client_ip, user_agent=user_agent, log_id="auth_google")
+        return _upsert_user(lookup_col="google_subject_id", lookup_val=sub, email=email, body=body, ip=ip, user_agent=user_agent, log_id="auth_google")
 
     # firebase
     try:
@@ -227,7 +218,7 @@ def auth_login(body: AuthLoginIn, request: Request):
     except Exception as e:
         logger.error("auth_firebase verify failed: %s", e)
         raise HTTPException(status_code=401, detail="Invalid Firebase token")
-    return _upsert_user(lookup_col="firebase_uid", lookup_val=fb_uid, email=email, body=body, client_ip=client_ip, user_agent=user_agent, log_id="auth_firebase")
+    return _upsert_user(lookup_col="firebase_uid", lookup_val=fb_uid, email=email, body=body, ip=ip, user_agent=user_agent, log_id="auth_firebase")
 
 @router.post("/auth/logout")
 def auth_logout(user=Depends(get_current_user)):

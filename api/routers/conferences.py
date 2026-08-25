@@ -1,136 +1,102 @@
+"""Public conference read endpoints.
+
+All three are anonymous, cached, and rate-limited. Bookmark state is only
+resolved when a valid token is present, so the anonymous responses stay shareable
+across users in the cache.
+"""
+
+import logging
 from datetime import date
 
-from fastapi import APIRouter, HTTPException, Query, Depends, Header
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from database import fetch_all, fetch_all_dict, fetch_one, fetch_one_dict
 from cache import get_or_set
-from mappers import CONF_SELECT, deadlines_for_ids, conference_row_to_out, bookmarked_ids_for_user
-from routers.auth import get_current_user, get_optional_user
+from database import fetch_all_dict, fetch_one_dict
+from deps import public_rate_limit
+from mappers import (
+    CONF_SELECT,
+    HAS_OPEN_DEADLINE,
+    SOONEST_DEADLINE,
+    bookmarked_ids_for_user,
+    conference_row_to_out,
+    conference_rows_to_out,
+)
+from routers.auth import get_optional_user
 
-router = APIRouter()
+logger = logging.getLogger(__name__)
 
+router = APIRouter(dependencies=[Depends(public_rate_limit)])
 
-def _optional_user(authorization: str = Header(None)):
-    """Wrapper to keep Depends(_optional_user) signature stable; delegates to auth.get_optional_user."""
-    return get_optional_user(authorization)
+CACHE_TTL = 300
+MAX_CALENDAR_ROWS = 500
 
 
 @router.get("/conferences/calendar")
 def calendar(month: str = Query(..., pattern=r"^\d{4}-\d{2}$")):
+    """Conferences with a submission deadline inside `month` (YYYY-MM).
+
+    Deadline-driven, not conference-date-driven: the calendar marks the days a
+    researcher must act on, which is what the Android calendar view renders.
+    """
     try:
-        y, m = map(int, month.split("-"))
-        start = date(y, m, 1)
-        end = date(y+1, 1, 1) if m == 12 else date(y, m+1, 1)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid month format, use YYYY-MM")
+        year, mon = (int(part) for part in month.split("-"))
+        start = date(year, mon, 1)
+        end = date(year + 1, 1, 1) if mon == 12 else date(year, mon + 1, 1)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid month, use YYYY-MM")
 
-    def _fetch():
-        cd_rows = None
-        try:
-            cd_rows = fetch_all(
-                "SELECT conference_id, deadline FROM conference_deadlines "
-                "WHERE deadline >= %s AND deadline < %s AND type IN ('abstract','full_paper')",
-                (start, end),
-            )
-        except Exception as e:
-            import psycopg2.errors
-
-            if isinstance(e, psycopg2.errors.UndefinedTable):
-                import logging
-
-                logging.getLogger(__name__).warning("calendar: conference_deadlines missing, fallback to wide cols")
-                cd_rows = None
-            else:
-                raise
-        if cd_rows:
-            conf_ids = list({r[0] for r in cd_rows})
-            rows = fetch_all_dict(f"{CONF_SELECT} WHERE id = ANY(%s)", (conf_ids,))
-            dl_map = deadlines_for_ids(conf_ids)
-            today = date.today()
-            rows.sort(key=lambda r: (
-                dl_map.get(r["id"], {}).get("abstract")
-                or dl_map.get(r["id"], {}).get("full_paper")
-                or r["abstract_deadline"] or r["full_paper_deadline"] or date.max,
-                r["id"],
-            ))
-            return [conference_row_to_out(r, dl_map, today) for r in rows]
-
+    def fetch():
         rows = fetch_all_dict(
-            f"{CONF_SELECT} WHERE (abstract_deadline >= %s AND abstract_deadline < %s) "
-            "OR (full_paper_deadline >= %s AND full_paper_deadline < %s) "
-            "ORDER BY COALESCE(abstract_deadline, full_paper_deadline) ASC, id ASC",
-            (start, end, start, end),
+            f"""{CONF_SELECT}
+                WHERE (COALESCE(cd_abs.deadline, c.abstract_deadline) >= %s
+                       AND COALESCE(cd_abs.deadline, c.abstract_deadline) < %s)
+                   OR (COALESCE(cd_full.deadline, c.full_paper_deadline) >= %s
+                       AND COALESCE(cd_full.deadline, c.full_paper_deadline) < %s)
+                ORDER BY {SOONEST_DEADLINE} ASC, c.id ASC
+                LIMIT %s""",
+            (start, end, start, end, MAX_CALENDAR_ROWS),
         )
-        dl_map = deadlines_for_ids([r["id"] for r in rows])
-        today = date.today()
-        return [conference_row_to_out(r, dl_map, today) for r in rows]
+        return conference_rows_to_out(rows)
 
-    return get_or_set(f"cal:{month}", _fetch, ttl=300)
+    return get_or_set(f"cal:{month}", fetch, ttl=CACHE_TTL)
 
 
 @router.get("/conferences/upcoming")
 def upcoming(limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0)):
-    def _fetch():
-        cd_rows = None
-        try:
-            cd_rows = fetch_all(
-                "SELECT conference_id, deadline FROM conference_deadlines "
-                "WHERE deadline >= CURRENT_DATE ORDER BY deadline ASC, conference_id ASC LIMIT %s OFFSET %s",
-                (limit, offset),
-            )
-        except Exception as e:
-            import psycopg2.errors
+    """Conferences with at least one submission deadline still open.
 
-            if isinstance(e, psycopg2.errors.UndefinedTable):
-                import logging
-
-                logging.getLogger(__name__).warning("upcoming: conference_deadlines missing, fallback to wide cols")
-                cd_rows = None
-            else:
-                raise
-        if cd_rows:
-            conf_ids = [r[0] for r in cd_rows]
-            rows = fetch_all_dict(f"{CONF_SELECT} WHERE id = ANY(%s)", (conf_ids,))
-            row_by_id = {r["id"]: r for r in rows}
-            dl_map = deadlines_for_ids(conf_ids)
-            today = date.today()
-            ordered = [row_by_id[cid] for cid in conf_ids if cid in row_by_id]
-            return [conference_row_to_out(r, dl_map, today) for r in ordered]
-
-        # Deadline-only: no garbage — only conferences with at least one submission deadline >= today
-        # TBA (both NULL) excluded from upcoming; past deadlines with future date_start excluded (was bug id=25)
+    Paginated over *conferences*. The previous implementation paginated over
+    deadline rows, so a conference with both an abstract and a full-paper deadline
+    consumed two slots and was returned twice in the same page.
+    """
+    def fetch():
         rows = fetch_all_dict(
-            f"""{CONF_SELECT} WHERE (abstract_deadline >= CURRENT_DATE OR full_paper_deadline >= CURRENT_DATE)
-            ORDER BY COALESCE(
-                LEAST(abstract_deadline, full_paper_deadline),
-                abstract_deadline,
-                full_paper_deadline
-            ) ASC, id ASC
-            LIMIT %s OFFSET %s""",
+            f"""{CONF_SELECT}
+                WHERE {HAS_OPEN_DEADLINE}
+                ORDER BY {SOONEST_DEADLINE} ASC, c.id ASC
+                LIMIT %s OFFSET %s""",
             (limit, offset),
         )
-        dl_map = deadlines_for_ids([r["id"] for r in rows])
-        today = date.today()
-        # Filter out any past status that slipped through and exclude garbage (defense in depth)
-        out = [conference_row_to_out(r, dl_map, today) for r in rows]
-        # Upcoming must never contain past — status past is garbage for this endpoint
-        out = [o for o in out if o["status"] != "past"]
-        # Also exclude true negatives where soonest is None but we have no date_start (should not happen via WHERE, but safe)
-        return out
+        return conference_rows_to_out(rows)
 
-    return get_or_set(f"upcoming:{limit}:{offset}", _fetch, ttl=300)
+    return get_or_set(f"upcoming:{limit}:{offset}", fetch, ttl=CACHE_TTL)
 
 
 @router.get("/conferences/{conf_id}")
-def get_conference(conf_id: int, user_id: str | None = Depends(_optional_user)):
-    cache_key = f"conf:{conf_id}:{user_id}" if user_id else f"conf:{conf_id}"
-
-    def _fetch():
-        row = fetch_one_dict(f"{CONF_SELECT} WHERE id = %s", (conf_id,))
+def get_conference(conf_id: int, user_id: str | None = Depends(get_optional_user)):
+    """One conference by id, including this user's bookmark state when signed in."""
+    def fetch():
+        row = fetch_one_dict(f"{CONF_SELECT} WHERE c.id = %s", (conf_id,))
         if not row:
             raise HTTPException(status_code=404, detail="Not found")
-        dl_map = deadlines_for_ids([conf_id])
-        bm = bookmarked_ids_for_user(user_id, [conf_id]) if user_id else set()
-        return conference_row_to_out(row, dl_map, date.today(), bookmarked=(conf_id in bm) if user_id else None)
+        return conference_row_to_out(row, date.today())
 
-    return get_or_set(cache_key, _fetch, ttl=300)
+    # The conference itself is cached once for everyone; the per-user bookmark
+    # flag is layered on afterwards. Caching per user would multiply the key
+    # space by the user count for identical payloads.
+    conference = get_or_set(f"conf:{conf_id}", fetch, ttl=CACHE_TTL)
+
+    if user_id:
+        conference = dict(conference)
+        conference["bookmarked"] = conf_id in bookmarked_ids_for_user(user_id, [conf_id])
+    return conference

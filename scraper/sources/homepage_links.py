@@ -1,121 +1,112 @@
+"""Discovery source: outbound conference links on university homepages.
+
+For each domain in config/universities.json:
+  1. fetch the homepage, escalating requests → curl → Playwright as needed
+  2. classify every anchor with patterns.classify_link
+  3. hand the survivors to the pipeline
+
+Two caches make repeat runs cheap: the winning fetch tier per domain is stored in
+`domain_strategies`, and the set of already-seen URLs is loaded once instead of
+queried per link.
+"""
+
 import json
 import logging
-import re
 import subprocess
 import time
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
 from urllib3.exceptions import HeaderParsingError
 
-from scraper.db import get_connection, save_seen_link, load_domain_strategies, save_domain_strategy
+from scraper import db
 from scraper.browser import PlaywrightManager
-from scraper.change_detector import run_detection as detect_homepage_change
+from scraper.change_detector import run_detection_batch
+from scraper.patterns import classify_link
 from scraper.utils import is_safe_url
 
-# Suppress noisy urllib3 connection warnings from malformed server headers
+# Malformed headers from several .ac.bd hosts make urllib3 very noisy.
 logging.getLogger("urllib3.connection").setLevel(logging.ERROR)
 
 logger = logging.getLogger(__name__)
 
+USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
 
-CONF_PATTERNS = [
-    # Conference name + optional separator + year (e.g. ieee-2026, icmiee.2026)
-    re.compile(r"ieee[a-z]+[\-_.]?\d{4}"),
-    re.compile(r"ic[a-z]+[\-_.]?\d{4}"),
-    re.compile(r"[a-z]+con\.\w+"),
-    re.compile(r"[a-z]+icon\.\w+"),
-    re.compile(r"conf[a-z]+[\-_.]?\d{4}"),
-    # Generic path-segment pattern: requires a conference keyword before the year
-    # e.g. /conference-2026, /workshop2026, /some-conference-2026
-    # Not: /summer-2025, /exam-2026, /fall-2026 (those are exam notices, etc.)
-    re.compile(r"/(?:conf(?:erence)?|symposium|workshop|congress|summit|seminar|colloquium|convention|meeting|forum)[a-z]*[\-_.]?\d{4}"),
-    re.compile(r"symposium"),
-    re.compile(r"iccit"),
-]
-
-URL_BLOCKLIST = {
-    "https://www.ieee.org",
-    "https://www.ieee.org/",
-    "http://www.ieee.org",
-    "https://site.ieee.org",
-    "http://sites.ieee.org",
-    "http://ieeeruetsb.net",
-    "http://ieeeruetsb.net/wapindex.html",
-}
-
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-
-_REQUESTS_HEADERS = {
+_HEADERS = {
     "User-Agent": USER_AGENT,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.5",
 }
 
+FETCH_TIERS = ("requests", "curl", "playwright")
+REQUEST_TIMEOUT = 10
+CURL_TIMEOUT = 15
+RETRY_SLEEP = 3
 
-def _try_requests(url: str) -> str | None:
-    """Try fetching with requests. Retries once on failure.
-    Returns HTML content or None if all attempts fail."""
-    if not is_safe_url(url):
-        return None
-    for attempt in range(2):
-        try:
-            resp = requests.get(url, headers=_REQUESTS_HEADERS, timeout=10, allow_redirects=True)
-            if resp.status_code == 200 and "Just a moment" not in resp.text[:500]:
-                return resp.text
-        except (requests.exceptions.RequestException, HeaderParsingError):
-            pass
-        if attempt == 0:
-            time.sleep(3)
-    return None
+#: Cloudflare's interstitial, which returns HTTP 200 with no real content.
+_CHALLENGE_MARKER = "Just a moment"
 
 
-def _load_domains(path="config/universities.json"):
+def _load_domains(path="config/universities.json") -> list[str]:
     with open(path) as f:
         return json.load(f)
 
 
-NON_HTML_EXTENSIONS = {
-    ".pdf", ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp",
-    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-    ".zip", ".rar", ".7z", ".tar", ".gz",
-    ".mp4", ".mp3", ".mov", ".avi", ".wmv",
-    ".ico", ".css", ".js", ".xml", ".json", ".csv",
-    ".exe", ".msi", ".deb", ".rpm",
-}
+# ── Fetch tiers ───────────────────────────────────────────────────────────────
+
+def _fetch_requests(url: str) -> str | None:
+    """Plain HTTP GET, retried once. Fastest tier; works for most domains."""
+    if not is_safe_url(url):
+        return None
+    for attempt in range(2):
+        try:
+            resp = requests.get(url, headers=_HEADERS, timeout=REQUEST_TIMEOUT,
+                                allow_redirects=True)
+            if resp.status_code == 200 and _CHALLENGE_MARKER not in resp.text[:500]:
+                return resp.text
+        except (requests.exceptions.RequestException, HeaderParsingError):
+            pass
+        if attempt == 0:
+            time.sleep(RETRY_SLEEP)
+    return None
 
 
-def _is_conference_link(href, domain):
-    if not href:
-        return False
-    if href in URL_BLOCKLIST or href.rstrip("/") in URL_BLOCKLIST:
-        return False
-    try:
-        parsed = urlparse(href)
-    except Exception:
-        return False
-    if not parsed.netloc:
-        return False
-    # Skip non-HTML resources (PDFs, images, documents, etc.)
-    path = parsed.path.lower()
-    if any(path.endswith(ext) for ext in NON_HTML_EXTENSIONS):
-        return False
-    lower = href.lower()
-    for pat in CONF_PATTERNS:
-        if pat.search(lower):
-            return True
-    return False
+def _fetch_curl(url: str, timeout: int = CURL_TIMEOUT) -> str | None:
+    """Fetch via the curl binary, retried once.
 
-
-def _build_url(base, href):
-    return urljoin(base, href)
-
-
-def _playwright_fetch(url: str, playwright: PlaywrightManager) -> str | None:
-    """Fetch page HTML using Playwright with stealth.
-    Handles Cloudflare JS challenge (Category A1) that block requests and curl.
+    Needed for hosts that emit HTTP headers urllib3 refuses to parse (buet.ac.bd,
+    sust.edu). `-k` is deliberate: several .ac.bd hosts serve expired or
+    mismatched certificates, and `is_safe_url` has already confirmed the target
+    resolves to a public address, so the exposure is limited to reading a public
+    page we would otherwise be unable to read at all.
     """
+    if not is_safe_url(url):
+        logger.warning("SSRF blocked (curl): %s", url)
+        return None
+    for attempt in range(2):
+        try:
+            proc = subprocess.run(
+                ["curl", "-sS", "-L", "--max-time", str(timeout),
+                 "--user-agent", USER_AGENT,
+                 "-H", "Accept: text/html,application/xhtml+xml,*/*",
+                 "-k", url],
+                capture_output=True, timeout=timeout + 5,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                return proc.stdout.decode("utf-8", errors="replace")
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        if attempt == 0:
+            time.sleep(RETRY_SLEEP)
+    return None
+
+
+def _fetch_playwright(url: str, playwright: PlaywrightManager | None) -> str | None:
+    """Fetch with a stealth headless browser — clears Cloudflare JS challenges."""
+    if playwright is None:
+        return None
     if not is_safe_url(url):
         logger.warning("SSRF blocked (playwright): %s", url)
         return None
@@ -123,313 +114,139 @@ def _playwright_fetch(url: str, playwright: PlaywrightManager) -> str | None:
         return playwright.fetch_page_html(url)
     except Exception as e:
         logger.warning("Playwright fetch failed for %s: %s", url, e)
-    return None
-
-
-def _curl_fetch(url: str, timeout: int = 15) -> str | None:
-    """Fetch page HTML using curl subprocess. Retries once on failure.
-    Handles malformed headers that break requests/urllib3
-    (Category B failures like buet.ac.bd)."""
-    if not is_safe_url(url):
-        logger.warning("SSRF blocked (curl): %s", url)
         return None
-    for attempt in range(2):
-        try:
-            proc = subprocess.run(
-                [
-                    "curl", "-sS", "-L",
-                    "--max-time", str(timeout),
-                    "--user-agent", USER_AGENT,
-                    "-H", "Accept: text/html,application/xhtml+xml,*/*",
-                    "-k",
-                    url,
-                ],
-                capture_output=True,
-                timeout=timeout + 5,
-            )
-            if proc.returncode == 0 and proc.stdout.strip():
-                try:
-                    return proc.stdout.decode("utf-8", errors="replace")
-                except Exception:
-                    return None
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
-        if attempt == 0:
-            time.sleep(3)
+
+
+def _fetch(tier: str, url: str, playwright) -> str | None:
+    if tier == "requests":
+        return _fetch_requests(url)
+    if tier == "curl":
+        return _fetch_curl(url)
+    if tier == "playwright":
+        return _fetch_playwright(url, playwright)
     return None
 
 
-def fetch_homepage_fast(url: str, retries: int = 2, playwright: PlaywrightManager = None):
-    """Fetch a homepage with multiple fallback strategies.
+def fetch_homepage(url: str, playwright=None, from_tier: str = "requests"):
+    """Try each fetch tier from `from_tier` onward.
 
-    Returns (soup, strategy) where strategy is one of:
-    "requests", "curl", "playwright", or None if all failed.
+    Returns (soup, tier) or (None, None). Starting at a cached tier skips the
+    tiers already known not to work for this domain.
     """
     if not is_safe_url(url):
         logger.warning("SSRF blocked: %s", url)
         return None, None
-
-    domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-
-    headers = {
-        "User-Agent": USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-    }
-
-    last_error = None
-    for attempt in range(retries + 1):
-        # Strategy 1: requests
-        try:
-            resp = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
-
-            # Cloudflare hard block (JS challenge) — try Playwright immediately
-            if resp.status_code == 403 and "cf-mitigated" in resp.headers:
-                logger.info("%s blocked by Cloudflare JS challenge, trying Playwright", domain)
-                html = _playwright_fetch(url, playwright) if playwright else None
-                if html:
-                    return BeautifulSoup(html, "lxml"), "playwright"
-                return None, None
-
-            # Cloudflare soft block (CDN rate limit) — retry, then Playwright
-            if resp.status_code == 403 and "cloudflare" in resp.headers.get("server", "").lower():
-                logger.info("%s Cloudflare 403 (attempt %d/%d), will retry", domain, attempt + 1, retries + 1)
-                last_error = "Cloudflare 403"
-                if attempt < retries:
-                    time.sleep(3 * (attempt + 1))
-                    continue
-                logger.info("%s Cloudflare soft block retries exhausted, trying Playwright", domain)
-                html = _playwright_fetch(url, playwright) if playwright else None
-                if html:
-                    return BeautifulSoup(html, "lxml"), "playwright"
-                return None, None
-
-            if resp.status_code == 200:
-                if "Just a moment" in resp.text[:500]:
-                    logger.warning("%s blocked by Cloudflare challenge page, trying Playwright", domain)
-                    html = _playwright_fetch(url, playwright) if playwright else None
-                    if html:
-                        return BeautifulSoup(html, "lxml"), "playwright"
-                    return None, None
-                return BeautifulSoup(resp.text, "lxml"), "requests"
-
-            # Non-200 status — try curl fallback
-            logger.debug("%s HTTP %d, trying curl fallback", domain, resp.status_code)
-
-        except HeaderParsingError:
-            logger.info("%s malformed HTTP headers, trying curl fallback", domain)
-            html = _curl_fetch(url)
-            if html:
-                return BeautifulSoup(html, "lxml"), "curl"
-            return None, None
-
-        except requests.exceptions.SSLError as e:
-            logger.info("%s SSL error (%s), trying curl fallback", domain, e)
-            html = _curl_fetch(url)
-            if html:
-                return BeautifulSoup(html, "lxml"), "curl"
-            return None, None
-
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-            last_error = str(e)
-            # Network unreachable (IPv6) — skip immediately, no retry
-            if "Network is unreachable" in str(e) or "Errno 101" in str(e):
-                logger.warning("%s network unreachable (IPv6), skipping", domain)
-                return None, None
-            logger.debug("%s connection error (attempt %d/%d): %s", domain, attempt + 1, retries + 1, e)
-            if attempt < retries:
-                time.sleep(3 * (attempt + 1))
-                continue
-
-        except Exception as e:
-            last_error = str(e)
-            logger.debug("%s unexpected error: %s", domain, e)
-
-        # Strategy 2: curl fallback for any non-200 or error
-        if attempt == retries:
-            html = _curl_fetch(url)
-            if html:
-                return BeautifulSoup(html, "lxml"), "curl"
-            # Last resort: try Playwright before giving up
-            logger.info("%s all HTTP retries failed, trying Playwright as last resort", domain)
-            html = _playwright_fetch(url, playwright) if playwright else None
-            if html:
-                return BeautifulSoup(html, "lxml"), "playwright"
-            logger.warning("Could not load %s (last error: %s), skipping", domain, last_error)
-            return None, None
-
+    start = FETCH_TIERS.index(from_tier) if from_tier in FETCH_TIERS else 0
+    for tier in FETCH_TIERS[start:]:
+        html = _fetch(tier, url, playwright)
+        if html and len(html.strip()) > 50:
+            return BeautifulSoup(html, "lxml"), tier
     return None, None
 
 
-def fetch_homepage_with_www_fallback(domain: str, playwright: PlaywrightManager = None):
-    """Try www.{domain} first, then fall back to {domain} bare.
+def _url_variants(domain: str, preferred: str | None = None) -> list[str]:
+    """Candidate homepage URLs for a domain, preferred one first.
 
-    Returns (soup, loaded_url, strategy) where strategy is one of:
-    "requests", "curl", "playwright", or None if all failed.
+    Some hosts only answer on `www.`, others only on the bare domain.
     """
-    # Try www first
-    url_www = f"https://www.{domain}"
-    soup, strategy = fetch_homepage_fast(url_www, playwright=playwright)
-    if soup is not None:
-        return soup, url_www, strategy
+    variants = [f"https://www.{domain}", f"https://{domain}"]
+    if preferred:
+        variants = [preferred] + [v for v in variants if v != preferred]
+    seen, ordered = set(), []
+    for variant in variants:
+        if variant not in seen:
+            seen.add(variant)
+            ordered.append(variant)
+    return ordered
 
-    # Fallback: bare domain (no www)
-    url_bare = f"https://{domain}"
-    if url_bare != url_www:
-        logger.info("%s: www failed, trying bare domain %s", domain, url_bare)
-        soup, strategy = fetch_homepage_fast(url_bare, playwright=playwright)
+
+def _load_domain(domain: str, cached, playwright):
+    """Load one homepage, honouring the cached tier. Returns (soup, url, tier)."""
+    cached_tier, cached_url = cached if cached else (None, None)
+    from_tier = cached_tier if cached_tier in FETCH_TIERS else "requests"
+
+    for url in _url_variants(domain, cached_url):
+        soup, tier = fetch_homepage(url, playwright=playwright, from_tier=from_tier)
         if soup is not None:
-            return soup, url_bare, strategy
+            return soup, url, tier
+        # A cached tier that no longer works should not block the lower tiers
+        # on the alternate URL variant.
+        from_tier = "requests"
+    return None, None, None
 
-    return None, url_www, None
+
+# ── Link extraction ───────────────────────────────────────────────────────────
+
+def _iter_candidate_links(soup, base_url: str):
+    """Yield absolute URLs from anchors that classify as conference links."""
+    for anchor in soup.find_all("a", href=True):
+        href = anchor["href"].strip()
+        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+            continue
+        full_url = urljoin(base_url, href)
+        accepted, reason = classify_link(full_url)
+        if accepted:
+            yield full_url, reason
 
 
-def run(playwright: PlaywrightManager = None):
-    """Scan all university homepages for outbound conference links.
-
-    Returns a list of newly discovered candidate URLs.
-    Caches winning fetch strategy per domain so future runs skip
-    directly to what works instead of re-discovering the fallback chain.
-    """
+def run(playwright: PlaywrightManager = None) -> list[str]:
+    """Scan every university homepage and return newly discovered candidates."""
     domains = _load_domains()
-    candidates = []
-    stats = {"ok": 0, "tls_fix": 0, "dns_fix": 0, "curl_fix": 0, "playwright_fix": 0, "failed": 0, "cached": 0}
-    domain_link_counts = {}
+    strategies = db.load_domain_strategies()
+    # One query instead of a SELECT per link: any URL we have already recorded,
+    # from any source, is not new.
+    known = db.load_seen_urls()
 
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT url FROM seen_links WHERE source = 'homepage'")
-        known = {row[0] for row in cur.fetchall()}
-        cur.close()
-        conn.close()
-    except Exception as e:
-        logger.error("Failed to load known links: %s", e)
-        known = set()
-
-    strategies = load_domain_strategies()
+    candidates: list[str] = []
+    new_links: list[tuple[str, str, str]] = []
+    strategy_updates: list[tuple[str, str, str]] = []
+    link_counts: dict[str, tuple[int, str]] = {}
+    tally = {tier: 0 for tier in FETCH_TIERS}
+    tally["failed"] = 0
 
     for domain in domains:
-        cached = strategies.get(domain)
+        soup, loaded_url, tier = _load_domain(domain, strategies.get(domain), playwright)
 
-        if cached:
-            cached_strategy, cached_loaded_url = cached
+        if soup is None:
+            tally["failed"] += 1
+            logger.warning("Could not load %s, skipping", domain)
+            strategy_updates.append((domain, "failed", f"https://www.{domain}"))
+            continue
 
-            if cached_strategy == "failed":
-                soup, loaded_url, strategy = fetch_homepage_with_www_fallback(domain, playwright=playwright)
-                if soup:
-                    save_domain_strategy(domain, strategy, loaded_url)
-                    stats["cached"] += 1
-                    logger.info("%s: recovered from 'failed' → '%s' via %s", domain, strategy, loaded_url)
-                else:
-                    stats["failed"] += 1
-                    logger.warning("Could not load %s, skipping", domain)
-                    continue
-            else:
-                tier_order = ["requests", "curl", "playwright"]
-                start_idx = tier_order.index(cached_strategy) if cached_strategy in tier_order else 0
+        tally[tier] += 1
+        if strategies.get(domain) != (tier, loaded_url):
+            strategy_updates.append((domain, tier, loaded_url))
+            logger.info("%s: loaded via %s (%s)", domain, tier, loaded_url)
 
-                url_variants = [cached_loaded_url]
-                other = f"https://{domain}" if "www." in cached_loaded_url else f"https://www.{domain}"
-                if other != cached_loaded_url:
-                    url_variants.append(other)
-
-                soup = None
-                loaded_url = None
-                strategy = None
-                for tier in tier_order[start_idx:]:
-                    for url in url_variants:
-                        if tier == "requests":
-                            html = _try_requests(url)
-                            if html:
-                                soup = BeautifulSoup(html, "lxml")
-                        elif tier == "curl":
-                            html = _curl_fetch(url)
-                            if html:
-                                soup = BeautifulSoup(html, "lxml")
-                        elif tier == "playwright" and playwright:
-                            html = _playwright_fetch(url, playwright)
-                            if html:
-                                soup = BeautifulSoup(html, "lxml")
-                        if soup:
-                            loaded_url = url
-                            strategy = tier
-                            break
-                    if soup:
-                        break
-
-                if soup:
-                    stats["cached"] += 1
-                    if strategy != cached_strategy or loaded_url != cached_loaded_url:
-                        save_domain_strategy(domain, strategy, loaded_url)
-                    logger.info("%s: cached '%s' → '%s' via %s", domain, cached_strategy, strategy, loaded_url)
-                else:
-                    save_domain_strategy(domain, "failed", cached_loaded_url)
-                    stats["failed"] += 1
-                    logger.warning("Could not load %s (all tiers exhausted), skipping", domain)
-                    continue
-        else:
-            soup, loaded_url, strategy = fetch_homepage_with_www_fallback(domain, playwright=playwright)
-
-            if soup is None:
-                stats["failed"] += 1
-                logger.warning("Could not load %s, skipping", domain)
-                continue
-
-            save_domain_strategy(domain, strategy, loaded_url)
-
-            if strategy == "playwright":
-                stats["playwright_fix"] += 1
-                logger.info("%s: Playwright fix — loaded via %s", domain, loaded_url)
-            elif loaded_url != f"https://www.{domain}":
-                if domain in ("cvasu.ac.bd", "daffodilvarsity.edu.bd", "bdu.ac.bd"):
-                    stats["tls_fix"] += 1
-                    logger.info("%s: TLS fix — loaded via %s", domain, loaded_url)
-                elif domain == "rmstu.portal.gov.bd":
-                    stats["dns_fix"] += 1
-                    logger.info("%s: DNS fix — www subdomain missing, loaded bare", domain)
-                else:
-                    stats["curl_fix"] += 1
-                    logger.info("%s: loaded via bare domain fallback", domain)
-            else:
-                stats["ok"] += 1
-
-        matched_count = 0
-        for a_tag in soup.find_all("a", href=True):
-            href = a_tag["href"].strip()
-            if not href or href.startswith("#") or href.startswith("javascript:"):
-                continue
-            full_url = _build_url(loaded_url, href)
-            if not _is_conference_link(full_url, domain):
-                continue
-            matched_count += 1
+        matched = 0
+        for full_url, reason in _iter_candidate_links(soup, loaded_url):
+            matched += 1
             if full_url in known:
                 continue
-            candidates.append(full_url)
             known.add(full_url)
-            save_seen_link(full_url, source="homepage")
+            candidates.append(full_url)
+            new_links.append((full_url, "homepage", "pending"))
+            logger.info("candidate (%s): %s", reason, full_url)
 
         try:
             page_text = soup.get_text(" ", strip=True)[:4000]
         except Exception:
             page_text = ""
-        domain_link_counts[domain] = (matched_count, page_text)
+        link_counts[domain] = (matched, page_text)
 
-    # Homepage change detection: flag domains that silently stopped yielding links.
-    # record_run is DB-only; the AI classification inside only fires for flagged domains.
-    for domain, (matched_count, page_text) in domain_link_counts.items():
-        try:
-            detect_homepage_change(domain, matched_count, page_text)
-        except Exception as e:
-            logger.error("change_detector: run_detection error for %s: %s", domain, e)
+    # Batched persistence: one round-trip each instead of one per row.
+    if new_links:
+        db.save_seen_links_bulk(new_links)
+    if strategy_updates:
+        db.save_domain_strategies_bulk(strategy_updates)
+
+    try:
+        run_detection_batch(link_counts)
+    except Exception as e:
+        logger.error("change_detector: batch detection failed: %s", e)
 
     logger.info(
-        "homepage_links: found %d new conference-like links "
-        "(ok=%d, tls_fix=%d, dns_fix=%d, curl_fix=%d, playwright_fix=%d, "
-        "cached=%d, failed=%d)",
-        len(candidates),
-        stats["ok"], stats["tls_fix"],
-        stats["dns_fix"], stats["curl_fix"], stats["playwright_fix"],
-        stats["cached"], stats["failed"],
+        "homepage_links: %d new candidate(s) — requests=%d curl=%d playwright=%d failed=%d",
+        len(candidates), tally["requests"], tally["curl"], tally["playwright"], tally["failed"],
     )
     return candidates

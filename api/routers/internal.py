@@ -1,697 +1,520 @@
-import os
+"""Internal endpoints called by scheduled jobs, gated by a shared secret.
+
+  POST /internal/notify-scraper-run   after a scraper pass: bust caches, digest push
+  POST /internal/notify-bookmarks     per-user alerts for bookmarked deadlines
+  POST /internal/notify-digest        morning/evening broadcast to the topic
+  POST /internal/notify-daily         one combined daily engagement pass
+
+Every handler is idempotent within its window: a Redis marker suppresses repeats,
+so a cron misfire (or a retry loop) cannot spam users. `notification_log` provides
+the durable per-user dedup that survives a Redis flush.
+
+The three-level SQL fallback that used to guard against a pre-migration
+production schema has been removed: migration_005/006/011 are now prerequisites,
+and the fallbacks made the real query impossible to read or index for.
+"""
+
 import json
-import hmac
 import logging
+import os
+from dataclasses import dataclass
 from datetime import date
-from fastapi import APIRouter, Header, HTTPException
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from psycopg2.extras import execute_values
+
 from database import db_cursor, fetch_all
+from deps import require_internal_secret
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
 
-# Firebase Admin lazy init — expects FIREBASE_SERVICE_ACCOUNT_JSON (JSON string) or
-# FIREBASE_SERVICE_ACCOUNT_JSON_B64 or a file at /etc/secrets/firebase.json (Render)
+router = APIRouter(dependencies=[Depends(require_internal_secret)])
+
+#: FCM accepts at most 500 tokens per multicast call.
+FCM_BATCH = 500
+
+DAY_SECONDS = 24 * 3600
+HOUR_SECONDS = 3600
+
+#: Topic every installed app subscribes to, used for broadcasts.
+BROADCAST_TOPIC = "all_users"
+
 _firebase_inited = False
 
-def _ensure_firebase():
+
+def _ensure_firebase() -> bool:
+    """Initialise Firebase Admin once, from env JSON, base64 env, or a secret file."""
     global _firebase_inited
     if _firebase_inited:
         return True
     try:
         import firebase_admin
         from firebase_admin import credentials
-        # Already inited?
+
         try:
             firebase_admin.get_app()
             _firebase_inited = True
             return True
         except ValueError:
             pass
-        # Try env var JSON
-        sa_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON") or os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON_B64")
-        if sa_json:
-            # Handle base64
-            if sa_json.strip().startswith("{"):
-                info = json.loads(sa_json)
+
+        raw = (os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")
+               or os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON_B64"))
+        if raw:
+            if raw.strip().startswith("{"):
+                info = json.loads(raw)
             else:
                 import base64
-                info = json.loads(base64.b64decode(sa_json).decode())
-            cred = credentials.Certificate(info)
-            firebase_admin.initialize_app(cred)
+
+                info = json.loads(base64.b64decode(raw).decode())
+            firebase_admin.initialize_app(credentials.Certificate(info))
             _firebase_inited = True
-            logger.info("Firebase Admin inited from env")
+            logger.info("Firebase Admin initialised from env")
             return True
-        # Try file (Render secret file)
-        for p in ["/etc/secrets/firebase.json", "firebase-service-account.json"]:
-            if os.path.exists(p):
-                cred = credentials.Certificate(p)
-                firebase_admin.initialize_app(cred)
+
+        for path in ("/etc/secrets/firebase.json", "firebase-service-account.json"):
+            if os.path.exists(path):
+                firebase_admin.initialize_app(credentials.Certificate(path))
                 _firebase_inited = True
-                logger.info("Firebase Admin inited from %s", p)
+                logger.info("Firebase Admin initialised from %s", path)
                 return True
-        logger.warning("Firebase Admin not configured — no service account found (set FIREBASE_SERVICE_ACCOUNT_JSON)")
+
+        logger.warning("Firebase Admin not configured — set FIREBASE_SERVICE_ACCOUNT_JSON")
         return False
     except Exception as e:
         logger.warning("Firebase Admin init failed: %s", e)
         return False
 
-# Choice per spec Phase 2.2: POST /internal/notify-scraper-run with shared secret
-# Requires fewer changes to confNotifier workflow than direct FCM from that repo
-# (just add `curl -H "X-Notify-Secret: $NOTIFY_SECRET" $API/internal/notify-scraper-run` after UPSERT).
 
-@router.post("/internal/notify-scraper-run")
-def notify_scraper_run(x_notify_secret: str = Header(None)):
-    expected = os.environ.get("NOTIFY_SECRET", "")
-    if not expected or not x_notify_secret or not hmac.compare_digest(x_notify_secret, expected):
-        raise HTTPException(status_code=401, detail="Invalid secret")
-    # Anti-spam: only once per hour for scraper-run
+# ── Idempotency markers ───────────────────────────────────────────────────────
+
+def _already_sent(key: str) -> bool:
+    """True when this job already ran inside its window."""
     try:
         from cache import get_redis
-        r = get_redis()
-        if r and r.get("notify:scraper-run:last") is not None:
-            logger.warning("notify-scraper-run rate-limited: already sent within hour")
-            return {"ok": True, "devices": 0, "sent": 0, "message": "Rate limited — already sent within hour"}
+
+        redis = get_redis()
+        return bool(redis and redis.get(key) is not None)
     except Exception:
-        pass
-    rows = fetch_all("SELECT fcm_token FROM device_tokens")
-    tokens = [r[0] for r in rows if r[0]]
-    count = len(tokens)
-    logger.info("notify-scraper-run: %d device(s) to notify (daily digest)", count)
-    # Invalidate cached conference reads — scraper just upserted
-    try:
-        from cache import invalidate_prefix
-        invalidate_prefix("cal:")
-        invalidate_prefix("upcoming:")
-        invalidate_prefix("conf:")
-    except Exception:
-        pass
-    if count == 0:
-        return {"ok": True, "devices": 0, "sent": 0, "message": "No devices"}
-    if not _ensure_firebase():
-        return {"ok": True, "devices": count, "sent": 0, "message": "Check today's conference updates (FCM not configured)"}
-    # Build engaging body with real deadlines (aggressive)
-    try:
-        rows = fetch_all("""
-            SELECT title, COALESCE(abstract_deadline, full_paper_deadline) as dl
-            FROM conferences
-            WHERE COALESCE(abstract_deadline, full_paper_deadline) BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
-            ORDER BY COALESCE(abstract_deadline, full_paper_deadline) ASC
-            LIMIT 2
-        """)
-        if rows:
-            sample = rows[0][0].split(",")[0].split("(")[0].strip()[:30]
-            dl_date = rows[0][1]
-            try:
-                dl_str = dl_date.strftime("%b %d") if hasattr(dl_date, "strftime") else str(dl_date)[5:]
-            except Exception:
-                dl_str = str(dl_date)
-            body = f"{sample} deadline {dl_str} — {len(rows)} deadlines this week"
-        else:
-            body = "Check today's conference updates — new deadlines added"
-    except Exception as e:
-        logger.warning("notify-scraper-run body fetch failed: %s", e)
-        body = "Check today's conference updates"
-    # Send via FCM — single daily digest, defer per-conference diff
-    try:
-        import firebase_admin.messaging as fcm
-        # FCM multicast max 500 per call
-        sent = 0
-        for i in range(0, len(tokens), 500):
-            batch = tokens[i:i+500]
-            msg = fcm.MulticastMessage(
-                notification=fcm.Notification(title="Call4Paper", body=body),
-                data={"type": "daily_digest", "screen": "calendar"},
-                tokens=batch,
-            )
-            resp = fcm.send_each_for_multicast(msg)
-            sent += resp.success_count
-            if resp.failure_count:
-                logger.warning("FCM batch %d: %d failures", i//500, resp.failure_count)
-        logger.info("FCM daily digest sent to %d/%d: %s", sent, count, body[:50])
-        try:
-            from cache import get_redis
-            r = get_redis()
-            if r and sent > 0:
-                r.setex("notify:scraper-run:last", 3600, "1")
-        except Exception:
-            pass
-        return {"ok": True, "devices": count, "sent": sent, "message": body}
-    except Exception as e:
-        logger.error("FCM send failed: %s", e)
-        raise HTTPException(status_code=500, detail=f"FCM failed: {e}")
+        return False
 
 
-@router.post("/internal/notify-bookmarks")
-def notify_bookmarks(x_notify_secret: str = Header(None)):
-    expected = os.environ.get("NOTIFY_SECRET", "")
-    if not expected or not x_notify_secret or not hmac.compare_digest(x_notify_secret, expected):
-        raise HTTPException(status_code=401, detail="Invalid secret")
-    # Anti-spam: per-day dedup for bookmarked — even if DB log fails, Redis will prevent every-minute spam
+def _mark_sent(key: str, ttl: int) -> None:
     try:
         from cache import get_redis
-        r = get_redis()
-        today = date.today().isoformat()
-        if r and r.get(f"notify:bookmarks:{today}") is not None:
-            logger.warning("notify-bookmarks rate-limited: already sent today")
-            return {"ok": True, "targets": 0, "sent": 0, "message": "Rate limited — already sent today"}
+
+        redis = get_redis()
+        if redis:
+            redis.setex(key, ttl, "1")
     except Exception:
         pass
 
-    # Aggressive: changed (once), urgent 24h (deadline tomorrow), approaching 7d daily, plus fallback
-    # Prefer normalized table with fallback for pre-migration prod (conference_deadlines / deadline_date may not exist yet)
+
+def _invalidate_conference_caches() -> None:
+    """Drop cached conference reads after the scraper writes."""
     try:
-        rows = fetch_all("""
-            SELECT dt.fcm_token, dt.user_id, conf.id AS conf_id, conf.title,
-                   dl.dl_type, dl.deadline_date,
-                   CASE
-                     WHEN dl.previous_date IS DISTINCT FROM dl.deadline_date AND dl.previous_date IS NOT NULL THEN 'changed'
-                     WHEN dl.deadline_date = CURRENT_DATE + INTERVAL '1 day' THEN 'urgent_24h'
-                     WHEN dl.deadline_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days' THEN 'approaching'
-                   END AS reason
-            FROM device_tokens dt
-            JOIN bookmarks b ON b.user_id = dt.user_id
-            JOIN conferences conf ON conf.id = b.conference_id
-            LEFT JOIN conference_deadlines cd_abs ON cd_abs.conference_id = conf.id AND cd_abs.type = 'abstract'
-            LEFT JOIN conference_deadlines cd_full ON cd_full.conference_id = conf.id AND cd_full.type = 'full_paper'
-            CROSS JOIN LATERAL (
-                VALUES
-                    ('abstract',   COALESCE(cd_abs.deadline,  conf.abstract_deadline),  COALESCE(cd_abs.deadline_previous,  conf.abstract_deadline_previous)),
-                    ('full_paper', COALESCE(cd_full.deadline, conf.full_paper_deadline), COALESCE(cd_full.deadline_previous, conf.full_paper_deadline_previous))
-            ) AS dl(dl_type, deadline_date, previous_date)
-            LEFT JOIN notification_log nl
-              ON nl.user_id = dt.user_id
-             AND nl.conference_id = conf.id
-             AND nl.deadline_type = dl.dl_type
-             AND nl.deadline_date = dl.deadline_date
-             AND nl.reason = CASE
-                   WHEN dl.previous_date IS DISTINCT FROM dl.deadline_date AND dl.previous_date IS NOT NULL THEN 'changed'
-                   WHEN dl.deadline_date = CURRENT_DATE + INTERVAL '1 day' THEN 'urgent_24h'
-                   WHEN dl.deadline_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days' THEN 'approaching'
-                 END
-              -- For approaching (7d) allow daily resend: only dedup if already sent today, otherwise send daily for engagement
-              AND (CASE
-                   WHEN dl.deadline_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
-                    AND NOT (dl.previous_date IS DISTINCT FROM dl.deadline_date AND dl.previous_date IS NOT NULL)
-                    AND dl.deadline_date != CURRENT_DATE + INTERVAL '1 day'
-                   THEN nl.notified_at::date = CURRENT_DATE
-                   ELSE TRUE
-                 END)
-            WHERE dl.deadline_date IS NOT NULL
-              AND CASE
-                    WHEN dl.previous_date IS DISTINCT FROM dl.deadline_date AND dl.previous_date IS NOT NULL THEN 'changed'
-                    WHEN dl.deadline_date = CURRENT_DATE + INTERVAL '1 day' THEN 'urgent_24h'
-                    WHEN dl.deadline_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days' THEN 'approaching'
-                  END IS NOT NULL
-              AND nl.id IS NULL
-        """)
+        from cache import invalidate_conference_reads
+
+        invalidate_conference_reads()
     except Exception as e:
-        import psycopg2.errors
+        logger.warning("cache invalidation failed: %s", e)
 
-        if isinstance(e, (psycopg2.errors.UndefinedColumn, psycopg2.errors.UndefinedTable)):
-            logger.warning("notify_bookmarks: fallback to wide columns (missing table/col): %s", e)
-            # Fallback: wide columns only, and notification_log without deadline_date (pre-migration_006) — aggressive 7d + 24h
-            try:
-                rows = fetch_all("""
-            SELECT dt.fcm_token, dt.user_id, conf.id AS conf_id, conf.title,
-                   dl.dl_type, dl.deadline_date,
-                   CASE
-                     WHEN dl.previous_date IS DISTINCT FROM dl.deadline_date AND dl.previous_date IS NOT NULL THEN 'changed'
-                     WHEN dl.deadline_date = CURRENT_DATE + INTERVAL '1 day' THEN 'urgent_24h'
-                     WHEN dl.deadline_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days' THEN 'approaching'
-                   END AS reason
-            FROM device_tokens dt
-            JOIN bookmarks b ON b.user_id = dt.user_id
-            JOIN conferences conf ON conf.id = b.conference_id
-            CROSS JOIN LATERAL (
-                VALUES
-                    ('abstract',         conf.abstract_deadline,         conf.abstract_deadline_previous),
-                    ('full_paper',       conf.full_paper_deadline,       conf.full_paper_deadline_previous)
-            ) AS dl(dl_type, deadline_date, previous_date)
-            LEFT JOIN notification_log nl
-              ON nl.user_id = dt.user_id
-             AND nl.conference_id = conf.id
-             AND nl.deadline_type = dl.dl_type
-             AND nl.reason = CASE
-                   WHEN dl.previous_date IS DISTINCT FROM dl.deadline_date AND dl.previous_date IS NOT NULL THEN 'changed'
-                   WHEN dl.deadline_date = CURRENT_DATE + INTERVAL '1 day' THEN 'urgent_24h'
-                   WHEN dl.deadline_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days' THEN 'approaching'
-                 END
-            WHERE dl.deadline_date IS NOT NULL
-              AND CASE
-                    WHEN dl.previous_date IS DISTINCT FROM dl.deadline_date AND dl.previous_date IS NOT NULL THEN 'changed'
-                    WHEN dl.deadline_date = CURRENT_DATE + INTERVAL '1 day' THEN 'urgent_24h'
-                    WHEN dl.deadline_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days' THEN 'approaching'
-                  END IS NOT NULL
-              AND nl.id IS NULL
-        """)
-            except psycopg2.errors.UndefinedTable as e2:
-                # notification_log table itself missing — skip dedup entirely
-                if "notification_log" in str(e2):
-                    logger.warning("notification_log missing, skip dedup: %s", e2)
-                    rows = fetch_all("""
-            SELECT dt.fcm_token, dt.user_id, conf.id AS conf_id, conf.title,
-                   dl.dl_type, dl.deadline_date,
-                   CASE
-                     WHEN dl.previous_date IS DISTINCT FROM dl.deadline_date AND dl.previous_date IS NOT NULL THEN 'changed'
-                     WHEN dl.deadline_date = CURRENT_DATE + INTERVAL '1 day' THEN 'urgent_24h'
-                     WHEN dl.deadline_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days' THEN 'approaching'
-                   END AS reason
-            FROM device_tokens dt
-            JOIN bookmarks b ON b.user_id = dt.user_id
-            JOIN conferences conf ON conf.id = b.conference_id
-            CROSS JOIN LATERAL (
-                VALUES
-                    ('abstract',         conf.abstract_deadline,         conf.abstract_deadline_previous),
-                    ('full_paper',       conf.full_paper_deadline,       conf.full_paper_deadline_previous)
-            ) AS dl(dl_type, deadline_date, previous_date)
-            WHERE dl.deadline_date IS NOT NULL
-              AND CASE
-                    WHEN dl.previous_date IS DISTINCT FROM dl.deadline_date AND dl.previous_date IS NOT NULL THEN 'changed'
-                    WHEN dl.deadline_date = CURRENT_DATE + INTERVAL '1 day' THEN 'urgent_24h'
-                    WHEN dl.deadline_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days' THEN 'approaching'
-                  END IS NOT NULL
-        """)
-                else:
-                    raise
-        else:
-            raise
 
-    if not rows:
-        return {"ok": True, "targets": 0, "sent": 0, "message": "No approaching/changed deadlines"}
+# ── FCM helpers ───────────────────────────────────────────────────────────────
 
-    if not _ensure_firebase():
-        return {"ok": True, "targets": len(rows), "sent": 0, "message": "FCM not configured"}
+def _all_device_tokens() -> list[str]:
+    rows = fetch_all("SELECT fcm_token FROM device_tokens WHERE fcm_token IS NOT NULL")
+    return [row[0] for row in rows]
 
+
+def _send_multicast(tokens: list[str], title: str, body: str, data: dict) -> tuple[int, list[str]]:
+    """Send to many tokens. Returns (success_count, tokens FCM rejected).
+
+    Rejected tokens are returned so the caller can delete them: an uninstalled app
+    leaves a dead token behind forever otherwise, and every future send pays for it.
+    """
     import firebase_admin.messaging as fcm
 
-    # Group by user to avoid sending multiple notifications per device
-    user_tokens = {}
-    user_payloads = {}  # user_id -> list of (conf_id, title, dl_type, reason, deadline_date)
-    for r in rows:
-        fcm_token, user_id, conf_id, title, dl_type, deadline_date, reason = r
-        user_tokens.setdefault(user_id, set()).add(fcm_token)
-        user_payloads.setdefault(user_id, []).append((conf_id, title, dl_type, reason, deadline_date))
-
     sent = 0
-    # Track which users actually received at least one token success — only log those
-    succeeded_users = set()
-    for user_id, tokens_set in user_tokens.items():
-        token_list = list(tokens_set)
-        payloads = user_payloads[user_id]
-
-        # Build per-conference notification bodies — aggressive: 24h gets urgent copy
-        if len(payloads) == 1:
-            conf_id, title, dl_type, reason, deadline_date = payloads[0]
-            if reason == "changed":
-                body = f"Deadline updated for {title}"
-            elif reason == "urgent_24h":
-                body = f"⏰ Deadline tomorrow — {title} — submit now!"
-            else:
-                days_left = (deadline_date - date.today()).days
-                # More engaging for 7d window
-                if days_left == 0:
-                    body = f"Today — {title} deadline!"
-                elif days_left == 1:
-                    body = f"Tomorrow — {title} — {dl_type.replace('_', ' ')}"
-                else:
-                    body = f"{title} — {dl_type.replace('_', ' ')} due in {days_left}d"
-            data = {
-                "type": "deadline_change",
-                "conference_id": str(conf_id),
-                "screen": "calendar",
-            }
-        else:
-            # Multiple conferences — prioritize urgent 24h if any
-            has_urgent = any(p[3] == "urgent_24h" for p in payloads)
-            if has_urgent:
-                names = ", ".join(p[1] for p in payloads if p[3] == "urgent_24h")[:3]
-                body = f"⏰ {len([p for p in payloads if p[3]=='urgent_24h'])} deadlines tomorrow — {names}"
-            else:
-                names = ", ".join(p[1] for p in payloads[:3])
-                suffix = f" +{len(payloads) - 3}" if len(payloads) > 3 else ""
-                body = f"Deadlines approaching: {names}{suffix}"
-            data = {"type": "deadline_change", "screen": "upcoming"}
-
-        user_success = False
-        for i in range(0, len(token_list), 500):
-            batch = token_list[i:i + 500]
-            msg = fcm.MulticastMessage(
-                notification=fcm.Notification(title="Call4Paper", body=body),
+    dead: list[str] = []
+    for start in range(0, len(tokens), FCM_BATCH):
+        batch = tokens[start:start + FCM_BATCH]
+        response = fcm.send_each_for_multicast(
+            fcm.MulticastMessage(
+                notification=fcm.Notification(title=title, body=body),
                 data=data,
                 tokens=batch,
             )
-            resp = fcm.send_each_for_multicast(msg)
-            # Per-token detail — don't count batch as success if all tokens in batch failed
-            batch_success = 0
-            try:
-                for idx, r in enumerate(resp.responses):
-                    if r.success:
-                        batch_success += 1
-                    else:
-                        # Log stale token for cleanup; exception holds the error
-                        tok = batch[idx] if idx < len(batch) else "unknown"
-                        logger.info("notify-bookmarks token failed user=%s token=%s.. err=%s", user_id, tok[:12], r.exception)
-            except Exception as e:
-                logger.warning("notify-bookmarks response parse failed user=%s: %s", user_id, e)
-                batch_success = resp.success_count
-
-            sent += batch_success
-            if batch_success > 0:
-                user_success = True
-
-            if resp.failure_count:
-                logger.warning("notify-bookmarks user %s batch %d: %d failures",
-                               user_id, i // 500, resp.failure_count)
-
-        if user_success:
-            succeeded_users.add(user_id)
-
-    # Record only what was actually delivered — batch insert via centralized DB helper
-    to_insert = []
-    to_delete_approaching = []
-    for r in rows:
-        _, user_id, conf_id, _, dl_type, deadline_date, reason = r
-        if user_id not in succeeded_users:
-            continue
-        to_insert.append((user_id, conf_id, dl_type, deadline_date, reason))
-        if reason == "changed":
-            to_delete_approaching.append((user_id, conf_id, dl_type))
-
-    inserted = 0
-    try:
-        with db_cursor(commit=True) as cur2:
-            if to_delete_approaching:
-                for uid, cid, typ in to_delete_approaching:
-                    try:
-                        cur2.execute("DELETE FROM notification_log WHERE user_id=%s AND conference_id=%s AND deadline_type=%s AND reason='approaching'", (uid, cid, typ))
-                    except Exception as e:
-                        logger.warning("delete approaching failed %s %s %s: %s", uid, cid, typ, e)
-            if to_insert:
-                from psycopg2.extras import execute_values
-                import psycopg2.errors
-
-                try:
-                    execute_values(cur2,
-                        "INSERT INTO notification_log (user_id, conference_id, deadline_type, deadline_date, reason) VALUES %s ON CONFLICT (user_id, conference_id, deadline_type, reason, deadline_date) DO NOTHING",
-                        to_insert)
-                    inserted = cur2.rowcount if cur2.rowcount != -1 else len(to_insert)
-                except (psycopg2.errors.UndefinedColumn, psycopg2.errors.UndefinedTable) as e:
-                    if isinstance(e, psycopg2.errors.UndefinedTable) and "notification_log" not in str(e):
-                        raise
-                    logger.warning("notification_log missing deadline_date/table — fallback to legacy schema: %s", e)
-                    # Legacy schema without deadline_date (pre-migration_006)
-                    legacy = [(uid, cid, typ, rsn) for uid, cid, typ, _, rsn in to_insert]
-                    try:
-                        execute_values(cur2,
-                            "INSERT INTO notification_log (user_id, conference_id, deadline_type, reason) VALUES %s ON CONFLICT (user_id, conference_id, deadline_type, reason) DO NOTHING",
-                            legacy)
-                        inserted = cur2.rowcount if cur2.rowcount != -1 else len(legacy)
-                    except psycopg2.errors.UndefinedTable as e2:
-                        if "notification_log" in str(e2):
-                            logger.warning("notification_log table missing, skip logging: %s", e2)
-                            inserted = 0
-                        else:
-                            raise
-    except Exception as e:
-        logger.error("notify-bookmarks batch log insert failed: %s", e)
-        # Fallback handled by db_cursor rollback; try per-row
-        inserted = 0
-        import psycopg2.errors
-
-        for uid, cid, typ, dl_date, rsn in to_insert:
-            try:
-                with db_cursor(commit=True) as cur3:
-                    try:
-                        cur3.execute("INSERT INTO notification_log (user_id, conference_id, deadline_type, deadline_date, reason) VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING", (uid, cid, typ, dl_date, rsn))
-                    except (psycopg2.errors.UndefinedColumn, psycopg2.errors.UndefinedTable) as e_inner:
-                        if isinstance(e_inner, psycopg2.errors.UndefinedTable) and "notification_log" not in str(e_inner):
-                            raise
-                        if isinstance(e_inner, psycopg2.errors.UndefinedColumn):
-                            cur3.execute("INSERT INTO notification_log (user_id, conference_id, deadline_type, reason) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING", (uid, cid, typ, rsn))
-                        else:
-                            logger.warning("notification_log table missing, skip per-row log")
-                            continue
-                    if cur3.rowcount:
-                        inserted += 1
-            except Exception as e2:
-                # Skip logging if table missing — not a hard error
-                if "notification_log" in str(e2) and isinstance(e2, psycopg2.errors.UndefinedTable):
-                    logger.warning("notification_log missing, skip per-row: %s", e2)
-                    continue
-                logger.error("per-row fallback failed %s %s %s: %s", uid, cid, typ, e2)
+        )
+        for token, result in zip(batch, response.responses):
+            if result.success:
+                sent += 1
                 continue
+            error = type(result.exception).__name__ if result.exception else "Unknown"
+            if error in ("UnregisteredError", "SenderIdMismatchError", "InvalidArgumentError"):
+                dead.append(token)
+            logger.info("fcm token rejected (%s): %s...", error, token[:12])
+    return sent, dead
 
-    logger.info("notify-bookmarks: %d targets, %d sent, %d logged", len(rows), sent, inserted)
-    # Mark daily dedup in Redis so every-minute calls don't spam (even if DB log fails)
+
+def _send_topic(title: str, body: str, data: dict) -> None:
+    import firebase_admin.messaging as fcm
+
+    fcm.send(fcm.Message(
+        notification=fcm.Notification(title=title, body=body),
+        data=data,
+        topic=BROADCAST_TOPIC,
+    ))
+
+
+def _prune_dead_tokens(tokens: list[str]) -> int:
+    """Delete tokens FCM reported as permanently invalid."""
+    if not tokens:
+        return 0
     try:
-        from cache import get_redis
-        r = get_redis()
-        if r and sent > 0:
-            today = date.today().isoformat()
-            r.setex(f"notify:bookmarks:{today}", 24*3600, "1")
-    except Exception:
-        pass
-    return {"ok": True, "targets": len(rows), "sent": sent, "logged": inserted}
+        with db_cursor(commit=True) as cur:
+            cur.execute("DELETE FROM device_tokens WHERE fcm_token = ANY(%s)", (tokens,))
+            removed = cur.rowcount
+        logger.info("pruned %d dead device token(s)", removed)
+        return removed
+    except Exception as e:
+        logger.warning("dead-token prune failed: %s", e)
+        return 0
+
+
+# ── Digest copy ───────────────────────────────────────────────────────────────
+
+def _upcoming_sample(days: int = 7, limit: int = 3) -> list[tuple[str, date]]:
+    """Nearest deadlines within `days`, for building notification copy."""
+    return fetch_all(
+        """
+        SELECT c.title, LEAST(
+                   COALESCE(cd_abs.deadline,  c.abstract_deadline,  DATE '9999-12-31'),
+                   COALESCE(cd_full.deadline, c.full_paper_deadline, DATE '9999-12-31')
+               ) AS deadline
+          FROM conferences c
+          LEFT JOIN conference_deadlines cd_abs
+                 ON cd_abs.conference_id = c.id AND cd_abs.type = 'abstract'
+          LEFT JOIN conference_deadlines cd_full
+                 ON cd_full.conference_id = c.id AND cd_full.type = 'full_paper'
+         WHERE LEAST(
+                   COALESCE(cd_abs.deadline,  c.abstract_deadline,  DATE '9999-12-31'),
+                   COALESCE(cd_full.deadline, c.full_paper_deadline, DATE '9999-12-31')
+               ) BETWEEN CURRENT_DATE AND CURRENT_DATE + %s::interval
+         ORDER BY deadline ASC
+         LIMIT %s
+        """,
+        (f"{days} days", limit),
+    )
+
+
+def _short_title(title: str, width: int = 30) -> str:
+    return (title or "").split(",")[0].split("(")[0].strip()[:width]
+
+
+def _digest_body(time_of_day: str) -> str:
+    """Notification copy built from real upcoming deadlines."""
+    greeting = "Good morning" if time_of_day == "morning" else "Evening check-in"
+    try:
+        rows = _upcoming_sample()
+    except Exception as e:
+        logger.warning("digest copy query failed: %s", e)
+        rows = []
+
+    if not rows:
+        return (f"{greeting} — check today's CFP deadlines" if time_of_day == "morning"
+                else f"{greeting} — anything closing soon?")
+
+    title, deadline = rows[0]
+    when = deadline.strftime("%b %d") if hasattr(deadline, "strftime") else str(deadline)
+    count = len(rows)
+    if time_of_day == "morning":
+        return f"{greeting} — {_short_title(title)} deadline {when} — {count} this week"
+    return f"{greeting} — {count} deadline(s) within 7 days, don't miss out"
+
+
+# ── Bookmarked deadline alerts ────────────────────────────────────────────────
+
+#: Why a user is being notified. Order matters: the first matching branch wins.
+_REASON_SQL = """
+    CASE
+      WHEN dl.previous_date IS NOT NULL
+       AND dl.previous_date IS DISTINCT FROM dl.deadline_date         THEN 'changed'
+      WHEN dl.deadline_date = CURRENT_DATE + 1                        THEN 'urgent_24h'
+      WHEN dl.deadline_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 7 THEN 'approaching'
+    END
+"""
+
+#: One row per (device, conference, deadline type) that needs a push.
+#:
+#: `notification_log` is LEFT JOINed on the full identity including deadline_date,
+#: so an extension from A to B produces a fresh notification instead of being
+#: deduped against the alert for A. 'approaching' is allowed to resend once a day
+#: for engagement; 'changed' and 'urgent_24h' are sent once each.
+_BOOKMARK_TARGETS_SQL = f"""
+    WITH candidate AS (
+        SELECT dt.fcm_token,
+               dt.user_id,
+               c.id    AS conference_id,
+               c.title,
+               dl.dl_type,
+               dl.deadline_date,
+               {_REASON_SQL} AS reason
+          FROM device_tokens dt
+          JOIN bookmarks   b ON b.user_id = dt.user_id
+          JOIN conferences c ON c.id = b.conference_id
+          LEFT JOIN conference_deadlines cd_abs
+                 ON cd_abs.conference_id = c.id AND cd_abs.type = 'abstract'
+          LEFT JOIN conference_deadlines cd_full
+                 ON cd_full.conference_id = c.id AND cd_full.type = 'full_paper'
+          CROSS JOIN LATERAL (
+              VALUES
+                ('abstract',
+                 COALESCE(cd_abs.deadline,  c.abstract_deadline),
+                 COALESCE(cd_abs.deadline_previous,  c.abstract_deadline_previous)),
+                ('full_paper',
+                 COALESCE(cd_full.deadline, c.full_paper_deadline),
+                 COALESCE(cd_full.deadline_previous, c.full_paper_deadline_previous))
+          ) AS dl(dl_type, deadline_date, previous_date)
+         WHERE dl.deadline_date IS NOT NULL
+    )
+    SELECT candidate.fcm_token, candidate.user_id, candidate.conference_id,
+           candidate.title, candidate.dl_type, candidate.deadline_date, candidate.reason
+      FROM candidate
+      LEFT JOIN notification_log nl
+             ON nl.user_id       = candidate.user_id
+            AND nl.conference_id = candidate.conference_id
+            AND nl.deadline_type = candidate.dl_type
+            AND nl.deadline_date = candidate.deadline_date
+            AND nl.reason        = candidate.reason
+            AND (candidate.reason <> 'approaching'
+                 OR nl.notified_at::date = CURRENT_DATE)
+     WHERE candidate.reason IS NOT NULL
+       AND nl.id IS NULL
+"""
+
+
+@dataclass(frozen=True)
+class Alert:
+    """One pending push for one user."""
+
+    conference_id: int
+    title: str
+    deadline_type: str
+    reason: str
+    deadline_date: date
+
+
+def _alert_body(alerts: list[Alert]) -> tuple[str, dict]:
+    """Notification copy and payload for one user's pending alerts."""
+    if len(alerts) == 1:
+        alert = alerts[0]
+        kind = alert.deadline_type.replace("_", " ")
+        if alert.reason == "changed":
+            body = f"Deadline updated for {alert.title}"
+        elif alert.reason == "urgent_24h":
+            body = f"⏰ Deadline tomorrow — {alert.title} — submit now"
+        else:
+            days_left = (alert.deadline_date - date.today()).days
+            if days_left <= 0:
+                body = f"Today — {alert.title} deadline"
+            elif days_left == 1:
+                body = f"Tomorrow — {alert.title} — {kind}"
+            else:
+                body = f"{alert.title} — {kind} due in {days_left}d"
+        return body, {
+            "type": "deadline_change",
+            "conference_id": str(alert.conference_id),
+            "screen": "calendar",
+        }
+
+    urgent = [a for a in alerts if a.reason == "urgent_24h"]
+    if urgent:
+        names = ", ".join(a.title for a in urgent[:3])
+        body = f"⏰ {len(urgent)} deadline(s) tomorrow — {names}"
+    else:
+        names = ", ".join(a.title for a in alerts[:3])
+        suffix = f" +{len(alerts) - 3}" if len(alerts) > 3 else ""
+        body = f"Deadlines approaching: {names}{suffix}"
+    return body, {"type": "deadline_change", "screen": "upcoming"}
+
+
+def _record_notifications(rows: list[tuple], delivered_users: set) -> int:
+    """Log delivered alerts so they are not repeated.
+
+    A 'changed' alert supersedes any pending 'approaching' row for the same
+    deadline, so the user is not told twice about the same date.
+    """
+    entries = [
+        (user_id, conference_id, dl_type, deadline_date, reason)
+        for _token, user_id, conference_id, _title, dl_type, deadline_date, reason in rows
+        if user_id in delivered_users
+    ]
+    if not entries:
+        return 0
+
+    superseded = [(u, c, t) for u, c, t, _d, reason in entries if reason == "changed"]
+    try:
+        with db_cursor(commit=True) as cur:
+            for user_id, conference_id, dl_type in superseded:
+                cur.execute(
+                    "DELETE FROM notification_log WHERE user_id = %s AND conference_id = %s "
+                    "AND deadline_type = %s AND reason = 'approaching'",
+                    (user_id, conference_id, dl_type),
+                )
+            execute_values(
+                cur,
+                "INSERT INTO notification_log "
+                "(user_id, conference_id, deadline_type, deadline_date, reason) VALUES %s "
+                "ON CONFLICT (user_id, conference_id, deadline_type, reason, deadline_date) "
+                "DO NOTHING",
+                entries,
+                template="(%s, %s, %s, %s, %s)",
+            )
+            return cur.rowcount if cur.rowcount != -1 else len(entries)
+    except Exception as e:
+        logger.error("notification_log insert failed: %s", e)
+        return 0
+
+
+@router.post("/internal/notify-bookmarks")
+def notify_bookmarks():
+    """Push deadline alerts for conferences users bookmarked."""
+    marker = f"notify:bookmarks:{date.today().isoformat()}"
+    if _already_sent(marker):
+        logger.info("notify-bookmarks: already sent today, skipping")
+        return {"ok": True, "targets": 0, "sent": 0, "message": "Already sent today"}
+
+    try:
+        rows = fetch_all(_BOOKMARK_TARGETS_SQL)
+    except Exception as e:
+        logger.error("notify-bookmarks: target query failed: %s", e)
+        raise HTTPException(status_code=500, detail="Could not compute notification targets")
+
+    if not rows:
+        return {"ok": True, "targets": 0, "sent": 0, "message": "No approaching or changed deadlines"}
+    if not _ensure_firebase():
+        return {"ok": True, "targets": len(rows), "sent": 0, "message": "FCM not configured"}
+
+    tokens_by_user: dict = {}
+    alerts_by_user: dict = {}
+    for token, user_id, conference_id, title, dl_type, deadline_date, reason in rows:
+        tokens_by_user.setdefault(user_id, set()).add(token)
+        alerts_by_user.setdefault(user_id, []).append(
+            Alert(conference_id, title, dl_type, reason, deadline_date)
+        )
+
+    sent = 0
+    delivered_users = set()
+    dead_tokens: list[str] = []
+
+    for user_id, tokens in tokens_by_user.items():
+        body, data = _alert_body(alerts_by_user[user_id])
+        try:
+            user_sent, dead = _send_multicast(list(tokens), "Call4Paper", body, data)
+        except Exception as e:
+            logger.error("notify-bookmarks: send failed for user %s: %s", user_id, e)
+            continue
+        sent += user_sent
+        dead_tokens += dead
+        if user_sent:
+            delivered_users.add(user_id)
+
+    logged = _record_notifications(rows, delivered_users)
+    _prune_dead_tokens(dead_tokens)
+
+    if sent:
+        _mark_sent(marker, DAY_SECONDS)
+    logger.info("notify-bookmarks: %d target(s), %d sent, %d logged", len(rows), sent, logged)
+    return {"ok": True, "targets": len(rows), "sent": sent, "logged": logged}
+
+
+# ── Broadcasts ────────────────────────────────────────────────────────────────
+
+@router.post("/internal/notify-scraper-run")
+def notify_scraper_run():
+    """Bust conference caches after a scraper pass and send one digest push."""
+    _invalidate_conference_caches()
+
+    marker = "notify:scraper-run:last"
+    if _already_sent(marker):
+        logger.info("notify-scraper-run: already sent within the hour, caches busted only")
+        return {"ok": True, "devices": 0, "sent": 0, "message": "Rate limited — caches invalidated"}
+
+    tokens = _all_device_tokens()
+    if not tokens:
+        return {"ok": True, "devices": 0, "sent": 0, "message": "No devices"}
+    if not _ensure_firebase():
+        return {"ok": True, "devices": len(tokens), "sent": 0, "message": "FCM not configured"}
+
+    body = _digest_body("morning")
+    try:
+        sent, dead = _send_multicast(tokens, "Call4Paper", body,
+                                     {"type": "daily_digest", "screen": "calendar"})
+    except Exception as e:
+        logger.error("notify-scraper-run: FCM send failed: %s", e)
+        raise HTTPException(status_code=502, detail="FCM send failed")
+
+    _prune_dead_tokens(dead)
+    if sent:
+        _mark_sent(marker, HOUR_SECONDS)
+    logger.info("notify-scraper-run: %d/%d delivered", sent, len(tokens))
+    return {"ok": True, "devices": len(tokens), "sent": sent, "message": body}
 
 
 @router.post("/internal/notify-digest")
-def notify_digest(time_of_day: str = "morning", x_notify_secret: str = Header(None)):
-    expected = os.environ.get("NOTIFY_SECRET", "")
-    if not expected or not x_notify_secret or not hmac.compare_digest(x_notify_secret, expected):
-        raise HTTPException(status_code=401, detail="Invalid secret")
-    if time_of_day not in ("morning", "evening"):
-        raise HTTPException(status_code=400, detail="time_of_day must be 'morning' or 'evening'")
-    # Anti-spam: only once per 6 hours per time_of_day (morning/evening)
-    try:
-        from cache import get_redis
-        r = get_redis()
-        key = f"notify:digest:{time_of_day}:{date.today().isoformat()}"
-        if r and r.get(key) is not None:
-            logger.warning("notify-digest rate-limited: %s already sent today", time_of_day)
-            return {"ok": True, "sent": False, "message": "Rate limited — already sent today"}
-    except Exception:
-        pass
+def notify_digest(time_of_day: str = Query("morning", pattern="^(morning|evening)$")):
+    """Broadcast the morning or evening digest to the topic."""
+    marker = f"notify:digest:{time_of_day}:{date.today().isoformat()}"
+    if _already_sent(marker):
+        logger.info("notify-digest: %s already sent today", time_of_day)
+        return {"ok": True, "sent": False, "message": "Already sent today"}
     if not _ensure_firebase():
         return {"ok": True, "sent": False, "message": "FCM not configured"}
 
-    # Build engaging body with real deadline data (aggressive engagement)
-    body = ""
+    body = _digest_body(time_of_day)
     try:
-        # Fetch count of deadlines in next 7 days and a sample conference
-        rows = fetch_all("""
-            SELECT title, COALESCE(abstract_deadline, full_paper_deadline) as dl
-            FROM conferences
-            WHERE COALESCE(abstract_deadline, full_paper_deadline) BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
-            ORDER BY COALESCE(abstract_deadline, full_paper_deadline) ASC
-            LIMIT 3
-        """)
-        if rows and time_of_day == "morning":
-            # Example: "ICCRIE deadline Sep 20 — 3 deadlines this week"
-            sample = rows[0][0].split(",")[0].split("(")[0].strip()[:30]
-            dl_date = rows[0][1]
-            if dl_date:
-                try:
-                    dl_str = dl_date.strftime("%b %d") if hasattr(dl_date, "strftime") else str(dl_date)[5:].replace("-", " ")
-                except Exception:
-                    dl_str = str(dl_date)
-                body = f"Good morning — {sample} deadline {dl_str} — {len(rows)} deadlines this week"
-            else:
-                body = f"Good morning — {len(rows)} deadlines this week — check upcoming"
-        elif rows and time_of_day == "evening":
-            body = f"Evening check-in — {len(rows)} deadlines within 7 days, don't miss out!"
-        else:
-            body = (
-                "Good morning — check today's CFP deadlines"
-                if time_of_day == "morning"
-                else "Evening check-in — anything closing soon?"
-            )
-        # Fallback to monthly general if no weekly deadlines but has September deadlines
-        if not rows:
-            sep_rows = fetch_all("""
-                SELECT title FROM conferences
-                WHERE EXTRACT(MONTH FROM COALESCE(abstract_deadline, full_paper_deadline)) = EXTRACT(MONTH FROM CURRENT_DATE)
-                AND COALESCE(abstract_deadline, full_paper_deadline) >= CURRENT_DATE
-                LIMIT 1
-            """)
-            if sep_rows:
-                sample = sep_rows[0][0].split(",")[0].split("(")[0].strip()[:25]
-                body = f"Check {sample} — deadline in {date.today().strftime('%B')} — tap to view"
-    except Exception as e:
-        logger.warning("notify-digest dynamic body failed: %s", e)
-        body = (
-            "Good morning — check today's CFP deadlines"
-            if time_of_day == "morning"
-            else "Evening check-in — anything closing soon?"
-        )
-
-    try:
-        import firebase_admin.messaging as fcm
-        fcm.send(fcm.Message(
-            notification=fcm.Notification(title="Call4Paper", body=body),
-            data={"type": "reminder", "screen": "upcoming"},
-            topic="all_users",
-        ))
-        logger.info("notify-digest: sent %s digest via topic: %s", time_of_day, body[:60])
-        try:
-            from cache import get_redis
-            r = get_redis()
-            if r:
-                r.setex(f"notify:digest:{time_of_day}:{date.today().isoformat()}", 24*3600, "1")
-        except Exception:
-            pass
-        return {"ok": True, "sent": True, "topic": "all_users", "body": body}
+        _send_topic("Call4Paper", body, {"type": "reminder", "screen": "upcoming"})
     except Exception as e:
         logger.error("notify-digest failed: %s", e)
-        raise HTTPException(status_code=500, detail=f"FCM failed: {e}")
+        raise HTTPException(status_code=502, detail="FCM send failed")
+
+    _mark_sent(marker, DAY_SECONDS)
+    logger.info("notify-digest: sent %s digest — %s", time_of_day, body[:60])
+    return {"ok": True, "sent": True, "topic": BROADCAST_TOPIC, "body": body}
 
 
 @router.post("/internal/notify-daily")
-def notify_daily(x_notify_secret: str = Header(None)):
-    """Aggressive daily 7am engagement — combines morning general + bookmarked 24h/7d + September-like.
+def notify_daily():
+    """One daily pass: bust caches, broadcast the digest, then bookmark alerts.
 
-    Call once per day (e.g., Render cron 0 1 * * * UTC = 7am Dhaka). Uses multicast for all device_tokens
-    and topic for all_users. Bookmarked uses same logic as notify_bookmarks (now 24h + 7d daily) but
-    also ensures general September deadline is highlighted.
+    Intended for a single daily cron. Bookmark alerts are delegated to
+    notify_bookmarks() rather than reimplemented — the previous version duplicated
+    part of the query and reported a count without ever sending anything.
     """
-    expected = os.environ.get("NOTIFY_SECRET", "")
-    if not expected or not x_notify_secret or not hmac.compare_digest(x_notify_secret, expected):
-        raise HTTPException(status_code=401, detail="Invalid secret")
-    # Anti-spam: only once per day for daily (even if called every minute)
-    try:
-        from cache import get_redis
-        r = get_redis()
-        key = f"notify:daily:{date.today().isoformat()}"
-        if r and r.get(key) is not None:
-            logger.warning("notify-daily rate-limited: already sent today")
-            return {"ok": True, "sent": False, "message": "Rate limited — already sent today"}
-    except Exception:
-        pass
+    marker = f"notify:daily:{date.today().isoformat()}"
+    if _already_sent(marker):
+        logger.info("notify-daily: already sent today")
+        return {"ok": True, "sent": False, "message": "Already sent today"}
 
-    # Invalidate caches (like scraper-run)
-    try:
-        from cache import invalidate_prefix
-        invalidate_prefix("cal:")
-        invalidate_prefix("upcoming:")
-        invalidate_prefix("conf:")
-    except Exception:
-        pass
-
+    _invalidate_conference_caches()
     if not _ensure_firebase():
         return {"ok": True, "sent": False, "message": "FCM not configured"}
 
-    import firebase_admin.messaging as fcm
+    results: dict = {"ok": True}
 
-    results = {}
-
-    # 1. Morning general via topic (dynamic body already in notify_digest logic, reuse)
+    body = _digest_body("morning")
     try:
-        # Reuse same dynamic body logic as notify_digest morning
-        rows = fetch_all("""
-            SELECT title, COALESCE(abstract_deadline, full_paper_deadline) as dl
-            FROM conferences
-            WHERE COALESCE(abstract_deadline, full_paper_deadline) BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
-            ORDER BY COALESCE(abstract_deadline, full_paper_deadline) ASC
-            LIMIT 3
-        """)
-        if rows:
-            sample = rows[0][0].split(",")[0].split("(")[0].strip()[:28]
-            dl_date = rows[0][1]
-            try:
-                dl_str = dl_date.strftime("%b %d") if hasattr(dl_date, "strftime") else str(dl_date)[5:]
-            except Exception:
-                dl_str = str(dl_date)
-            body = f"Good morning — {sample} deadline {dl_str} — {len(rows)} deadlines this week"
-        else:
-            body = "Good morning — check today's CFP deadlines"
-        fcm.send(fcm.Message(
-            notification=fcm.Notification(title="Call4Paper", body=body),
-            data={"type": "daily_digest", "screen": "upcoming"},
-            topic="all_users",
-        ))
-        results["morning_topic"] = {"sent": True, "body": body}
-        logger.info("notify-daily: morning topic sent: %s", body[:60])
+        _send_topic("Call4Paper", body, {"type": "daily_digest", "screen": "upcoming"})
+        results["broadcast"] = {"sent": True, "body": body}
     except Exception as e:
-        logger.warning("notify-daily morning topic failed: %s", e)
-        results["morning_topic"] = {"sent": False, "error": str(e)[:200]}
+        logger.warning("notify-daily: broadcast failed: %s", e)
+        results["broadcast"] = {"sent": False, "error": str(e)[:200]}
 
-    # 2. General September-like via multicast to all device_tokens (aggressive)
     try:
-        rows_all = fetch_all("SELECT fcm_token FROM device_tokens")
-        tokens_all = [r[0] for r in rows_all if r[0]]
-        if tokens_all:
-            # Pick a conference with deadline in current month for general engagement
-            sep_rows = fetch_all("""
-                SELECT title, COALESCE(abstract_deadline, full_paper_deadline) as dl
-                FROM conferences
-                WHERE EXTRACT(MONTH FROM COALESCE(abstract_deadline, full_paper_deadline)) = EXTRACT(MONTH FROM CURRENT_DATE)
-                AND COALESCE(abstract_deadline, full_paper_deadline) >= CURRENT_DATE
-                ORDER BY COALESCE(abstract_deadline, full_paper_deadline) ASC
-                LIMIT 1
-            """)
-            if sep_rows:
-                sample = sep_rows[0][0].split(",")[0].split("(")[0].strip()[:30]
-                dl_date = sep_rows[0][1]
-                try:
-                    dl_str = dl_date.strftime("%b %d") if hasattr(dl_date, "strftime") else str(dl_date)
-                except Exception:
-                    dl_str = str(dl_date)
-                gen_body = f"Check {sample} — deadline {dl_str} — in {date.today().strftime('%B')}"
-            else:
-                # Fallback to weekly count
-                try:
-                    cnt_rows = fetch_all("SELECT COUNT(*) FROM conferences WHERE COALESCE(abstract_deadline, full_paper_deadline) BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'")
-                    cnt = cnt_rows[0][0] if cnt_rows else 0
-                    gen_body = f"{cnt} deadlines in next 30 days — tap to view upcoming"
-                except Exception:
-                    gen_body = "Check today's conference updates"
-            sent_gen = 0
-            for i in range(0, len(tokens_all), 500):
-                batch = tokens_all[i:i+500]
-                msg = fcm.MulticastMessage(
-                    notification=fcm.Notification(title="Call4Paper", body=gen_body),
-                    data={"type": "general_monthly", "screen": "calendar"},
-                    tokens=batch,
-                )
-                resp = fcm.send_each_for_multicast(msg)
-                sent_gen += resp.success_count
-            results["general_multicast"] = {"devices": len(tokens_all), "sent": sent_gen, "body": gen_body}
-            logger.info("notify-daily: general multicast %d/%d", sent_gen, len(tokens_all))
-        else:
-            results["general_multicast"] = {"devices": 0, "sent": 0}
-    except Exception as e:
-        logger.warning("notify-daily general multicast failed: %s", e)
-        results["general_multicast"] = {"error": str(e)[:200]}
+        results["bookmarks"] = notify_bookmarks()
+    except HTTPException as e:
+        results["bookmarks"] = {"ok": False, "error": e.detail}
 
-    # 3. Bookmarked 24h + 7d via internal reuse — call notify_bookmarks logic inline by triggering its endpoint internally
-    # We invoke the same DB query as notify_bookmarks but via direct call for simplicity
-    try:
-        # Reuse notify_bookmarks by calling its function directly (needs header, so we mimic)
-        # Instead, duplicate the call via fetch: we just report that bookmarked will be handled by separate cron
-        # For now, indicate to call /internal/notify-bookmarks separately or we call it here
-        from fastapi import Request
-        # Direct DB check for bookmarked 24h/approaching to report
-        bm_rows = fetch_all("""
-            SELECT COUNT(*) FROM device_tokens dt
-            JOIN bookmarks b ON b.user_id = dt.user_id
-            JOIN conferences conf ON conf.id = b.conference_id
-            CROSS JOIN LATERAL (
-                VALUES
-                    (COALESCE(conf.abstract_deadline, conf.full_paper_deadline)),
-                    (COALESCE(conf.full_paper_deadline, conf.abstract_deadline))
-            ) AS dl(deadline_date)
-            WHERE dl.deadline_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
-        """)
-        results["bookmarked_pending"] = bm_rows[0][0] if bm_rows else 0
-    except Exception as e:
-        results["bookmarked_pending"] = f"error: {e}"
-
-    results["ok"] = True
-    results["message"] = "Daily aggressive notifications sent — check Firebase console for delivery"
-    try:
-        from cache import get_redis
-        r = get_redis()
-        if r:
-            r.setex(f"notify:daily:{date.today().isoformat()}", 24*3600, "1")
-    except Exception:
-        pass
+    _mark_sent(marker, DAY_SECONDS)
     return results

@@ -1,4 +1,4 @@
-name: CI — Package smoke test
+name: CI
 
 on:
   push:
@@ -10,9 +10,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  smoke:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: conftest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/conftest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -27,5 +45,55 @@ jobs:
       - name: Import smoke test
         run: python -c "import scraper.main, scraper.verify_deadlines, scraper.send_reminders"
 
-      - name: Run unit tests
+      - name: Lint for unused imports and undefined names
+        run: python -m pyflakes scraper api tests
+
+      # Builds the whole schema from nothing, so a broken or non-idempotent
+      # migration fails CI instead of production.
+      - name: Apply migrations
+        run: |
+          set -e
+          export PGPASSWORD=postgres
+          psql_run() { psql -h localhost -U postgres -d conftest -v ON_ERROR_STOP=1 -q -f "$1"; }
+          for f in db/schema_base.sql \
+                   db/migration.sql \
+                   api/migration_001_users.sql \
+                   api/migration_002_user_details.sql \
+                   api/migration_003_firebase_uid.sql \
+                   api/migration_004_login_events.sql \
+                   api/migration_005_conference_deadlines.sql \
+                   api/migration_006_notification_log.sql \
+                   api/migration_007_description.sql \
+                   api/migration_008_fix_tba_dedup.sql \
+                   api/migration_009_soft_delete.sql \
+                   api/migration_010_soft_delete_index.sql \
+                   db/migration_011_retire_legacy_deadlines.sql \
+                   api/migration_011_perf_indexes.sql; do
+            echo "== $f"
+            psql_run "$f"
+          done
+
+      - name: Verify migrations are idempotent
+        run: |
+          set -e
+          export PGPASSWORD=postgres
+          psql -h localhost -U postgres -d conftest -v ON_ERROR_STOP=1 -q \
+            -f db/migration_011_retire_legacy_deadlines.sql
+          psql -h localhost -U postgres -d conftest -v ON_ERROR_STOP=1 -q \
+            -f api/migration_011_perf_indexes.sql
+
+      - name: Install API dependencies
+        run: pip install -r api/requirements.txt
+
+      - name: Verify the API imports and every route registers
+        run: |
+          cd api
+          JWT_SECRET=ci-test NOTIFY_SECRET=ci-test python -c "
+          import main
+          paths = main.app.openapi()['paths']
+          assert len(paths) >= 15, f'expected >=15 endpoints, got {len(paths)}'
+          print(f'{len(paths)} endpoints registered')
+          "
+
+      - name: Run tests
         run: python -m pytest tests/ -q

@@ -1,7 +1,25 @@
+"""Gemini extraction: fetch a page, ask for structured conference data.
+
+Three things make this reliable enough to run unattended on a free tier:
+
+1. **Key rotation with per-key budgets.** Three API keys, each with its own
+   5 RPM / 20 RPD limiter. A 429 on one key rotates to the next rather than
+   failing the candidate.
+
+2. **JSON repair.** Gemini occasionally returns fence-wrapped, trailing-comma or
+   truncated JSON. Previously any of those raised `JSONDecodeError` and the call
+   was retried up to three times per key — nine wasted requests out of a daily
+   budget of sixty, for a reply that was already 99% parseable.
+   `repair_json()` salvages it instead.
+
+3. **Focused input.** `textfocus.focus_text` picks the regions of the page that
+   actually mention dates, instead of blindly sending the first 8000 characters.
+"""
+
 import json
 import logging
 import os
-import socket
+import re
 import threading
 import time
 from collections import deque
@@ -16,19 +34,23 @@ from scraper.schema import (
     SYSTEM_PROMPT,
     normalize_extraction,
 )
+from scraper.textfocus import focus_text
 
 logger = logging.getLogger(__name__)
 
-MAX_TEXT_CHARS = 8000
 MODEL = "gemini-2.5-flash"
+MAX_TEXT_CHARS = 14000
+MIN_PAGE_TEXT_CHARS = 100
+DEFAULT_MAX_TOKENS = 4096
+MAX_ATTEMPTS_PER_KEY = 3
 
 
 class GoogleRateLimiter:
-    """
-    Enforces Google AI Studio free tier limits for Gemini 2.5 Flash:
-    - Max 5 requests per 60-second rolling window (RPM)
-    - Max 20 requests per calendar day (RPD)
-    Thread-safe. Blocks the caller until a slot is available.
+    """Google AI Studio free-tier budget for one API key.
+
+    5 requests per rolling 60s window, 20 per calendar day. `acquire()` blocks
+    for the RPM window but raises once the daily budget is gone, so the caller
+    can rotate keys instead of sleeping for hours.
     """
 
     RPM_LIMIT = 5
@@ -47,146 +69,302 @@ class GoogleRateLimiter:
             self._daily_count = 0
             self._day_start = today
 
+    @property
+    def daily_count(self) -> int:
+        with self._lock:
+            self._reset_daily_if_needed()
+            return self._daily_count
+
     def daily_quota_exhausted(self) -> bool:
         with self._lock:
             self._reset_daily_if_needed()
             return self._daily_count >= self.RPD_LIMIT
 
     def acquire(self):
-        """
-        Block until a request slot is available.
-        Waits for RPM window to clear if at limit.
-        Raises RuntimeError if daily quota is exhausted.
+        """Reserve a request slot, blocking for the RPM window if needed.
+
+        Raises RuntimeError when the daily budget is spent.
         """
         while True:
-            wait_seconds = 0.0
             with self._lock:
                 self._reset_daily_if_needed()
 
                 if self._daily_count >= self.RPD_LIMIT:
                     raise RuntimeError(
                         f"Daily quota exhausted: {self._daily_count}/{self.RPD_LIMIT} "
-                        f"requests used today. Remaining candidates will be processed "
-                        f"tomorrow."
+                        f"requests used today"
                     )
 
-                # Warn when approaching daily limit (80% threshold)
-                if self._daily_count >= int(self.RPD_LIMIT * 0.8) and self._daily_count < self.RPD_LIMIT:
-                    logger.warning(
-                        "Rate limiter: daily quota at %d/%d (%d%%) — approaching limit",
-                        self._daily_count, self.RPD_LIMIT,
-                        int(self._daily_count / self.RPD_LIMIT * 100)
-                    )
+                if self._daily_count >= int(self.RPD_LIMIT * 0.8):
+                    logger.warning("Rate limiter: daily quota at %d/%d — approaching limit",
+                                   self._daily_count, self.RPD_LIMIT)
 
                 now = time.time()
                 cutoff = now - self.WINDOW_SECONDS
-
-                # Remove timestamps outside the rolling window
                 while self._request_timestamps and self._request_timestamps[0] < cutoff:
                     self._request_timestamps.popleft()
 
                 if len(self._request_timestamps) < self.RPM_LIMIT:
-                    # Slot available — record and proceed
                     self._request_timestamps.append(now)
                     self._daily_count += 1
                     return
-                else:
-                    # At RPM limit — calculate exact wait time (do NOT record yet)
-                    oldest_in_window = self._request_timestamps[0]
-                    wait_seconds = (oldest_in_window + self.WINDOW_SECONDS) - now + 0.5
 
-            # Wait outside the lock
-            logger.info(
-                "Rate limiter: at %d RPM, waiting %.1fs for slot "
-                "(daily used: %d/%d)",
-                self.RPM_LIMIT, wait_seconds, self._daily_count, self.RPD_LIMIT
-            )
+                wait_seconds = (self._request_timestamps[0] + self.WINDOW_SECONDS) - now + 0.5
+
+            logger.info("Rate limiter: at %d RPM, waiting %.1fs for a slot (daily %d/%d)",
+                        self.RPM_LIMIT, wait_seconds, self._daily_count, self.RPD_LIMIT)
             time.sleep(max(wait_seconds, 0.5))
 
     def release_last(self):
-        """Release the last acquired slot — for parse failures that shouldn't burn quota."""
+        """Hand back the slot just taken — for failures that were not the model's fault."""
         with self._lock:
             if self._request_timestamps:
                 self._request_timestamps.pop()
             if self._daily_count > 0:
                 self._daily_count -= 1
-            logger.info("Rate limiter: released last slot (daily now %d/%d)", self._daily_count, self.RPD_LIMIT)
+
+
+# ── JSON recovery ─────────────────────────────────────────────────────────────
+
+_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
+_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
 
 
 def _strip_json_fences(text: str) -> str:
-    """Strip ```json fences that Gemini often wraps around JSON."""
-    text = text.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines and lines[0].strip().startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines)
-    return text.strip()
+    """Remove ```json fences that the model wraps around structured replies."""
+    return _FENCE_RE.sub("", (text or "").strip()).strip()
 
 
-# ── API key rotation — load all available keys ──
+def _close_truncated(text: str) -> str | None:
+    """Close a JSON object that was cut off mid-way by the token limit.
 
-_gemini_base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
-_api_keys = []  # (env var name, key value) — name is the non-secret log label
+    Walks the text tracking string state and bracket depth, remembering the last
+    position where a complete key/value pair ended *together with the bracket
+    depth at that position* — truncating back to an earlier point also closes
+    brackets, so the depth at the end of the string is the wrong thing to patch.
 
-for _var in ["GOOGLE_AI_KEY", "GOOGLE_AI_KEY_2", "GOOGLE_AI_KEY_3"]:
-    _val = os.environ.get(_var, "").strip()
-    if _val:
-        _api_keys.append((_var, _val))
-        logger.info("Loaded API key from %s", _var)
+    Returns None when there is nothing salvageable.
+    """
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    cut_at: int | None = None
+    cut_stack: list[str] = []
 
-if not _api_keys:
-    logger.critical("No GOOGLE_AI_KEY* env vars set — LLM extraction will fail")
+    for i, ch in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
 
-# Each key gets its own client + rate limiter
-_clients = [
-    {"client": OpenAI(api_key=k, base_url=_gemini_base_url, max_retries=0),
-     "limiter": GoogleRateLimiter(),
-     "key_label": name}
-    for name, k in _api_keys
-]
+        if ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+            if not stack:
+                # A complete top-level value: nothing to repair.
+                return text[:i + 1]
+            cut_at, cut_stack = i + 1, list(stack)
+        elif ch == "," and len(stack) == 1:
+            cut_at, cut_stack = i, list(stack)
 
+    if cut_at is None:
+        return None
+    body = text[:cut_at].rstrip().rstrip(",")
+    if not body:
+        return None
+    return body + "".join(reversed(cut_stack))
+
+
+def repair_json(raw: str) -> dict | None:
+    """Best-effort parse of a model reply that is not quite valid JSON.
+
+    Tries, in order: as-is, de-fenced, outermost braces only, trailing commas
+    removed, truncation repaired. Returns None only when nothing works.
+    """
+    if not raw or not raw.strip():
+        return None
+
+    candidates: list[str] = []
+
+    def add(value: str | None):
+        if value and value.strip() and value not in candidates:
+            candidates.append(value.strip())
+
+    add(raw)
+    stripped = _strip_json_fences(raw)
+    add(stripped)
+
+    start, end = stripped.find("{"), stripped.rfind("}")
+    if start != -1 and end > start:
+        add(stripped[start:end + 1])
+
+    for base in list(candidates):
+        add(_TRAILING_COMMA_RE.sub(r"\1", base))
+
+    if start != -1:
+        add(_close_truncated(stripped[start:]))
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+# ── Client pool ───────────────────────────────────────────────────────────────
+
+_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+_KEY_ENV_VARS = ("GOOGLE_AI_KEY", "GOOGLE_AI_KEY_2", "GOOGLE_AI_KEY_3")
+
+
+def _build_clients() -> list[dict]:
+    """One client + limiter per configured key. Labels are env var names, never key material."""
+    clients = []
+    for var in _KEY_ENV_VARS:
+        value = os.environ.get(var, "").strip()
+        if not value:
+            continue
+        clients.append({
+            "client": OpenAI(api_key=value, base_url=_GEMINI_BASE_URL, max_retries=0),
+            "limiter": GoogleRateLimiter(),
+            "key_label": var,
+        })
+        logger.info("Loaded API key from %s", var)
+    if not clients:
+        logger.critical("No GOOGLE_AI_KEY* env vars set — LLM extraction will fail")
+    return clients
+
+
+_clients = _build_clients()
+_key_lock = threading.Lock()
 _current_key_idx = 0
 
 
-def _is_url_reachable(url: str) -> bool:
-    """Quick DNS check before launching browser — avoids wasting time on dead sites."""
-    try:
-        hostname = url.replace("https://", "").replace("http://", "").split("/")[0]
-        socket.getaddrinfo(hostname, 443, proto=socket.IPPROTO_TCP)
-        return True
-    except socket.gaierror:
-        return False
+def _next_key_order() -> list[int]:
+    """Key indices to try, starting from the one that last worked."""
+    with _key_lock:
+        start = _current_key_idx
+    total = len(_clients)
+    return [(start + offset) % total for offset in range(total)]
 
 
-def _fetch_page_text(url, playwright: PlaywrightManager, wait_until: str = "domcontentloaded"):
-    """Load a URL with Playwright and extract the visible text content.
+def _remember_key(idx: int) -> None:
+    global _current_key_idx
+    with _key_lock:
+        _current_key_idx = idx
 
-    Args:
-        url: The URL to fetch.
-        playwright: Active PlaywrightManager instance (single browser for entire run).
-        wait_until: Playwright wait condition. "domcontentloaded" for speed,
-                    "load" for pages whose deadlines render via JS after DOM ready.
 
-    Returns:
-        Extracted text content (first 8000 chars), or None on failure.
+def daily_quota_exhausted() -> bool:
+    """True only when every key's daily budget is spent."""
+    return bool(_clients) and all(c["limiter"].daily_quota_exhausted() for c in _clients)
+
+
+def total_requests_today() -> int:
+    """Requests spent today across all keys."""
+    return sum(c["limiter"].daily_count for c in _clients)
+
+
+def _is_transient(error: str) -> bool:
+    """True for errors worth trying on another key rather than giving up."""
+    lowered = error.lower()
+    return any(sig in lowered for sig in ("429", "503", "500", "rate", "unavailable",
+                                          "overloaded", "timeout", "deadline exceeded"))
+
+
+def _call_gemini(system_prompt: str, user_content: str, schema: dict, *,
+                 source_url: str, response_name: str = "conference_extraction",
+                 max_tokens: int = DEFAULT_MAX_TOKENS) -> dict | None:
+    """One structured completion, rotating keys and repairing malformed JSON.
+
+    Returns the parsed dict, or None when every key is exhausted or failing.
     """
-    from scraper.utils import is_safe_url
-    if not is_safe_url(url):
-        logger.warning("SSRF blocked: %s", url)
+    if not _clients:
+        logger.error("extractor: no API keys available")
         return None
 
-    text = playwright.fetch_page_text(url, wait_until=wait_until)
-    if text is None:
-        logger.error("Failed to load candidate URL: %s", url)
-        return None
-    return text
+    for key_idx in _next_key_order():
+        entry = _clients[key_idx]
+        limiter, key_label = entry["limiter"], entry["key_label"]
 
+        for attempt in range(1, MAX_ATTEMPTS_PER_KEY + 1):
+            if limiter.daily_quota_exhausted():
+                logger.info("extractor: key %s daily quota spent, rotating", key_label)
+                break
+            try:
+                limiter.acquire()
+            except RuntimeError:
+                break
+
+            try:
+                logger.info("extractor: calling Gemini (key=%s) for %s (attempt %d, daily %d/%d)",
+                            key_label, source_url, attempt,
+                            limiter.daily_count, limiter.RPD_LIMIT)
+                response = entry["client"].chat.completions.create(
+                    model=MODEL,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content},
+                    ],
+                    temperature=0.0,
+                    max_tokens=max_tokens,
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {"name": response_name, "schema": schema},
+                    },
+                )
+            except Exception as e:
+                message = str(e)
+                if _is_transient(message):
+                    logger.warning("extractor: transient error on key %s for %s — rotating: %s",
+                                   key_label, source_url, message[:160])
+                    break
+                logger.error("extractor: API error for %s (attempt %d): %s",
+                             source_url, attempt, message[:300])
+                if attempt < MAX_ATTEMPTS_PER_KEY:
+                    time.sleep(5)
+                continue
+
+            raw = response.choices[0].message.content
+            parsed = repair_json(raw)
+            if parsed is not None:
+                _remember_key(key_idx)
+                return parsed
+
+            # Unrecoverable JSON is a model failure, not our quota's fault, but
+            # it does consume an upstream request — do not refund the whole slot
+            # more than once, or a persistently broken page loops forever.
+            logger.error("extractor: unparseable reply for %s (attempt %d, %d chars)",
+                         source_url, attempt, len(raw or ""))
+            if attempt == 1:
+                limiter.release_last()
+                time.sleep(2)
+                continue
+            break
+
+    logger.warning("extractor: all keys exhausted for %s", source_url)
+    return None
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
 
 def _format_previous_deadlines(previous_deadlines: dict) -> str | None:
-    """Render previously stored deadlines as 'may be outdated' context for the LLM."""
+    """Render stored deadlines as explicitly-untrusted context for re-extraction.
+
+    Verification needs the model to notice a change, so the stored values are
+    shown but flagged as possibly stale — otherwise the model tends to echo them.
+    """
     if not previous_deadlines:
         return None
     lines = []
@@ -198,209 +376,63 @@ def _format_previous_deadlines(previous_deadlines: dict) -> str | None:
     if not lines:
         return None
     return (
-        "\n\nPreviously recorded deadlines from our database (may be OUTDATED — "
-        "the website may have been updated):\n"
+        "\n\nPreviously recorded deadlines from our database (these MAY BE OUTDATED — "
+        "the page may have been updated since):\n"
         + "\n".join(lines)
-        + "\nIMPORTANT: Extract the CURRENT dates shown on the page right now. "
-        "Do NOT repeat the previously recorded values unless the page still displays them."
+        + "\nExtract the dates the page shows RIGHT NOW. Do not repeat a value above "
+        "unless the page still displays it. If the page shows a later date for the "
+        "same deadline, that is an extension — return the later date."
     )
 
 
-def _call_gemini(
-    system_prompt: str,
-    user_content: str,
-    schema: dict,
-    *,
-    source_url: str,
-    response_name: str = "conference_extraction",
-    max_tokens: int = 4096,
-) -> dict | None:
-    """Single LLM completion with API key rotation and rate limiting.
-
-    Tries each key in round-robin order starting from the last working one.
-    Within a key, retries up to 3 times on non-rate-limit errors. Gives up
-    when all keys fail or every key's daily quota is exhausted.
-
-    Returns the parsed JSON dict, or None.
-    """
-    global _current_key_idx
-
-    if not _clients:
-        logger.error("extractor: no API keys available")
-        return None
-
-    max_attempts_per_key = 3
-    total_keys = len(_clients)
-
-    # Try each key, starting from current
-    for key_offset in range(total_keys):
-        key_idx = (_current_key_idx + key_offset) % total_keys
-        entry = _clients[key_idx]
-        client = entry["client"]
-        limiter = entry["limiter"]
-        key_label = entry["key_label"]
-
-        for attempt in range(1, max_attempts_per_key + 1):
-            # Check if this key's daily quota is exhausted — skip to next key
-            if limiter.daily_quota_exhausted():
-                logger.info("extractor: key %s daily quota exhausted, trying next key", key_label)
-                break
-
-            try:
-                limiter.acquire()
-            except RuntimeError:
-                break  # daily quota exhausted — try next key
-
-            try:
-                logger.info(
-                    "extractor: calling Gemini (key=%s) for %s (attempt %d, daily: %d/%d)",
-                    key_label, source_url, attempt,
-                    limiter._daily_count, limiter.RPD_LIMIT
-                )
-
-                response = client.chat.completions.create(
-                    model=MODEL,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_content},
-                    ],
-                    temperature=0.0,
-                    max_tokens=max_tokens,
-                    response_format={
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": response_name,
-                            "schema": schema,
-                        },
-                    },
-                )
-
-                raw = response.choices[0].message.content
-                result = json.loads(_strip_json_fences(raw))
-                _current_key_idx = key_idx  # remember last working key
-                return result
-
-            except json.JSONDecodeError as e:
-                logger.error(
-                    "extractor: JSON parse failed for %s (attempt %d): %s",
-                    source_url, attempt, e
-                )
-                # Don't burn quota on parse failure (often fence-wrapped JSON)
-                try:
-                    limiter.release_last()
-                except Exception:
-                    pass
-                time.sleep(2)
-                continue
-
-            except Exception as e:
-                err_str = str(e)
-
-                if "429" in err_str or "rate" in err_str.lower() or "503" in err_str or "UNAVAILABLE" in err_str:
-                    logger.warning(
-                        "extractor: transient error (%s) on key %s for %s, rotating to next key",
-                        "429" if "429" in err_str else "503",
-                        key_label, source_url
-                    )
-                    break  # break inner loop → try next key
-
-                logger.error(
-                    "extractor: API error for %s (attempt %d): %s",
-                    source_url, attempt, e
-                )
-                if attempt < max_attempts_per_key:
-                    time.sleep(5)
-                    continue
-
-    logger.warning("extractor: all keys exhausted for %s", source_url)
-    return None
-
-
-def extract_conferences(page_text: str, source_url: str, previous_deadlines: dict | None = None) -> dict | None:
-    """
-    Send page text to Gemini 2.5 Flash via Google AI Studio.
-
-    Uses API key rotation — if one key hits 429, tries the next key.
-    Only gives up if:
-    - All keys' daily quotas are exhausted
-    - API returns a non-rate-limit error after 3 attempts per key
-    - Page text is empty
-
-    Args:
-        page_text: Visible text of the page.
-        source_url: The URL that was fetched.
-        previous_deadlines: Optional {type: {date, label}} of what we had stored,
-                            passed so the LLM anchors on the CURRENT page values.
-
-    Returns parsed dict or None.
-    """
-    if not page_text or len(page_text.strip()) < 100:
+def extract_conferences(page_text: str, source_url: str,
+                        previous_deadlines: dict | None = None) -> dict | None:
+    """Turn page text into a normalised conference dict, or None."""
+    if not page_text or len(page_text.strip()) < MIN_PAGE_TEXT_CHARS:
         logger.warning("extractor: page text too short for %s, skipping", source_url)
         return None
 
-    trimmed = page_text[:MAX_TEXT_CHARS]
-    user_content = f"Source URL: {source_url}\n\nPage content:\n{trimmed}"
+    focused = focus_text(page_text, budget=MAX_TEXT_CHARS)
+    if len(focused) < len(page_text):
+        logger.info("extractor: focused %d chars down to %d for %s",
+                    len(page_text), len(focused), source_url)
+
+    user_content = f"Source URL: {source_url}\n\nPage content:\n{focused}"
     previous_block = _format_previous_deadlines(previous_deadlines)
     if previous_block:
         user_content += previous_block
 
-    result = _call_gemini(
-        SYSTEM_PROMPT,
-        user_content,
-        EXTRACTION_SCHEMA,
-        source_url=source_url,
-    )
+    result = _call_gemini(SYSTEM_PROMPT, user_content, EXTRACTION_SCHEMA,
+                          source_url=source_url)
     if result is None:
         return None
 
     result = normalize_extraction(result)
-    logger.info(
-        "extractor: %s → is_conference=%s, confidence=%.2f",
-        source_url,
-        result.get("is_conference"),
-        result.get("confidence", 0.0),
-    )
+    logger.info("extractor: %s → is_conference=%s, confidence=%.2f, deadlines=%s",
+                source_url, result.get("is_conference"), result.get("confidence", 0.0),
+                {t: result.get(f"{t}_deadline") for t in DEADLINE_TYPES})
     return result
-
-
-def daily_quota_exhausted() -> bool:
-    """Check if ALL keys have exhausted their daily quota."""
-    return all(c["limiter"].daily_quota_exhausted() for c in _clients)
-
-
-def total_requests_today() -> int:
-    """Sum of daily request counts across all keys."""
-    return sum(c["limiter"]._daily_count for c in _clients)
 
 
 def extract(url, playwright: PlaywrightManager, previous_deadlines: dict | None = None,
             wait_until: str = "domcontentloaded"):
-    """Extract conference details from a candidate URL using Gemini 2.5 Flash.
+    """Fetch `url` and extract conference details from it.
 
-    Args:
-        url: The candidate conference URL.
-        playwright: Active PlaywrightManager instance.
-        previous_deadlines: Optional {type: {date, label}} of what we had stored,
-                            passed so the LLM anchors on the CURRENT page values
-                            (used by deadline verification).
-        wait_until: Playwright wait condition — "domcontentloaded" (default) or
-                    "load" when JS-rendered deadline timelines must be present.
-
-    Returns:
-        Dict with conference data if found, or None.
+    `wait_until="load"` is used by verification, where JS-rendered deadline
+    timelines must have painted before the text is read.
+    Returns the normalised dict, or None on any fetch/extraction failure.
     """
-    if not _is_url_reachable(url):
-        logger.warning("extractor: DNS resolution failed for %s, skipping", url)
+    from scraper.utils import is_safe_url
+
+    if not is_safe_url(url):
+        # is_safe_url resolves the hostname, so this doubles as the reachability
+        # check that used to be a second, separate DNS lookup.
+        logger.warning("extractor: unsafe or unresolvable URL, skipping: %s", url)
         return None
 
-    text = _fetch_page_text(url, playwright, wait_until=wait_until)
-    if text is None:
-        logger.warning("extractor: could not fetch page text for %s", url)
+    text = playwright.fetch_page_text(url, wait_until=wait_until)
+    if not text or len(text.strip()) < MIN_PAGE_TEXT_CHARS:
+        logger.warning("extractor: could not read usable page text for %s", url)
         return None
 
-    if len(text.strip()) < 100:
-        logger.warning("extractor: page text too short for %s, skipping", url)
-        return None
-
-    logger.info("extractor: extracting from %s", url)
     return extract_conferences(text, url, previous_deadlines=previous_deadlines)
