@@ -1,143 +1,215 @@
+"""Redis helpers: cache-aside reads, rate limiting, JWT revocation counters.
+
+Everything degrades gracefully when REDIS_URL is unset (local development) or
+Redis is unreachable: reads go straight to Postgres and rate limiting fails open.
+The one exception is token revocation, which fails *closed* — see auth.py.
+
+Cache invalidation uses a generation counter rather than key scanning. The old
+`invalidate_prefix` walked every key in the database with SCAN and deleted matches,
+three times per scraper run. Bumping one integer invalidates a whole namespace in
+a single command, because the generation is part of every key.
 """
-Thin Redis helper — get_or_set + rate limiting + token_version.
-Falls back to no-op if REDIS_URL not set (dev without Redis).
-"""
-import os
+
 import json
 import logging
+import os
+import time
 
 logger = logging.getLogger(__name__)
 
 _redis = None
-_redis_available = None  # None=unknown, True/False
-_redis_last_try = 0
+_redis_available = None   # None = not yet tried, True/False = last known state
+_redis_last_try = 0.0
+
+#: How long to wait before retrying a connection that failed.
+RECONNECT_BACKOFF_SECONDS = 30
+CONNECT_TIMEOUT = 2
+
+#: Namespaces whose keys carry a generation number.
+_CONFERENCE_NAMESPACES = ("cal", "upcoming", "conf")
+
 
 def _is_redis_configured() -> bool:
     return bool(os.environ.get("REDIS_URL"))
 
+
 def get_redis():
+    """Shared Redis client, or None when unconfigured or unreachable."""
     global _redis, _redis_available, _redis_last_try
-    import time
-    # If not configured, fail fast (dev without Redis)
+
     if not _is_redis_configured():
         _redis_available = False
         return None
-    # If previously failed, retry after 30s instead of caching forever
-    if _redis_available is False and (time.time() - _redis_last_try) < 30:
+    if _redis_available is False and (time.time() - _redis_last_try) < RECONNECT_BACKOFF_SECONDS:
         return None
-    if _redis is not None and _redis_available is True:
+    if _redis is not None and _redis_available:
         return _redis
+
     _redis_last_try = time.time()
-    url = os.environ.get("REDIS_URL")
     try:
         import redis
-        _redis = redis.from_url(url, decode_responses=True, socket_connect_timeout=2, socket_timeout=2)
+
+        _redis = redis.from_url(
+            os.environ["REDIS_URL"],
+            decode_responses=True,
+            socket_connect_timeout=CONNECT_TIMEOUT,
+            socket_timeout=CONNECT_TIMEOUT,
+        )
         _redis.ping()
         _redis_available = True
         logger.info("Redis connected")
         return _redis
     except Exception as e:
-        logger.warning("Redis unavailable (%s) — caching/rate-limit degraded", e)
+        logger.warning("Redis unavailable (%s) — caching and rate limiting degraded", e)
         _redis_available = False
         return None
 
-def get_or_set(key: str, fn, ttl: int = 300):
-    """
-    Cache-aside helper: return cached JSON if present, else fn() and cache.
-    fn should be a zero-arg callable returning a JSON-serializable value.
-    """
-    r = get_redis()
-    if r is None:
-        return fn()
+
+# ── Generation-based invalidation ─────────────────────────────────────────────
+
+def _generation(namespace: str) -> int:
+    """Current generation for a cache namespace."""
+    redis = get_redis()
+    if redis is None:
+        return 0
     try:
-        cached = r.get(key)
+        value = redis.get(f"gen:{namespace}")
+        return int(value) if value is not None else 0
+    except Exception as e:
+        logger.warning("Redis generation read failed for %s: %s", namespace, e)
+        return 0
+
+
+def bump_generation(namespace: str) -> None:
+    """Invalidate every key in a namespace in one command.
+
+    Old entries are not deleted; they simply become unreachable and expire on
+    their own TTL. That is the point: no SCAN, no per-key DELETE.
+    """
+    redis = get_redis()
+    if redis is None:
+        return
+    try:
+        redis.incr(f"gen:{namespace}")
+    except Exception as e:
+        logger.warning("Redis generation bump failed for %s: %s", namespace, e)
+
+
+def invalidate_conference_reads() -> None:
+    """Invalidate all cached conference responses after a scraper write."""
+    redis = get_redis()
+    if redis is None:
+        return
+    try:
+        pipe = redis.pipeline()
+        for namespace in _CONFERENCE_NAMESPACES:
+            pipe.incr(f"gen:{namespace}")
+        pipe.execute()
+        logger.info("invalidated conference read caches")
+    except Exception as e:
+        logger.warning("conference cache invalidation failed: %s", e)
+
+
+# ── Cache-aside ───────────────────────────────────────────────────────────────
+
+def get_or_set(key: str, producer, ttl: int = 300):
+    """Return the cached value for `key`, else call `producer()` and cache it.
+
+    `key` is "<namespace>:<suffix>"; the stored key has the namespace generation
+    spliced in, so `invalidate_conference_reads()` supersedes every entry without
+    deleting anything. Exceptions from `producer` propagate and are never cached.
+    """
+    redis = get_redis()
+    if redis is None:
+        return producer()
+
+    namespace, _, suffix = key.partition(":")
+    generation = _generation(namespace)
+    full_key = f"{namespace}:v{generation}:{suffix}" if suffix else f"{namespace}:v{generation}"
+
+    try:
+        cached = redis.get(full_key)
         if cached is not None:
             return json.loads(cached)
     except Exception as e:
-        logger.warning("Redis GET %s failed: %s", key, e)
-    val = fn()
-    try:
-        r.setex(key, ttl, json.dumps(val, default=str))
-    except Exception as e:
-        logger.warning("Redis SETEX %s failed: %s", key, e)
-    return val
+        logger.warning("Redis GET %s failed: %s", full_key, e)
 
-def invalidate_prefix(prefix: str):
-    r = get_redis()
-    if r is None:
+    value = producer()
+    try:
+        redis.setex(full_key, ttl, json.dumps(value, default=str))
+    except Exception as e:
+        logger.warning("Redis SETEX %s failed: %s", full_key, e)
+    return value
+
+
+def invalidate_exact(key: str) -> None:
+    """Delete one key. UNLINK so a large value is freed off the main thread."""
+    redis = get_redis()
+    if redis is None:
         return
     try:
-        for k in r.scan_iter(match=prefix + "*"):
-            r.delete(k)
+        redis.unlink(key)
     except Exception as e:
-        logger.warning("Redis invalidate %s* failed: %s", prefix, e)
+        logger.warning("Redis unlink %s failed: %s", key, e)
 
 
-def invalidate_exact(key: str):
-    r = get_redis()
-    if r is None:
-        return
-    try:
-        r.delete(key)
-    except Exception as e:
-        logger.warning("Redis delete %s failed: %s", key, e)
-
-
-def invalidate_conf(conference_id: int):
-    """Invalidate cached conference detail for a given id — exact + per-user variants."""
-    # Exact unauth key `conf:{id}` + per-user `conf:{id}:*` without colliding `conf:1` vs `conf:10`
-    invalidate_exact(f"conf:{conference_id}")
-    invalidate_prefix(f"conf:{conference_id}:")
+# ── Rate limiting ─────────────────────────────────────────────────────────────
 
 def check_rate_limit(key: str, limit: int, window_sec: int) -> bool:
+    """True when the request is allowed.
+
+    Fixed-window counter: INCR, and set the TTL on the first hit of a window.
+    Fails open — an unavailable Redis must not lock every user out.
     """
-    Return True if allowed, False if rate-limited.
-    Uses INCR; first increment sets EXPIRE. No Redis → allow (fail open in dev).
-    """
-    r = get_redis()
-    if r is None:
+    redis = get_redis()
+    if redis is None:
         if _is_redis_configured():
-            logger.warning("rate limit %s fail-open: Redis configured but unavailable", key)
+            logger.warning("rate limit %s failing open: Redis unavailable", key)
         return True
     try:
-        count = r.incr(key)
-        if count == 1:
-            r.expire(key, window_sec)
-        else:
-            # Ensure TTL exists even if key was created without expiry (e.g., TTL stripped) — must check every hit for correctness
-            try:
-                ttl = r.ttl(key)
-                if ttl == -1:
-                    r.expire(key, window_sec)
-            except Exception:
-                pass
+        pipe = redis.pipeline()
+        pipe.incr(key)
+        pipe.ttl(key)
+        count, ttl = pipe.execute()
+        # A key with no expiry would count forever; repair it.
+        if ttl is None or ttl < 0:
+            redis.expire(key, window_sec)
         return count <= limit
     except Exception as e:
         logger.warning("Redis rate limit %s failed: %s", key, e)
         return True
 
-# Token version for JWT revocation (Redis user:{id}:tv)
+
+# ── JWT revocation ────────────────────────────────────────────────────────────
+
 def get_token_version(user_id: str) -> int:
-    r = get_redis()
-    if r is None:
+    """Current token generation for a user. Tokens with an older `tv` are revoked."""
+    redis = get_redis()
+    if redis is None:
         if _is_redis_configured():
-            logger.warning("get_token_version fail-open for %s: Redis configured but unavailable", user_id)
+            logger.warning("get_token_version failing open for %s: Redis unavailable", user_id)
         return 0
     try:
-        v = r.get(f"user:{user_id}:tv")
-        return int(v) if v is not None else 0
+        value = redis.get(f"user:{user_id}:tv")
+        return int(value) if value is not None else 0
     except Exception as e:
         logger.warning("get_token_version failed for %s: %s", user_id, e)
         return 0
 
+
 def bump_token_version(user_id: str) -> int:
-    r = get_redis()
-    if r is None:
+    """Revoke every existing token for a user.
+
+    Raises when Redis is configured but unavailable: silently failing to revoke on
+    logout or account deletion would leave a valid token in the wild.
+    """
+    redis = get_redis()
+    if redis is None:
         if _is_redis_configured():
             raise RuntimeError("Redis unavailable — cannot revoke token")
         return 0
     try:
-        return r.incr(f"user:{user_id}:tv")
+        return redis.incr(f"user:{user_id}:tv")
     except Exception as e:
-        logger.warning("Redis bump tv %s failed: %s", user_id, e)
+        logger.warning("Redis token revocation failed for %s: %s", user_id, e)
         raise

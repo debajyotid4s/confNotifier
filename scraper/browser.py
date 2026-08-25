@@ -15,6 +15,15 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
 ]
 
+#: Upper bound on the text handed back from a page. Deliberately far larger than
+#: what is sent to the model: `textfocus.focus_text` selects the date-bearing
+#: regions from this, and important-dates tables routinely sit 20k+ characters
+#: into a conference homepage. Truncating at 8000 here dropped them outright.
+MAX_PAGE_TEXT_CHARS = 60000
+
+#: Minimum text length for a page to count as loaded rather than an error shell.
+MIN_PAGE_TEXT_CHARS = 100
+
 
 class PlaywrightManager:
     """Singleton Playwright browser manager — one Chromium instance for the entire run.
@@ -173,15 +182,16 @@ class PlaywrightManager:
                 break
 
     def fetch_page_text(self, url: str, timeout: int = 30000, wait_until: str = "domcontentloaded") -> str | None:
-        """Load a URL and return visible text (first 8000 chars).
+        """Load a URL and return its visible text, up to MAX_PAGE_TEXT_CHARS.
 
         wait_until controls the Playwright load condition:
         - "domcontentloaded" (default, fast) — deadlines rendered by JS shortly
           after DOM ready may be missed.
         - "load" — waits for the load event, letting JS-rendered deadline
-          timelines (ICCIT/ICMIEE style) appear before innerText is read.
-        Applies human-like scroll after load for stealth.
-        Auto-restarts browser on crash, retries once.
+          timelines (ICCIT/ICMIEE style) paint before innerText is read.
+        Applies a human-like scroll after load, which both aids stealth and
+        triggers lazy-rendered important-dates sections.
+        Auto-restarts the browser on crash and retries once.
         Returns None on any error.
         """
         if not self._page:
@@ -195,9 +205,9 @@ class PlaywrightManager:
                     self._page.goto(url, timeout=30000, wait_until=wait_until)
                     self._human_like_scroll()
                     text = self._page.evaluate("document.body ? document.body.innerText : ''")
-                    if not text or len(text.strip()) < 100:
+                    if not text or len(text.strip()) < MIN_PAGE_TEXT_CHARS:
                         return None
-                    return text[:8000]
+                    return text[:MAX_PAGE_TEXT_CHARS]
                 except PlaywrightTimeout:
                     logger.warning("PlaywrightManager: timeout loading %s", url)
                     return None
@@ -216,8 +226,8 @@ class PlaywrightManager:
                         try:
                             self._page.wait_for_load_state("networkidle", timeout=15000)
                             text = self._page.evaluate("document.body ? document.body.innerText : ''")
-                            if text and len(text.strip()) >= 100:
-                                return text[:8000]
+                            if text and len(text.strip()) >= MIN_PAGE_TEXT_CHARS:
+                                return text[:MAX_PAGE_TEXT_CHARS]
                         except Exception:
                             pass
                         return None

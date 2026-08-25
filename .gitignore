@@ -47,8 +47,9 @@ REPORT_gemini_rate_limits.md
 application_plan.md
 go_cli_plan.md
 
-# Database scripts — DB schema lives on the server, not in git
-db/
+# Database migrations are version-controlled: CI builds the whole schema from
+# them on every push and the tests verify idempotency.
+# (One-off diagnostic SQL still belongs in /tmp, not here.)
 
 # Sensitive information — never commit keys, tokens, or credentials
 .env

@@ -40,10 +40,15 @@ def test_range_checks_exact_string():
     )
 
 
-def test_range_checks_legacy_included():
-    checks = deadline_range_checks(30, include_legacy=True)
-    assert len(checks) == 4
-    assert any("submission_deadline IS NOT NULL" in c for c in checks)
+def test_range_checks_cover_only_tracked_types():
+    """The legacy submission_deadline columns are no longer queried anywhere.
+
+    They were backfilled into the named columns by migration_011 and every read
+    path now uses abstract_deadline / full_paper_deadline only.
+    """
+    checks = deadline_range_checks(30)
+    assert len(checks) == 2
+    assert not any("submission_deadline" in c for c in checks)
 
 
 def test_context_keywords_match():

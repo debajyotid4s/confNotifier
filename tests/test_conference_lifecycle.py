@@ -54,13 +54,28 @@ class TestFixtureA:
         assert "registration" not in DEADLINE_TYPES
 
     def test_context_mismatch_for_post_submission(self):
-        """Post-submission context does not match any tracked keyword."""
+        """A post-submission label in a submission field is now flagged.
+
+        Previously this returned (True, None) because acceptance wording matched
+        no tracked keyword, so a mislabelled acceptance date was stored as an
+        abstract deadline. POST_SUBMISSION_KEYWORDS closes that hole.
+        """
         is_valid, mismatched = validate_deadline_context(
             "abstract", "Notification of acceptance: September 1, 2026"
         )
-        # No match in FIELD_KEYWORDS for acceptance → returns True (no mismatch)
-        assert is_valid is True
-        assert mismatched is None
+        assert is_valid is False
+        assert mismatched == "post_submission"
+
+    @pytest.mark.parametrize("context", [
+        "Camera ready submission: October 1, 2026",
+        "Registration deadline: November 5, 2026",
+        "Author notification: September 20, 2026",
+        "Early bird registration closes soon",
+    ])
+    def test_all_post_submission_labels_rejected(self, context):
+        is_valid, mismatched = validate_deadline_context("full_paper", context)
+        assert is_valid is False
+        assert mismatched == "post_submission"
 
 
 # ── Fixture B: New conference, no dates — TBA state ──

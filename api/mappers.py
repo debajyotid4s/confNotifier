@@ -1,19 +1,31 @@
-"""Shared response mappers — single source of truth for row-to-dict conversions."""
+"""Shared response mappers — one definition of the conference wire contract.
+
+The conference SELECT used to be followed by a second query to
+`conference_deadlines` (`deadlines_for_ids`) and, on some paths, a third query to
+re-read the same deadline rows. `CONF_SELECT` now LEFT JOINs the child table, so
+one round-trip returns everything a response needs.
+"""
 
 from __future__ import annotations
+
+import logging
 from datetime import date
-from typing import Any, Optional
+from typing import Optional
 
 from pydantic import BaseModel
 
-from database import fetch_all, fetch_all_dict  # noqa: F401 - fetch_all_dict used by callers via mappers
+from database import fetch_all
 
+logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Pydantic contract (documents the shape; mappers return plain dicts for speed)
-# ---------------------------------------------------------------------------
 
 class ConferenceOut(BaseModel):
+    """The exact JSON shape the Android client consumes.
+
+    Documented as a model for clarity; the mappers return plain dicts because
+    they are serialised straight to JSON and cached as JSON.
+    """
+
     id: int
     name: str
     start_date: Optional[str] = None
@@ -29,141 +41,127 @@ class ConferenceOut(BaseModel):
     bookmarked: Optional[bool] = None
 
 
-# ---------------------------------------------------------------------------
-# Conference helpers
-# ---------------------------------------------------------------------------
-
+#: Canonical conference projection.
+#:
+#: The two LEFT JOINs resolve each deadline from the normalized child table and
+#: fall back to the wide column, so callers never need a follow-up query and the
+#: fallback is expressed once instead of at every call site.
 CONF_SELECT = """
-    SELECT id, title, date_start, date_end, website, city, organizer, category,
-           description, abstract_deadline, full_paper_deadline
-    FROM conferences
+    SELECT c.id,
+           c.title,
+           c.date_start,
+           c.date_end,
+           c.website,
+           c.city,
+           c.organizer,
+           c.category,
+           c.description,
+           COALESCE(cd_abs.deadline, c.abstract_deadline) AS abstract_deadline,
+           COALESCE(cd_full.deadline, c.full_paper_deadline) AS full_paper_deadline
+      FROM conferences c
+      LEFT JOIN conference_deadlines cd_abs
+             ON cd_abs.conference_id = c.id AND cd_abs.type = 'abstract'
+      LEFT JOIN conference_deadlines cd_full
+             ON cd_full.conference_id = c.id AND cd_full.type = 'full_paper'
+"""
+
+#: Sort key: the nearest submission deadline, nulls last.
+SOONEST_DEADLINE = """
+    LEAST(
+        COALESCE(cd_abs.deadline,  c.abstract_deadline,  DATE '9999-12-31'),
+        COALESCE(cd_full.deadline, c.full_paper_deadline, DATE '9999-12-31')
+    )
+"""
+
+#: True when a conference has at least one submission deadline still open.
+HAS_OPEN_DEADLINE = """
+    (COALESCE(cd_abs.deadline,  c.abstract_deadline)  >= CURRENT_DATE
+     OR COALESCE(cd_full.deadline, c.full_paper_deadline) >= CURRENT_DATE)
 """
 
 
 def bookmarked_ids_for_user(user_id, conf_ids: list[int]) -> set[int]:
-    """Return the subset of conf_ids that the user has bookmarked."""
+    """Which of `conf_ids` the user has bookmarked."""
     if not user_id or not conf_ids:
         return set()
     rows = fetch_all(
         "SELECT conference_id FROM bookmarks WHERE user_id = %s AND conference_id = ANY(%s)",
-        (user_id, conf_ids),
+        (user_id, list(conf_ids)),
     )
-    return {r[0] for r in rows}
+    return {row[0] for row in rows}
 
 
-def deadlines_for_ids(conf_ids: list[int]) -> dict[int, dict[str, date]]:
-    """Bulk-fetch deadlines from the normalized child table (indexed)."""
-    if not conf_ids:
-        return {}
-    try:
-        rows = fetch_all(
-            "SELECT conference_id, type, deadline FROM conference_deadlines WHERE conference_id = ANY(%s)",
-            (conf_ids,),
-        )
-    except Exception as e:
-        import psycopg2.errors
-
-        if isinstance(e, psycopg2.errors.UndefinedTable):
-            import logging
-
-            logging.getLogger(__name__).warning("deadlines_for_ids: conference_deadlines missing, fallback to wide cols")
-            return {}
-        # Re-raise genuine DB errors (timeouts, syntax) — do not mask
-        raise
-    m: dict[int, dict[str, date]] = {}
-    for cid, typ, dl in rows:
-        m.setdefault(cid, {})[typ] = dl
-    return m
+_REQUIRED_KEYS = frozenset({
+    "id", "title", "date_start", "date_end", "website", "city",
+    "organizer", "category", "description", "abstract_deadline", "full_paper_deadline",
+})
 
 
-def conference_row_to_out(row, dl_map: dict[int, dict], today: date, bookmarked: bool | None = None) -> dict:
-    """Map a canonical conferences SELECT row + deadline map to a response dict.
+def conference_row_to_out(row, today: date | None = None,
+                          bookmarked: bool | None = None) -> dict:
+    """Map one CONF_SELECT row to the response dict.
 
-    Supports both dict rows (RealDictCursor) and legacy tuple rows.
-    Dict keys: id, title, date_start, date_end, website, city, organizer, category,
-               description, abstract_deadline, full_paper_deadline
-    Legacy indices: 0=id 1=title 2=date_start 3=date_end 4=website 5=city
-                    6=organizer 7=category 8=description 9=abstract_deadline 10=full_paper_deadline
-    Priority: child table > wide columns.
+    `row` must be a dict row (RealDictCursor). `status` is derived from the
+    nearest deadline: "upcoming" when it has not passed, "past" when it has, and
+    None when the conference has no deadline yet (a TBA record).
     """
-    # Validate shape to catch SELECT reorder early
-    if isinstance(row, dict):
-        required = {"id", "title", "date_start", "date_end", "website", "city", "organizer", "category", "description", "abstract_deadline", "full_paper_deadline"}
-        missing = required - row.keys()
-        if missing:
-            raise ValueError(f"conference row missing keys: {missing}")
-        cid = row["id"]
-        abs_wide = row["abstract_deadline"]
-        full_wide = row["full_paper_deadline"]
-        title = row["title"]
-        date_start = row["date_start"]
-        date_end = row["date_end"]
-        website = row["website"]
-        city = row["city"]
-        organizer = row["organizer"]
-        category = row["category"]
-        description = row["description"]
-    else:
-        if len(row) < 11:
-            raise ValueError(f"conference row tuple too short: {len(row)} < 11")
-        cid = row[0]
-        abs_wide = row[9]
-        full_wide = row[10]
-        title = row[1]
-        date_start = row[2]
-        date_end = row[3]
-        website = row[4]
-        city = row[5]
-        organizer = row[6]
-        category = row[7]
-        description = row[8]
+    if not isinstance(row, dict):
+        raise TypeError(f"conference_row_to_out expects a dict row, got {type(row).__name__}")
+    missing = _REQUIRED_KEYS - row.keys()
+    if missing:
+        raise ValueError(f"conference row missing keys: {sorted(missing)}")
 
-    abs_dl = dl_map.get(cid, {}).get("abstract") or abs_wide
-    full_dl = dl_map.get(cid, {}).get("full_paper") or full_wide
-    soonest = abs_dl or full_dl
-    status = "upcoming" if soonest and soonest >= today else "past" if soonest else None
+    today = today or date.today()
+    abstract = row["abstract_deadline"]
+    full_paper = row["full_paper_deadline"]
+    soonest = min((d for d in (abstract, full_paper) if d is not None), default=None)
+
+    if soonest is None:
+        status = None
+    elif soonest >= today:
+        status = "upcoming"
+    else:
+        status = "past"
+
     return {
-        "id": cid,
-        "name": title,
-        "start_date": _iso(date_start),
-        "end_date": _iso(date_end),
+        "id": row["id"],
+        "name": row["title"],
+        "start_date": _iso(row["date_start"]),
+        "end_date": _iso(row["date_end"]),
         "status": status,
-        "website": website,
-        "location": city,
-        "organizer": organizer,
-        "category": category,
-        "abstract_deadline": _iso(abs_dl),
-        "full_paper_deadline": _iso(full_dl),
-        "description": description,
+        "website": row["website"],
+        "location": row["city"],
+        "organizer": row["organizer"],
+        "category": row["category"],
+        "abstract_deadline": _iso(abstract),
+        "full_paper_deadline": _iso(full_paper),
+        "description": row["description"],
         "bookmarked": bookmarked,
     }
 
 
 def conference_rows_to_out(rows, today: date | None = None, user_id=None) -> list[dict]:
-    """Map a batch of conference rows to dicts, optionally including bookmark state."""
-    if today is None:
-        today = date.today()
-    # Support both dict and tuple rows for id extraction
-    ids = [r["id"] if isinstance(r, dict) else r[0] for r in rows]
-    bm_ids = bookmarked_ids_for_user(user_id, ids) if user_id else set()
-    dl_map = deadlines_for_ids(ids)
-    return [conference_row_to_out(r, dl_map, today, bookmarked=((r["id"] if isinstance(r, dict) else r[0]) in bm_ids) if user_id else None) for r in rows]
+    """Map a batch of rows, resolving bookmark state in a single extra query."""
+    if not rows:
+        return []
+    today = today or date.today()
+    bookmarked = bookmarked_ids_for_user(user_id, [r["id"] for r in rows]) if user_id else set()
+    return [
+        conference_row_to_out(
+            row, today,
+            bookmarked=(row["id"] in bookmarked) if user_id else None,
+        )
+        for row in rows
+    ]
 
 
-# ---------------------------------------------------------------------------
-# User helpers
-# ---------------------------------------------------------------------------
+# ── User helpers ──────────────────────────────────────────────────────────────
 
 def user_row_to_out(row) -> dict:
-    """Map a users SELECT row to the /me response dict.
-
-    Accepts both tuple (id, username, email, created_at) and dict rows.
-    """
+    """Map a users row to the /me response."""
     if isinstance(row, dict):
         uid = row.get("id") or row.get("uid")
-        username = row.get("username")
-        email = row.get("email")
-        created_at = row.get("created_at")
+        username, email, created_at = row.get("username"), row.get("email"), row.get("created_at")
     else:
         uid, username, email, created_at = row
     return {
@@ -175,21 +173,12 @@ def user_row_to_out(row) -> dict:
 
 
 def login_response(token: str, uid, username: str, email: str) -> dict:
-    """Build the standard POST /auth/login response."""
-    return {
-        "token": token,
-        "user": {"id": str(uid), "username": username, "email": email},
-    }
+    """The POST /auth/login body."""
+    return {"token": token, "user": {"id": str(uid), "username": username, "email": email}}
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def _iso(d) -> str | None:
-    """Safe .isoformat() for date/datetime or pass-through for already-string values."""
-    if d is None:
-        return None
-    if isinstance(d, str):
-        return d
-    return d.isoformat()
+def _iso(value) -> str | None:
+    """ISO-format a date/datetime; pass strings through; None stays None."""
+    if value is None or isinstance(value, str):
+        return value
+    return value.isoformat()

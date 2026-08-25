@@ -42,7 +42,9 @@ def verify_google_id_token(id_token_str: str) -> dict:
     if not aud:
         raise RuntimeError("WEB_CLIENT_ID (or GOOGLE_CLIENT_ID) env var is required for Google verification")
     info = google_id_token.verify_oauth2_token(id_token_str, req, audience=aud)
-    logger.info("Google token verified sub=%s email=%s aud=%s", info.get("sub"), info.get("email"), info.get("aud"))
+    # Log that verification succeeded, not who it was for: the full email and
+    # Google subject id used to be written to the application log on every login.
+    logger.info("Google token verified (sub=%s…)", str(info.get("sub", ""))[:6])
     return info
 
 def generate_username_candidate() -> str:
