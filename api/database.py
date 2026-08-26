@@ -162,9 +162,18 @@ def db_cursor(commit: bool = False, cursor_factory=None) -> Generator[psycopg2.e
             cur = conn.cursor()
         try:
             if STATEMENT_TIMEOUT_MS > 0:
-                # First statement of the implicit transaction; psycopg2
-                # interpolates the literal client-side.
-                cur.execute("SET LOCAL statement_timeout = %s", (STATEMENT_TIMEOUT_MS,))
+                try:
+                    cur.execute("SET LOCAL statement_timeout = %s", (STATEMENT_TIMEOUT_MS,))
+                except psycopg2.Error as e:
+                    # SET LOCAL requires a transaction block; on some pooler
+                    # configs psycopg2 hasn't yet begun one. Fall back to
+                    # session-level SET (still PgBouncer-safe as a plain query)
+                    # and continue — the request must not fail over a timeout.
+                    logger.debug("SET LOCAL failed (%s), trying SET: %s", type(e).__name__, e)
+                    try:
+                        cur.execute("SET statement_timeout = %s", (STATEMENT_TIMEOUT_MS,))
+                    except Exception as e2:
+                        logger.warning("statement_timeout SET failed: %s", e2)
             yield cur
         finally:
             try:
