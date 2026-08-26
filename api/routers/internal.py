@@ -9,9 +9,10 @@ Every handler is idempotent within its window: a Redis marker suppresses repeats
 so a cron misfire (or a retry loop) cannot spam users. `notification_log` provides
 the durable per-user dedup that survives a Redis flush.
 
-The three-level SQL fallback that used to guard against a pre-migration
-production schema has been removed: migration_005/006/011 are now prerequisites,
-and the fallbacks made the real query impossible to read or index for.
+Public read endpoints degrade gracefully when the `conference_deadlines` child
+table is absent (fallback to wide columns). Internal push queries do the same
+here — a missing child table must never take down notifications; it just means
+the API hasn't been migrated yet.
 """
 
 import json
@@ -185,27 +186,54 @@ def _prune_dead_tokens(tokens: list[str]) -> int:
 # ── Digest copy ───────────────────────────────────────────────────────────────
 
 def _upcoming_sample(days: int = 7, limit: int = 3) -> list[tuple[str, date]]:
-    """Nearest deadlines within `days`, for building notification copy."""
-    return fetch_all(
-        """
-        SELECT c.title, LEAST(
-                   COALESCE(cd_abs.deadline,  c.abstract_deadline,  DATE '9999-12-31'),
-                   COALESCE(cd_full.deadline, c.full_paper_deadline, DATE '9999-12-31')
-               ) AS deadline
-          FROM conferences c
-          LEFT JOIN conference_deadlines cd_abs
-                 ON cd_abs.conference_id = c.id AND cd_abs.type = 'abstract'
-          LEFT JOIN conference_deadlines cd_full
-                 ON cd_full.conference_id = c.id AND cd_full.type = 'full_paper'
-         WHERE LEAST(
-                   COALESCE(cd_abs.deadline,  c.abstract_deadline,  DATE '9999-12-31'),
-                   COALESCE(cd_full.deadline, c.full_paper_deadline, DATE '9999-12-31')
-               ) BETWEEN CURRENT_DATE AND CURRENT_DATE + %s::interval
-         ORDER BY deadline ASC
-         LIMIT %s
-        """,
-        (f"{days} days", limit),
-    )
+    """Nearest deadlines within `days`, for building notification copy.
+
+    Falls back to wide columns when the child table hasn't been migrated yet —
+    same resilience as the public conference endpoints.
+    """
+    try:
+        return fetch_all(
+            """
+            SELECT c.title, LEAST(
+                       COALESCE(cd_abs.deadline,  c.abstract_deadline,  DATE '9999-12-31'),
+                       COALESCE(cd_full.deadline, c.full_paper_deadline, DATE '9999-12-31')
+                   ) AS deadline
+              FROM conferences c
+              LEFT JOIN conference_deadlines cd_abs
+                     ON cd_abs.conference_id = c.id AND cd_abs.type = 'abstract'
+              LEFT JOIN conference_deadlines cd_full
+                     ON cd_full.conference_id = c.id AND cd_full.type = 'full_paper'
+             WHERE LEAST(
+                       COALESCE(cd_abs.deadline,  c.abstract_deadline,  DATE '9999-12-31'),
+                       COALESCE(cd_full.deadline, c.full_paper_deadline, DATE '9999-12-31')
+                   ) BETWEEN CURRENT_DATE AND CURRENT_DATE + %s::interval
+             ORDER BY deadline ASC
+             LIMIT %s
+            """,
+            (f"{days} days", limit),
+        )
+    except Exception as e:
+        import psycopg2.errors
+
+        if isinstance(e, (psycopg2.errors.UndefinedTable, psycopg2.errors.UndefinedColumn)):
+            logger.warning("_upcoming_sample: conference_deadlines missing, fallback to wide cols")
+            return fetch_all(
+                """
+                SELECT c.title, LEAST(
+                           COALESCE(c.abstract_deadline, DATE '9999-12-31'),
+                           COALESCE(c.full_paper_deadline, DATE '9999-12-31')
+                       ) AS deadline
+                  FROM conferences c
+                 WHERE LEAST(
+                           COALESCE(c.abstract_deadline, DATE '9999-12-31'),
+                           COALESCE(c.full_paper_deadline, DATE '9999-12-31')
+                       ) BETWEEN CURRENT_DATE AND CURRENT_DATE + %s::interval
+                 ORDER BY deadline ASC
+                 LIMIT %s
+                """,
+                (f"{days} days", limit),
+            )
+        raise
 
 
 def _short_title(title: str, width: int = 30) -> str:
@@ -275,6 +303,42 @@ _BOOKMARK_TARGETS_SQL = f"""
                 ('full_paper',
                  COALESCE(cd_full.deadline, c.full_paper_deadline),
                  COALESCE(cd_full.deadline_previous, c.full_paper_deadline_previous))
+          ) AS dl(dl_type, deadline_date, previous_date)
+         WHERE dl.deadline_date IS NOT NULL
+    )
+    SELECT candidate.fcm_token, candidate.user_id, candidate.conference_id,
+           candidate.title, candidate.dl_type, candidate.deadline_date, candidate.reason
+      FROM candidate
+      LEFT JOIN notification_log nl
+             ON nl.user_id       = candidate.user_id
+            AND nl.conference_id = candidate.conference_id
+            AND nl.deadline_type = candidate.dl_type
+            AND nl.deadline_date = candidate.deadline_date
+            AND nl.reason        = candidate.reason
+            AND (candidate.reason <> 'approaching'
+                 OR nl.notified_at::date = CURRENT_DATE)
+     WHERE candidate.reason IS NOT NULL
+       AND nl.id IS NULL
+"""
+
+# Fallback when the child table hasn't been migrated yet — same logic on wide
+# columns only. Kept as a literal so the primary query stays readable.
+_BOOKMARK_TARGETS_SQL_FALLBACK = f"""
+    WITH candidate AS (
+        SELECT dt.fcm_token,
+               dt.user_id,
+               c.id    AS conference_id,
+               c.title,
+               dl.dl_type,
+               dl.deadline_date,
+               {_REASON_SQL} AS reason
+          FROM device_tokens dt
+          JOIN bookmarks   b ON b.user_id = dt.user_id
+          JOIN conferences c ON c.id = b.conference_id
+          CROSS JOIN LATERAL (
+              VALUES
+                ('abstract',  c.abstract_deadline,  c.abstract_deadline_previous),
+                ('full_paper', c.full_paper_deadline, c.full_paper_deadline_previous)
           ) AS dl(dl_type, deadline_date, previous_date)
          WHERE dl.deadline_date IS NOT NULL
     )
@@ -388,8 +452,18 @@ def notify_bookmarks():
     try:
         rows = fetch_all(_BOOKMARK_TARGETS_SQL)
     except Exception as e:
-        logger.error("notify-bookmarks: target query failed: %s", e)
-        raise HTTPException(status_code=500, detail="Could not compute notification targets")
+        import psycopg2.errors
+
+        if isinstance(e, (psycopg2.errors.UndefinedTable, psycopg2.errors.UndefinedColumn)):
+            logger.warning("notify-bookmarks: conference_deadlines missing, fallback to wide cols")
+            try:
+                rows = fetch_all(_BOOKMARK_TARGETS_SQL_FALLBACK)
+            except Exception as e2:
+                logger.error("notify-bookmarks: fallback also failed: %s", e2)
+                raise HTTPException(status_code=500, detail="Could not compute notification targets")
+        else:
+            logger.error("notify-bookmarks: target query failed: %s", e)
+            raise HTTPException(status_code=500, detail="Could not compute notification targets")
 
     if not rows:
         return {"ok": True, "targets": 0, "sent": 0, "message": "No approaching or changed deadlines"}
