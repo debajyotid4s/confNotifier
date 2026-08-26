@@ -126,9 +126,10 @@ def get_or_set(key: str, producer, ttl: int = 300):
 
     value = producer()
     try:
-        redis.setex(full_key, ttl, json.dumps(value, default=str))
+        # set(..., ex=) rather than the deprecated setex(name, time, value) form.
+        redis.set(full_key, json.dumps(value, default=str), ex=ttl)
     except Exception as e:
-        logger.warning("Redis SETEX %s failed: %s", full_key, e)
+        logger.warning("Redis SET %s failed: %s", full_key, e)
     return value
 
 
