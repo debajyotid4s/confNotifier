@@ -221,15 +221,19 @@ class TestLegacyBackfillMigration:
 
     @staticmethod
     def _apply_migration(conn):
-        """Run the migration body (without the post-COMMIT ANALYZE statements)."""
+        """Run the whole migration file.
+
+        The migration is defensive: no BEGIN/COMMIT (each statement autocommits
+        and is idempotent), DO/EXCEPTION guards around fragile column/table refs,
+        and ANALYZE left in comments (it cannot run inside a transaction block).
+        So the file can be executed verbatim.
+        """
         import pathlib
 
         sql = (pathlib.Path(__file__).parent.parent / "db"
                / "migration_011_retire_legacy_deadlines.sql").read_text()
-        # ANALYZE cannot run inside an explicit transaction block.
-        body = sql.split("COMMIT;")[0].replace("BEGIN;", "")
         with conn.cursor() as cur:
-            cur.execute(body)
+            cur.execute(sql)
         conn.commit()
 
     def test_legacy_columns_are_migrated_and_cleared(self, seeded):
