@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.3.1 — hotfix: Google login failing in production (2026-08-26)
+
+**Root cause of this morning's "auth failed" on every sign-in attempt:** v0.3.0
+passed `statement_timeout` to Postgres through the connection *startup packet*
+(`options="-c statement_timeout=…"`). Production sits behind Neon's PgBouncer,
+which rejects unknown startup parameters — so **every pooled database connection
+failed**, and since login needs the database, all sign-ins returned
+`500 "auth failed"`.
+
+- `api/database.py`: no startup-packet parameters are sent anymore. The timeout
+  is applied per request with `SET LOCAL statement_timeout` inside `db_cursor`
+  — a plain statement any pooler forwards — scoped to exactly that request's
+  transaction, re-applied on every checkout.
+- `api/routers/auth.py`: Google token verification failures now map to proper
+  responses instead of an undiagnosable 500 — server misconfiguration → `503`,
+  rejected token (bad signature/expiry/audience) → `401`, missing claims →
+  `400`. Only the exception type is logged, never token claims.
+- Regression tests: unit tests pin that only pooler-safe kwargs (`keepalives`,
+  `connect_timeout`) reach psycopg2 on both the pooled and direct paths;
+  integration tests prove the timeout is enforced inside requests and provably
+  absent outside them (no session-level leakage).
+- Also lands the deferred v0.3.0 review cleanup: dead code removal
+  (`load_known_websites`, `invalidate_exact`), `tests/test_cache.py` covering
+  generation-based invalidation, fixed-window rate limiting and JWT revocation
+  counters against a realistic Redis (fakeredis).
+
+Verified end-to-end over HTTP against a live Postgres: login → user upsert →
+JWT → `/me` → bookmark add/list → logout → re-login → login-event telemetry.
+
 ## v0.3.0 — Scraper power + API hardening (2026-08-26)
 
 Focus: stronger discovery/dedup/extraction in the scraper, a faster and more

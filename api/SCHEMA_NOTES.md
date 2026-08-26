@@ -32,6 +32,8 @@ Confirmed `DEADLINE_TYPES = [abstract, full_paper, notification_of_acceptance, c
 
 Neon kills idle connections. Scraper keeps per-operation `psycopg2.connect()` (open/close per query). **FastAPI now uses `psycopg2.pool.SimpleConnectionPool(1,10)` with `keepalives_idle=30` in `api/database.py` plus `keepalives` on direct fallback — no `SELECT 1` pre-ping per checkout, relies on `keepalives` + `rollback()` on `INERROR` before `putconn()`. Pool is wrapped via `_PooledConnection` so `conn.close()` returns to pool. Falls back to direct `psycopg2.connect` only if pool never initialized. Prefer Neon's pooled `DATABASE_URL` (pgbouncer) when available.
 
+**Statement timeout (v0.3.1):** applied per request via `SET LOCAL statement_timeout` inside `db_cursor()` — NOT via the connection startup packet, because PgBouncer rejects unknown startup parameters (`options=` broke every pooled connection in v0.3.0). `SET LOCAL` is a plain forwarded statement, scopes itself to the request's transaction, and is re-applied on every checkout. Override with `DB_STATEMENT_TIMEOUT_MS`.
+
 **Deadline storage:** `conferences` wide columns remain for scraper writes, but `conference_deadlines` child table (`conference_id, type, deadline`) is now the indexed source for `GET /conferences/calendar|upcoming` (see `migration_005`). Scraper upserts both (see `scraper/db.py:save_conference`).
 
 ## 0.3 Ownership boundary

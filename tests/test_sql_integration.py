@@ -364,6 +364,87 @@ class TestScraperQueries:
         assert rows, "fixture has deadlines inside 30 days"
 
 
+class TestStatementTimeout:
+    """The timeout must be enforced per request via SET LOCAL, not via the
+    connection startup packet — startup parameters are rejected by PgBouncer,
+    which is what broke production login in v0.3.0."""
+
+    @pytest.fixture(autouse=True)
+    def _api_db_env(self, monkeypatch):
+        """Point the API's pool at the test database."""
+        monkeypatch.setenv("DATABASE_URL", TEST_DSN)
+
+    @staticmethod
+    def _timeout_ms(shown: str) -> int:
+        """Postgres renders intervals as '8000ms', '8s', '1min 30s'... and a
+        zero default as bare '0'."""
+        shown = shown.strip()
+        if shown == "0":
+            return 0
+        units = {"ms": 1, "s": 1000, "min": 60_000, "h": 3_600_000}
+        total = 0
+        for token in shown.split():
+            for suffix, factor in units.items():
+                if token.endswith(suffix):
+                    total += int(float(token[: -len(suffix)]) * factor)
+                    break
+            else:
+                raise AssertionError(f"unparsable statement_timeout token: {token}")
+        return total
+
+    def test_timeout_applies_inside_request(self, seeded):
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
+        import database
+
+        with database.db_cursor() as cur:
+            cur.execute("SHOW statement_timeout")
+            shown = cur.fetchone()[0]
+        assert self._timeout_ms(shown) == database.STATEMENT_TIMEOUT_MS, (
+            f"expected {database.STATEMENT_TIMEOUT_MS}ms inside a request, got {shown!r}"
+        )
+
+    def test_no_leak_outside_the_request(self, seeded):
+        """SET LOCAL must not outlive the request: any connection that did NOT
+        go through db_cursor sees the server default, proving nothing persists
+        at session level (which is what keeps PgBouncer sessions pristine)."""
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
+        import database
+
+        # Run a couple of requests through the wrapper first.
+        for _ in range(2):
+            with database.db_cursor(commit=True) as cur:
+                cur.execute("SELECT 1")
+                cur.fetchall()
+
+        # An independent, never-wrapped connection must be untouched.
+        import psycopg2
+
+        raw = psycopg2.connect(TEST_DSN)
+        try:
+            with raw.cursor() as cur:
+                cur.execute("SHOW statement_timeout")
+                shown = cur.fetchone()[0]
+        finally:
+            raw.close()
+        assert self._timeout_ms(shown) == 0, (
+            f"statement_timeout leaked past the request boundary: {shown!r}"
+        )
+
+    def test_every_request_reapplies_the_timeout(self, seeded):
+        """Because SET LOCAL dies with its transaction, db_cursor re-applies it
+        on every checkout — including long-lived pooled connections."""
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
+        import database
+
+        for _ in range(3):
+            with database.db_cursor() as cur:
+                cur.execute("SHOW statement_timeout")
+                assert self._timeout_ms(cur.fetchone()[0]) == database.STATEMENT_TIMEOUT_MS
+
+
 class TestSeenLinkStateMachine:
     """Batched seen_links writes must never reopen a decided URL."""
 

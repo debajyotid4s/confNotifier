@@ -3,6 +3,14 @@ DB pooling — use Neon's PgBouncer (pooled DSN) or a local SimpleConnectionPool
 Per-request connect was a scraper workaround for idle kills; for the API we pool
 with keepalives so we don't pay TCP+TLS+auth per request. Falls back to per-op
 connect only if pool was never initialized (dev without DATABASE_URL).
+
+PgBouncer constraint: connection *startup parameters* are restricted to a small
+whitelist, and Neon's pooler does not whitelist `options`. v0.3.0 passed
+statement_timeout through the startup packet, which made every pooled connection
+fail ("unsupported startup parameter: options") and took down login with it.
+The timeout is therefore applied per request with SET LOCAL inside db_cursor —
+a plain statement any pooler forwards — where it also scopes itself to exactly
+that request's transaction.
 """
 import os
 import time
@@ -26,6 +34,7 @@ POOL_MAX = 10
 #: Overridable because the internal notification queries are heavier than reads.
 STATEMENT_TIMEOUT_MS = int(os.environ.get("DB_STATEMENT_TIMEOUT_MS", "8000"))
 
+
 def _get_pool():
     global _pool
     if _pool is not None:
@@ -35,18 +44,18 @@ def _get_pool():
         return None
     # If DSN already contains pgbouncer=true (Neon pooled URL), SimpleConnectionPool is still fine
     # but prefer it; the pool gives us keepalives and avoids per-request handshake.
+    #
+    # keepalives* and connect_timeout are libpq CLIENT-side socket options, not
+    # startup packet parameters, so they are safe behind PgBouncer. Do not add
+    # `options=` here — see module docstring.
     try:
         _pool = psycopg2.pool.SimpleConnectionPool(
             POOL_MIN, POOL_MAX,
             dsn=dsn,
             keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5,
             connect_timeout=5,
-            # Applied per connection by the server, so it covers every statement
-            # without needing a SET on each checkout.
-            options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}",
         )
-        logger.info("DB pool inited (%d-%d, keepalives, statement_timeout=%dms)",
-                    POOL_MIN, POOL_MAX, STATEMENT_TIMEOUT_MS)
+        logger.info("DB pool inited (%d-%d, keepalives)", POOL_MIN, POOL_MAX)
     except Exception as e:
         logger.warning("DB pool init failed, falling back to per-op connect: %s", e)
         _pool = None
@@ -115,7 +124,6 @@ def get_conn():
         try:
             return psycopg2.connect(
                 dsn, keepalives=1, keepalives_idle=30, connect_timeout=5,
-                options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}",
             )
         except psycopg2.Error as e:
             logger.error("DB direct connect attempt %d/3 failed: %s", attempt + 1, e)
@@ -140,16 +148,29 @@ def db_cursor(commit: bool = False, cursor_factory=None) -> Generator[psycopg2.e
         with db_cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("SELECT ...")
             row = cur.fetchone()  # dict
+
+    Applies STATEMENT_TIMEOUT_MS to the request via SET LOCAL: it runs as a
+    normal statement (PgBouncer-safe, unlike startup-packet options), and its
+    scope ends automatically at this request's commit/rollback.
     """
     conn = get_conn()
     try:
         # cursor_factory=None -> default tuple cursor; RealDictCursor -> dict rows
         if cursor_factory is not None:
-            with conn.cursor(cursor_factory=cursor_factory) as cur:
-                yield cur
+            cur = conn.cursor(cursor_factory=cursor_factory)
         else:
-            with conn.cursor() as cur:
-                yield cur
+            cur = conn.cursor()
+        try:
+            if STATEMENT_TIMEOUT_MS > 0:
+                # First statement of the implicit transaction; psycopg2
+                # interpolates the literal client-side.
+                cur.execute("SET LOCAL statement_timeout = %s", (STATEMENT_TIMEOUT_MS,))
+            yield cur
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
         if commit:
             conn.commit()
     except Exception:
