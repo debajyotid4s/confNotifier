@@ -193,7 +193,21 @@ def auth_login(body: AuthLoginIn, request: Request):
     user_agent = request.headers.get("user-agent")
 
     if provider == "google":
-        info = verify_google_id_token(body.id_token)
+        # Distinguish the three failure classes instead of letting all of them
+        # surface as an undiagnosable 500: server misconfiguration (503),
+        # rejected token (401), and a valid token lacking claims (400).
+        try:
+            info = verify_google_id_token(body.id_token)
+        except RuntimeError as e:
+            logger.error("auth_google configuration error: %s", e)
+            raise HTTPException(status_code=503, detail="Google sign-in is not configured")
+        except HTTPException:
+            raise
+        except Exception as e:
+            # google-auth raises ValueError for bad signature/expiry/audience;
+            # log only the type — the message can echo token claims.
+            logger.warning("auth_google token rejected: %s", type(e).__name__)
+            raise HTTPException(status_code=401, detail="Invalid Google token")
         sub = info.get("sub")
         email = info.get("email")
         if not sub or not email:

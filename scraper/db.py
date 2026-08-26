@@ -559,14 +559,6 @@ def load_conference_index() -> ConferenceIndex:
     return index
 
 
-@_safe("load_known_websites", default=set)
-def load_known_websites() -> set:
-    """Canonical URLs of every saved conference."""
-    with db_cursor() as cur:
-        cur.execute("SELECT website FROM conferences")
-        return {normalize_website(row[0]) for row in cur.fetchall() if row[0]}
-
-
 @_safe("get_stored_submission_deadlines", default=dict)
 def get_stored_submission_deadlines(website: str) -> dict:
     """Currently stored submission deadlines for a conference URL.

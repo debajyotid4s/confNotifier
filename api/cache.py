@@ -80,23 +80,13 @@ def _generation(namespace: str) -> int:
         return 0
 
 
-def bump_generation(namespace: str) -> None:
-    """Invalidate every key in a namespace in one command.
-
-    Old entries are not deleted; they simply become unreachable and expire on
-    their own TTL. That is the point: no SCAN, no per-key DELETE.
-    """
-    redis = get_redis()
-    if redis is None:
-        return
-    try:
-        redis.incr(f"gen:{namespace}")
-    except Exception as e:
-        logger.warning("Redis generation bump failed for %s: %s", namespace, e)
-
-
 def invalidate_conference_reads() -> None:
-    """Invalidate all cached conference responses after a scraper write."""
+    """Invalidate all cached conference responses after a scraper write.
+
+    Bumps the generation of every conference namespace in one pipeline: old
+    entries are not deleted, they simply become unreachable and expire on their
+    own TTL — no SCAN, no per-key DELETE.
+    """
     redis = get_redis()
     if redis is None:
         return
@@ -140,17 +130,6 @@ def get_or_set(key: str, producer, ttl: int = 300):
     except Exception as e:
         logger.warning("Redis SETEX %s failed: %s", full_key, e)
     return value
-
-
-def invalidate_exact(key: str) -> None:
-    """Delete one key. UNLINK so a large value is freed off the main thread."""
-    redis = get_redis()
-    if redis is None:
-        return
-    try:
-        redis.unlink(key)
-    except Exception as e:
-        logger.warning("Redis unlink %s failed: %s", key, e)
 
 
 # ── Rate limiting ─────────────────────────────────────────────────────────────
