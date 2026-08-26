@@ -46,16 +46,37 @@ def calendar(month: str = Query(..., pattern=r"^\d{4}-\d{2}$")):
         raise HTTPException(status_code=400, detail="Invalid month, use YYYY-MM")
 
     def fetch():
-        rows = fetch_all_dict(
-            f"""{CONF_SELECT}
-                WHERE (COALESCE(cd_abs.deadline, c.abstract_deadline) >= %s
-                       AND COALESCE(cd_abs.deadline, c.abstract_deadline) < %s)
-                   OR (COALESCE(cd_full.deadline, c.full_paper_deadline) >= %s
-                       AND COALESCE(cd_full.deadline, c.full_paper_deadline) < %s)
-                ORDER BY {SOONEST_DEADLINE} ASC, c.id ASC
-                LIMIT %s""",
-            (start, end, start, end, MAX_CALENDAR_ROWS),
-        )
+        try:
+            rows = fetch_all_dict(
+                f"""{CONF_SELECT}
+                    WHERE (COALESCE(cd_abs.deadline, c.abstract_deadline) >= %s
+                           AND COALESCE(cd_abs.deadline, c.abstract_deadline) < %s)
+                        OR (COALESCE(cd_full.deadline, c.full_paper_deadline) >= %s
+                            AND COALESCE(cd_full.deadline, c.full_paper_deadline) < %s)
+                     ORDER BY {SOONEST_DEADLINE} ASC, c.id ASC
+                    LIMIT %s""",
+                (start, end, start, end, MAX_CALENDAR_ROWS),
+            )
+        except Exception as e:
+            import psycopg2.errors
+
+            if isinstance(e, (psycopg2.errors.UndefinedTable, psycopg2.errors.UndefinedColumn)):
+                logger.warning("calendar: conference_deadlines missing (%s), fallback to wide cols", e)
+                rows = fetch_all_dict(
+                    """SELECT c.id, c.title, c.date_start, c.date_end, c.website, c.city,
+                              c.organizer, c.category, c.description,
+                              c.abstract_deadline AS abstract_deadline,
+                              c.full_paper_deadline AS full_paper_deadline
+                       FROM conferences c
+                       WHERE (c.abstract_deadline >= %s AND c.abstract_deadline < %s)
+                          OR (c.full_paper_deadline >= %s AND c.full_paper_deadline < %s)
+                       ORDER BY LEAST(COALESCE(c.abstract_deadline, DATE '9999-12-31'),
+                                      COALESCE(c.full_paper_deadline, DATE '9999-12-31')) ASC, c.id ASC
+                       LIMIT %s""",
+                    (start, end, start, end, MAX_CALENDAR_ROWS),
+                )
+            else:
+                raise
         return conference_rows_to_out(rows)
 
     return get_or_set(f"cal:{month}", fetch, ttl=CACHE_TTL)
@@ -70,13 +91,34 @@ def upcoming(limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0))
     consumed two slots and was returned twice in the same page.
     """
     def fetch():
-        rows = fetch_all_dict(
-            f"""{CONF_SELECT}
-                WHERE {HAS_OPEN_DEADLINE}
-                ORDER BY {SOONEST_DEADLINE} ASC, c.id ASC
-                LIMIT %s OFFSET %s""",
-            (limit, offset),
-        )
+        try:
+            rows = fetch_all_dict(
+                f"""{CONF_SELECT}
+                    WHERE {HAS_OPEN_DEADLINE}
+                    ORDER BY {SOONEST_DEADLINE} ASC, c.id ASC
+                    LIMIT %s OFFSET %s""",
+                (limit, offset),
+            )
+        except Exception as e:
+            import psycopg2.errors
+
+            if isinstance(e, (psycopg2.errors.UndefinedTable, psycopg2.errors.UndefinedColumn)):
+                logger.warning("upcoming: conference_deadlines missing (%s), fallback", e)
+                rows = fetch_all_dict(
+                    """SELECT c.id, c.title, c.date_start, c.date_end, c.website, c.city,
+                              c.organizer, c.category, c.description,
+                              c.abstract_deadline AS abstract_deadline,
+                              c.full_paper_deadline AS full_paper_deadline
+                       FROM conferences c
+                       WHERE c.abstract_deadline >= CURRENT_DATE
+                          OR c.full_paper_deadline >= CURRENT_DATE
+                       ORDER BY LEAST(COALESCE(c.abstract_deadline, DATE '9999-12-31'),
+                                      COALESCE(c.full_paper_deadline, DATE '9999-12-31')) ASC, c.id ASC
+                       LIMIT %s OFFSET %s""",
+                    (limit, offset),
+                )
+            else:
+                raise
         return conference_rows_to_out(rows)
 
     return get_or_set(f"upcoming:{limit}:{offset}", fetch, ttl=CACHE_TTL)
@@ -86,7 +128,23 @@ def upcoming(limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0))
 def get_conference(conf_id: int, user_id: str | None = Depends(get_optional_user)):
     """One conference by id, including this user's bookmark state when signed in."""
     def fetch():
-        row = fetch_one_dict(f"{CONF_SELECT} WHERE c.id = %s", (conf_id,))
+        try:
+            row = fetch_one_dict(f"{CONF_SELECT} WHERE c.id = %s", (conf_id,))
+        except Exception as e:
+            import psycopg2.errors
+
+            if isinstance(e, (psycopg2.errors.UndefinedTable, psycopg2.errors.UndefinedColumn)):
+                logger.warning("get_conference: conference_deadlines missing, fallback for %s", conf_id)
+                row = fetch_one_dict(
+                    """SELECT c.id, c.title, c.date_start, c.date_end, c.website, c.city,
+                              c.organizer, c.category, c.description,
+                              c.abstract_deadline AS abstract_deadline,
+                              c.full_paper_deadline AS full_paper_deadline
+                       FROM conferences c WHERE c.id = %s""",
+                    (conf_id,),
+                )
+            else:
+                raise
         if not row:
             raise HTTPException(status_code=404, detail="Not found")
         return conference_row_to_out(row, date.today())
