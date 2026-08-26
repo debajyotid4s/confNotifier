@@ -82,7 +82,7 @@ Two layers (`scraper/dedup.py`):
 
 - One query per request: the conference SELECT LEFT JOINs the normalized deadline child table twice (abstract / full paper) with wide-column fallback expressed once in SQL — previously 2–3 round-trips per request.
 - Cache invalidation by **generation counters**: bumping one integer supersedes a whole cache namespace, replacing per-key SCAN-and-delete walks.
-- Connection pool with server-side `statement_timeout` (default 8s, tunable) so a slow query cannot pin pooled connections.
+- Connection pool with a server-side statement timeout (default 8s, `DB_STATEMENT_TIMEOUT_MS`) applied per request via `SET LOCAL` — deliberately *not* a startup-packet parameter, which PgBouncer rejects; a slow query can no longer pin pooled connections.
 - Partial indexes on the exact predicates the hot queries use (deadline ranges, unnotified rows, soft-deleted-free user lookups).
 - gzip on JSON responses; per-user bookmark state layered onto a shared cached payload.
 
