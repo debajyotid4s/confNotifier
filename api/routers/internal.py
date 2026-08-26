@@ -106,7 +106,7 @@ def _mark_sent(key: str, ttl: int) -> None:
 
         redis = get_redis()
         if redis:
-            redis.setex(key, ttl, "1")
+            redis.set(key, "1", ex=ttl)
     except Exception:
         pass
 
