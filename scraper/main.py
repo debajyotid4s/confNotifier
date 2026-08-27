@@ -212,8 +212,15 @@ def _discover_candidates(playwright, stats: RunStats) -> list[str]:
     """Collect candidate URLs from every discovery source."""
     candidates: list[str] = []
 
+    def _on_rejected(url, anchor_text):
+        try:
+            from data_collection.collector import record_unconfirmed
+            record_unconfirmed(url, reason="regex_rejected", anchor_text=anchor_text)
+        except Exception:
+            pass
+
     for name, run_source in (
-        ("homepage_links", lambda: homepage_links.run(playwright=playwright)),
+        ("homepage_links", lambda: homepage_links.run(playwright=playwright, on_rejected=_on_rejected)),
         ("special", special.run),
     ):
         try:
@@ -327,15 +334,30 @@ def _process_candidate(url: str, playwright, index: ConferenceIndex,
         if daily_quota_exhausted():
             stats.quota_exhausted = True
         logger.warning("Extraction failed for: %s", url)
+        try:
+            from data_collection.collector import record_unconfirmed
+            record_unconfirmed(url, reason="fetch_failed")
+        except Exception:
+            pass
         return url, Outcome.FAILED_EXTRACTION
 
     if not result.get("is_conference", False):
         logger.info("Not a conference: %s", url)
+        try:
+            from data_collection.collector import record_unconfirmed
+            record_unconfirmed(url, reason="not_conference", page_title=result.get("title"))
+        except Exception:
+            pass
         return url, Outcome.NOT_CONFERENCE
 
     confidence = result.get("confidence") or 0
     if confidence < MIN_CONFIDENCE:
         logger.warning("Low confidence %.2f for %s", confidence, url)
+        try:
+            from data_collection.collector import record_unconfirmed
+            record_unconfirmed(url, reason="low_confidence", page_title=result.get("title"))
+        except Exception:
+            pass
         return url, Outcome.LOW_CONFIDENCE
 
     if _is_conference_in_past(result):
@@ -400,6 +422,11 @@ def _save_and_notify(url: str, result: dict, index: ConferenceIndex,
 
     logger.info("New conference saved: %s", result.get("title"))
     stats.bump("inserted")
+    try:
+        from data_collection.collector import record_confirmed
+        record_confirmed(url, source="scraper_daily", page_title=result.get("title"))
+    except Exception:
+        pass
 
     if not has_usable_content(result):
         stats.bump("tba")
