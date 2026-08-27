@@ -177,8 +177,13 @@ def _load_domain(domain: str, cached, playwright):
 
 # ── Link extraction ───────────────────────────────────────────────────────────
 
-def _iter_candidate_links(soup, base_url: str):
-    """Yield absolute URLs from anchors that classify as conference links."""
+def _iter_candidate_links(soup, base_url: str, on_rejected=None):
+    """Yield absolute URLs from anchors that classify as conference links.
+
+    `on_rejected(url, anchor_text)`, when given, is called for every anchor
+    classify_link() rejects. Optional and side-effect-only — existing
+    callers that don't pass it see no behavior change at all.
+    """
     for anchor in soup.find_all("a", href=True):
         href = anchor["href"].strip()
         if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
@@ -187,9 +192,15 @@ def _iter_candidate_links(soup, base_url: str):
         accepted, reason = classify_link(full_url)
         if accepted:
             yield full_url, reason
+        elif on_rejected is not None:
+            anchor_text = anchor.get_text(strip=True)[:200]
+            try:
+                on_rejected(full_url, anchor_text)
+            except Exception:
+                pass  # collection must never affect discovery
 
 
-def run(playwright: PlaywrightManager = None) -> list[str]:
+def run(playwright: PlaywrightManager = None, on_rejected=None) -> list[str]:
     """Scan every university homepage and return newly discovered candidates."""
     domains = _load_domains()
     strategies = db.load_domain_strategies()
@@ -219,7 +230,7 @@ def run(playwright: PlaywrightManager = None) -> list[str]:
             logger.info("%s: loaded via %s (%s)", domain, tier, loaded_url)
 
         matched = 0
-        for full_url, reason in _iter_candidate_links(soup, loaded_url):
+        for full_url, reason in _iter_candidate_links(soup, loaded_url, on_rejected=on_rejected):
             matched += 1
             if full_url in known:
                 continue
