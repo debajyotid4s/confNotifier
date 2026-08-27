@@ -1,0 +1,24 @@
+name: keep-warm
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"  # Render free sleeps after ~15 min; ping every 10 keeps it warm (GH jitter safe)
+  workflow_dispatch: {}
+
+concurrency:
+  group: keep-warm
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ping health
+        run: |
+          set -e
+          for url in "https://confnotifier.onrender.com/health" "https://confnotifier.onrender.com/conferences/upcoming?limit=1"; do
+            code=$(curl -fsS -m 15 -o /tmp/out.json -w "%{http_code}" "$url" || echo "000")
+            echo "$url -> $code $(wc -c </tmp/out.json)B"
+            if [ "$code" != "200" ]; then echo "::warning ::$url returned $code"; fi
+          done

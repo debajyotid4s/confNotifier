@@ -26,14 +26,30 @@ object NetworkModule {
             val req = if (!token.isNullOrBlank()) chain.request().newBuilder().addHeader("Authorization", "Bearer $token").build() else chain.request()
             chain.proceed(req)
         }
+        // Cold-start resilience: Render free sleeps after ~15 min; wake is 30-50s.
+        // Retry once on SocketTimeout for POST /auth/login only — that endpoint
+        // is safe to retry (server is idempotent on google_subject_id) and is
+        // exactly where users see "first fails, second succeeds".
+        val coldStartRetry = Interceptor { chain ->
+            val req = chain.request()
+            val isAuthLogin = req.method == "POST" && req.url.encodedPath.endsWith("/auth/login")
+            try {
+                chain.proceed(req)
+            } catch (e: java.net.SocketTimeoutException) {
+                if (isAuthLogin && req.header("X-Retry") == null) {
+                    chain.proceed(req.newBuilder().header("X-Retry", "1").build())
+                } else throw e
+            }
+        }
         val logging = HttpLoggingInterceptor().apply {
             level = if (com.call4paper.app.BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BODY else HttpLoggingInterceptor.Level.NONE
         }
         return OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .writeTimeout(15, TimeUnit.SECONDS)
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
             .addInterceptor(authInterceptor)
+            .addInterceptor(coldStartRetry)
             .addInterceptor(logging)
             .build()
     }
