@@ -1,19 +1,15 @@
-"""scraper/extractor.py — thin facade.
-
-All logic lives in scraper/extraction/* (<150 lines each). This shim keeps
-`from scraper.extractor import extract` and `from scraper.extractor import _call_gemini`
-working with zero caller changes.
-"""
+"""scraper/extraction — package facade."""
 
 from scraper.extraction.client import (  # noqa: F401
     DEFAULT_MAX_TOKENS,
     MAX_ATTEMPTS_PER_KEY,
     MODEL,
-    _call_gemini,
+    _is_transient,
     call_gemini,
     daily_quota_exhausted,
     total_requests_today,
 )
+from scraper.extraction.client import call_gemini as _call_gemini  # noqa: F401 — legacy alias for change_detector
 from scraper.extraction.core import MAX_TEXT_CHARS, MIN_PAGE_TEXT_CHARS, extract, extract_conferences  # noqa: F401
 from scraper.extraction.json_repair import repair_json  # noqa: F401
 from scraper.extraction.rate_limiter import GoogleRateLimiter  # noqa: F401
