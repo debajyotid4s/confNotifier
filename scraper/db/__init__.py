@@ -15,7 +15,6 @@ from scraper.db.connection import (  # noqa: F401
     normalize_website,
 )
 from scraper.db.conferences import (  # noqa: F401
-    _BASE_COLUMNS,
     get_stored_submission_deadlines,
     load_conference_index,
     save_conference,

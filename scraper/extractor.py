@@ -5,16 +5,8 @@ All logic lives in scraper/extraction/* (<150 lines each). This shim keeps
 working with zero caller changes.
 """
 
-from scraper.extraction.client import (  # noqa: F401
-    DEFAULT_MAX_TOKENS,
-    MAX_ATTEMPTS_PER_KEY,
-    MODEL,
-    _call_gemini,
-    call_gemini,
-    daily_quota_exhausted,
-    total_requests_today,
-)
-from scraper.extraction.core import MAX_TEXT_CHARS, MIN_PAGE_TEXT_CHARS, extract, extract_conferences  # noqa: F401
+from scraper.extraction.client import _call_gemini, call_gemini, daily_quota_exhausted, total_requests_today  # noqa: F401
+from scraper.extraction.core import extract, extract_conferences  # noqa: F401
 from scraper.extraction.json_repair import repair_json  # noqa: F401
 from scraper.extraction.rate_limiter import GoogleRateLimiter  # noqa: F401
 

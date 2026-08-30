@@ -1,14 +1,5 @@
 """Extraction contract: what we ask Gemini for, and what we accept back.
-
-Three responsibilities:
-  - the JSON schema and system prompt sent to the model
-  - SQL fragment builders so deadline column names live in exactly one place
-  - `normalize_extraction()`, which flattens and *sanitises* a raw model reply
-
-Sanitising matters: the model can return `2027-02-30`, `"TBA"`, a deadline after
-the conference, or a date from 2019. Rejecting those here keeps malformed values
-out of the DATE columns — an unparseable date used to fail the INSERT, which the
-pipeline classified as a transient DB error and retried forever.
+Normalizes raw model replies and builds SQL fragments for deadline columns.
 """
 
 import logging

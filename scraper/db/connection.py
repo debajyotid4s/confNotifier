@@ -4,7 +4,6 @@ import logging
 import os
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
 
 import psycopg2
 

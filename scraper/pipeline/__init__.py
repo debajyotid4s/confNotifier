@@ -1,5 +1,5 @@
-"""scraper/pipeline — facade re-export for backward compatibility."""
+"""scraper/pipeline — internal package, no public re-export.
 
-from scraper.pipeline.outcomes import Outcome, _SKIPPED, _TERMINAL_STATUS, MIN_CONFIDENCE, NOTIFY_WINDOW_DAYS, STATUS_FLUSH_EVERY  # noqa: F401
-from scraper.pipeline.runner import run  # noqa: F401
-from scraper.pipeline.stats import RunStats  # noqa: F401
+Import directly: `from scraper.pipeline.runner import run`,
+`from scraper.pipeline.outcomes import Outcome`.
+"""
