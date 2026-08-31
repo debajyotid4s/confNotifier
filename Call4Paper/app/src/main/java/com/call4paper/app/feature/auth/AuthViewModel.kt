@@ -50,6 +50,7 @@ class AuthViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(AuthUiState(isLoggedIn = false))
     val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()
     private var resendJob: Job? = null
+    private var googleJob: Job? = null
 
     init {
         Log.d(TAG, "init: currentUser=${repo.currentUser?.email} uid=${repo.currentUser?.uid}")
@@ -211,8 +212,8 @@ class AuthViewModel @Inject constructor(
     }
 
     fun startGoogleSignIn(context: android.content.Context, onSuccess: () -> Unit) {
-        if (_uiState.value.isLoading) return
-        viewModelScope.launch {
+        if (googleJob?.isActive == true) return
+        googleJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
             val token = com.call4paper.app.feature.auth.getGoogleIdToken(context)
             if (token == null) {
@@ -240,7 +241,8 @@ class AuthViewModel @Inject constructor(
     }
 
     fun signInWithGoogle(idToken: String, onSuccess: () -> Unit) {
-        viewModelScope.launch {
+        if (googleJob?.isActive == true) return
+        googleJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
             try {
                 performSession(SessionInfo("google", idToken))
