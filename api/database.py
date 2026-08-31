@@ -172,75 +172,116 @@ def get_conn():
 def db_cursor(commit: bool = False, cursor_factory=None) -> Generator[psycopg2.extensions.cursor, None, None]:
     """Yield a cursor with automatic commit/rollback and connection return.
 
-    Usage:
-        with db_cursor() as cur:
-            cur.execute("SELECT ...")
-            row = cur.fetchone()
-        # commit=False by default — read-only
-
-        with db_cursor(commit=True) as cur:
-            cur.execute("INSERT ...")
-
-        with db_cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT ...")
-            row = cur.fetchone()  # dict
-
-    Applies STATEMENT_TIMEOUT_MS to the request via SET LOCAL: it runs as a
-    normal statement (PgBouncer-safe, unlike startup-packet options), and its
-    scope ends automatically at this request's commit/rollback.
+    Retries once on dead pooled connections (Neon idle kill) without
+    destroying any data: the dead connection is discarded (close=True) and a
+    fresh checkout is tried. This is the only place that retries — callers
+    like `fetch_one` stay simple, and no `DELETE`/`UPDATE` is ever retried
+    blindly (only the `SELECT 1` liveness probe and the `SET LOCAL` guard).
     """
-    conn = get_conn()
-    cur = None
-    try:
-        # cursor_factory=None -> default tuple cursor; RealDictCursor -> dict rows
-        if cursor_factory is not None:
-            cur = conn.cursor(cursor_factory=cursor_factory)
-        else:
-            cur = conn.cursor()
-        if STATEMENT_TIMEOUT_MS > 0:
-            try:
-                cur.execute("SET LOCAL statement_timeout = %s", (STATEMENT_TIMEOUT_MS,))
-            except psycopg2.Error as e:
-                # SET LOCAL requires a transaction block; on some pooler
-                # configs the implicit transaction hasn't started yet and the
-                # cursor is left in an error state. Roll back and replace the
-                # cursor so the actual query is not executed on a closed/failed
-                # cursor (which caused `cursor already closed` and health 503).
-                logger.debug("SET LOCAL failed (%s): %s — retrying without timeout", type(e).__name__, e)
+    last_exc = None
+    for attempt in range(2):
+        conn = None
+        cur = None
+        try:
+            conn = get_conn()
+            if cursor_factory is not None:
+                cur = conn.cursor(cursor_factory=cursor_factory)
+            else:
+                cur = conn.cursor()
+            if STATEMENT_TIMEOUT_MS > 0:
                 try:
-                    conn.rollback()
-                except Exception:
-                    pass
+                    cur.execute("SET LOCAL statement_timeout = %s", (STATEMENT_TIMEOUT_MS,))
+                except psycopg2.Error as e:
+                    # SET LOCAL requires a transaction block; on some pooler
+                    # configs the implicit transaction hasn't started yet.
+                    # Roll back the failed SET and replace the cursor so the
+                    # real query never runs on a broken cursor.
+                    logger.debug("SET LOCAL failed (%s): %s — continuing without timeout", type(e).__name__, e)
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    try:
+                        cur.close()
+                    except Exception:
+                        pass
+                    if cursor_factory is not None:
+                        cur = conn.cursor(cursor_factory=cursor_factory)
+                    else:
+                        cur = conn.cursor()
+            try:
+                yield cur
+            finally:
                 try:
                     cur.close()
                 except Exception:
                     pass
-                if cursor_factory is not None:
-                    cur = conn.cursor(cursor_factory=cursor_factory)
-                else:
-                    cur = conn.cursor()
-                # Do not retry SET here — the timeout is a best-effort guard,
-                # not worth a second failure that could leave the cursor broken.
-        try:
-            yield cur
-        finally:
+            if commit:
+                conn.commit()
+            # Success — break retry loop (the `yield` completed without exception)
+            break
+        except psycopg2.OperationalError as e:
+            last_exc = e
+            if attempt == 0 and _is_dead_connection_error(e):
+                logger.warning("db_cursor: dead pooled connection (%s), retrying with fresh checkout", e)
+                # Discard the dead pooled connection, don't return it to the pool
+                if conn is not None:
+                    try:
+                        if isinstance(conn, _PooledConnection):
+                            conn._pool.putconn(conn._conn, close=True)
+                            conn = None
+                        else:
+                            conn.close()
+                            conn = None
+                    except Exception:
+                        pass
+                    # Prevent outer finally from returning it again
+                    try:
+                        if cur is not None:
+                            cur.close()
+                    except Exception:
+                        pass
+                # Do not call conn.close() in finally for this attempt
+                # (already discarded), so null it out before finally
+                if conn is not None:
+                    try:
+                        # Ensure the dead conn is not returned as healthy
+                        if isinstance(conn, _PooledConnection):
+                            conn._pool.putconn(conn._conn, close=True)
+                        else:
+                            conn.close()
+                    except Exception:
+                        pass
+                    conn = None
+                continue
+            # Not a dead-conn error or second attempt — re-raise
             try:
-                cur.close()
+                if conn is not None:
+                    conn.rollback()
             except Exception:
                 pass
-        if commit:
-            conn.commit()
-    except Exception:
-        try:
-            conn.rollback()
+            raise
         except Exception:
-            pass
-        raise
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+            try:
+                if conn is not None:
+                    conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        # If we broke from the try/yield success path, exit loop
+        # (the `break` above already exited, so this is only reached on retry)
+        if last_exc is None:
+            break
+    else:
+        # Loop exhausted without break — re-raise last dead-conn error as 500
+        if last_exc is not None:
+            raise last_exc
 
 
 @contextmanager
