@@ -204,9 +204,10 @@ def auth_login(body: AuthLoginIn, request: Request):
         except HTTPException:
             raise
         except Exception as e:
-            # google-auth raises ValueError for bad signature/expiry/audience;
-            # log only the type — the message can echo token claims.
-            logger.warning("auth_google token rejected: %s", type(e).__name__)
+            # google-auth raises ValueError/MalformedError for bad signature/expiry/audience;
+            # include truncated message for debugging (e.g. "Wrong number of segments")
+            # but don't log the raw token.
+            logger.warning("auth_google token rejected: %s: %s", type(e).__name__, str(e)[:200])
             raise HTTPException(status_code=401, detail="Invalid Google token")
         sub = info.get("sub")
         email = info.get("email")

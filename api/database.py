@@ -154,26 +154,38 @@ def db_cursor(commit: bool = False, cursor_factory=None) -> Generator[psycopg2.e
     scope ends automatically at this request's commit/rollback.
     """
     conn = get_conn()
+    cur = None
     try:
         # cursor_factory=None -> default tuple cursor; RealDictCursor -> dict rows
         if cursor_factory is not None:
             cur = conn.cursor(cursor_factory=cursor_factory)
         else:
             cur = conn.cursor()
-        try:
-            if STATEMENT_TIMEOUT_MS > 0:
+        if STATEMENT_TIMEOUT_MS > 0:
+            try:
+                cur.execute("SET LOCAL statement_timeout = %s", (STATEMENT_TIMEOUT_MS,))
+            except psycopg2.Error as e:
+                # SET LOCAL requires a transaction block; on some pooler
+                # configs the implicit transaction hasn't started yet and the
+                # cursor is left in an error state. Roll back and replace the
+                # cursor so the actual query is not executed on a closed/failed
+                # cursor (which caused `cursor already closed` and health 503).
+                logger.debug("SET LOCAL failed (%s): %s — retrying without timeout", type(e).__name__, e)
                 try:
-                    cur.execute("SET LOCAL statement_timeout = %s", (STATEMENT_TIMEOUT_MS,))
-                except psycopg2.Error as e:
-                    # SET LOCAL requires a transaction block; on some pooler
-                    # configs psycopg2 hasn't yet begun one. Fall back to
-                    # session-level SET (still PgBouncer-safe as a plain query)
-                    # and continue — the request must not fail over a timeout.
-                    logger.debug("SET LOCAL failed (%s), trying SET: %s", type(e).__name__, e)
-                    try:
-                        cur.execute("SET statement_timeout = %s", (STATEMENT_TIMEOUT_MS,))
-                    except Exception as e2:
-                        logger.warning("statement_timeout SET failed: %s", e2)
+                    conn.rollback()
+                except Exception:
+                    pass
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+                if cursor_factory is not None:
+                    cur = conn.cursor(cursor_factory=cursor_factory)
+                else:
+                    cur = conn.cursor()
+                # Do not retry SET here — the timeout is a best-effort guard,
+                # not worth a second failure that could leave the cursor broken.
+        try:
             yield cur
         finally:
             try:
