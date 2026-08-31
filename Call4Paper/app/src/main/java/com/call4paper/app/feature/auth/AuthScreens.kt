@@ -76,7 +76,13 @@ fun LoginScreen(
             onPasswordChange = vm::onPasswordChange,
             onConfirmChange = vm::onConfirmPasswordChange,
             onSubmit = { vm.signIn(onLoggedIn) },
-            onGoogle = { vm.startGoogleSignIn(ctx, onLoggedIn) },
+            onGoogle = {
+                scope.launch {
+                    Log.d(TAG, "LoginScreen: Google tapped")
+                    val token = getGoogleIdToken(ctx)
+                    if (token != null) vm.signInWithGoogle(token, onLoggedIn) else Log.w(TAG, "Google token null")
+                }
+            },
             onSwitch = onNavigateToSignUp,
             switchText = "Don't have an account? Sign up",
             onForgotPassword = { vm.sendPasswordReset() }
@@ -117,7 +123,13 @@ fun SignUpScreen(
             onPasswordChange = vm::onPasswordChange,
             onConfirmChange = vm::onConfirmPasswordChange,
             onSubmit = { vm.signUp(onSignedUp) },
-            onGoogle = { vm.startGoogleSignIn(ctx, onSignedUp) },
+            onGoogle = {
+                scope.launch {
+                    Log.d(TAG, "SignUpScreen: Google tapped")
+                    val token = getGoogleIdToken(ctx)
+                    if (token != null) vm.signInWithGoogle(token, onSignedUp) else Log.w(TAG, "Google token null")
+                }
+            },
             onSwitch = onNavigateToLogin,
             switchText = "Already have an account? Sign in"
         )
