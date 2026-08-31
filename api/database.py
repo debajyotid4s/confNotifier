@@ -95,26 +95,62 @@ class _PooledConnection:
         self.close()
         return False
 
+def _is_dead_connection_error(exc: Exception) -> bool:
+    """True if the error indicates the underlying TCP connection is dead.
+
+    Neon closes idle connections; the `closed` flag may still be 0, but the
+    first real query fails with 'already closed', 'terminat', 'reset' or SSL
+    errors. Those must discard the pooled connection, not return it.
+    """
+    msg = str(exc).lower()
+    return any(s in msg for s in ("already closed", "terminat", "reset by peer", "ssl", "eof", "broken pipe"))
+
+
 def get_conn():
     pool = _get_pool()
     if pool is not None:
         for attempt in range(3):
+            conn = None
             try:
                 conn = pool.getconn()
-                # Fast path: rely on keepalives + rollback-on-close; no per-checkout SELECT 1
-                # If conn is already closed (Neon idle kill), put it away and retry
                 if getattr(conn, "closed", 0) != 0:
+                    raise psycopg2.OperationalError("pooled conn already closed")
+                # Liveness probe — Neon may have killed the TCP session without
+                # setting `closed`; the only reliable test is a real query.
+                try:
+                    cur = conn.cursor()
+                    cur.execute("SELECT 1")
+                    cur.close()
+                    # Clear the implicit transaction from the probe
+                    if conn.get_transaction_status() != psycopg2.extensions.TRANSACTION_STATUS_IDLE:
+                        conn.rollback()
+                except psycopg2.Error as e:
+                    raise psycopg2.OperationalError(f"pooled conn liveness failed: {e}") from e
+                return _PooledConnection(conn, pool)
+            except psycopg2.Error as e:
+                logger.error("DB pool getconn attempt %d/3 failed: %s", attempt + 1, e)
+                if conn is not None:
                     try:
                         pool.putconn(conn, close=True)
                     except Exception:
                         pass
-                    raise psycopg2.OperationalError("pooled conn closed")
-                return _PooledConnection(conn, pool)
-            except psycopg2.Error as e:
-                logger.error("DB pool getconn attempt %d/3 failed: %s", attempt + 1, e)
+                if attempt < 2 and _is_dead_connection_error(e):
+                    time.sleep(0.2)
+                    continue
                 if attempt < 2:
                     time.sleep(0.5)
-        # Pool exists but exhausted — don't bypass max, fail fast
+                    continue
+                # Exhausted or non-retryable
+                pass
+            except Exception as e:
+                logger.error("DB pool getconn attempt %d/3 failed (non-psycopg2): %s", attempt + 1, e)
+                if conn is not None:
+                    try:
+                        pool.putconn(conn, close=True)
+                    except Exception:
+                        pass
+                if attempt < 2:
+                    time.sleep(0.5)
         raise RuntimeError("DB pool exhausted after 3 attempts")
     # Fallback: direct connect only if pool was never initialized (dev without DATABASE_URL or pool init failed)
     dsn = os.environ.get("DATABASE_URL")
