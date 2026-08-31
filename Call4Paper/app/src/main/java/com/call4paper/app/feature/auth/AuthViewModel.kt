@@ -50,7 +50,6 @@ class AuthViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(AuthUiState(isLoggedIn = false))
     val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()
     private var resendJob: Job? = null
-    private var googleJob: Job? = null
 
     init {
         Log.d(TAG, "init: currentUser=${repo.currentUser?.email} uid=${repo.currentUser?.uid}")
@@ -203,46 +202,8 @@ class AuthViewModel @Inject constructor(
     // Sign-in (Google)
     // -------------------------------------------------------------------------
 
-    fun onGoogleTokenUnavailable() {
-        Log.w(TAG, "Google credential unavailable — no account on device or Play Services outdated")
-        _uiState.value = _uiState.value.copy(
-            isLoading = false,
-            errorMessage = "No Google account found on device — add a Google account or update Play Services, then try again"
-        )
-    }
-
-    fun startGoogleSignIn(context: android.content.Context, onSuccess: () -> Unit) {
-        if (googleJob?.isActive == true) return
-        googleJob = viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
-            val token = com.call4paper.app.feature.auth.getGoogleIdToken(context)
-            if (token == null) {
-                onGoogleTokenUnavailable()
-                return@launch
-            }
-            try {
-                performSession(SessionInfo("google", token))
-                _uiState.value = _uiState.value.copy(isLoading = false, isLoggedIn = true)
-                onSuccess()
-            } catch (e: CancellationException) { throw e }
-            catch (e: retrofit2.HttpException) {
-                Log.e(TAG, "startGoogleSignIn HttpException ${e.code()}", e)
-                _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = parseServerError(e))
-            } catch (e: Exception) {
-                Log.e(TAG, "startGoogleSignIn failed: ${e::class.simpleName}: ${e.message}", e)
-                val msg = when (e) {
-                    is java.net.SocketTimeoutException, is java.net.ConnectException, is java.io.IOException ->
-                        "Network timeout — backend is waking up (Render free tier). Try again in 10s. (${e.message?.take(60)})"
-                    else -> e.message?.takeIf { it.isNotBlank() } ?: "Google sign-in failed — try again"
-                }
-                _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = msg)
-            }
-        }
-    }
-
     fun signInWithGoogle(idToken: String, onSuccess: () -> Unit) {
-        if (googleJob?.isActive == true) return
-        googleJob = viewModelScope.launch {
+        viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
             try {
                 performSession(SessionInfo("google", idToken))
@@ -250,16 +211,9 @@ class AuthViewModel @Inject constructor(
                 onSuccess()
             } catch (e: CancellationException) { throw e }
             catch (e: retrofit2.HttpException) {
-                Log.e(TAG, "signInWithGoogle HttpException ${e.code()}", e)
                 _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = parseServerError(e))
             } catch (e: Exception) {
-                Log.e(TAG, "signInWithGoogle failed: ${e::class.simpleName}: ${e.message}", e)
-                val msg = when (e) {
-                    is java.net.SocketTimeoutException, is java.net.ConnectException, is java.io.IOException ->
-                        "Network timeout — backend is waking up (Render free tier). Try again in 10s. (${e.message?.take(60)})"
-                    else -> e.message?.takeIf { it.isNotBlank() } ?: "Google sign-in failed — try again"
-                }
-                _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = msg)
+                _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "Google sign-in failed — try again")
             }
         }
     }
