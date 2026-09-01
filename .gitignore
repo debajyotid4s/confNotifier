@@ -103,4 +103,12 @@ Project_Report.tex
 Call4Paper/C4P_logo_source.png
 Call4Paper/conference_tracker_android_architecture-1.md
 
+# Node.js — scraper-node is under development, keep on separate branch
+node_modules/
+scraper-node/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.scraper-node-env
+
 # ML data collection — code is versioned, dataset lives in Neon (ml_* tables)

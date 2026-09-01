@@ -1,12 +1,8 @@
 """scraper/db/strategies.py — per-domain fetch & path caches."""
 
-import logging
-
 from psycopg2.extras import execute_values
 
 from scraper.db.connection import _safe, db_cursor
-
-logger = logging.getLogger(__name__)
 
 
 @_safe("load_domain_strategies", default=dict)
