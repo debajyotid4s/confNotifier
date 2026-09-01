@@ -1,0 +1,102 @@
+[
+  {
+    "type": "path_probe",
+    "base_url": "https://iccit.org.bd",
+    "candidates": ["/{year}/", "/{year}", "/index.php?year={year}", ""],
+    "probe_years": [2026, 2027],
+    "verify_year_in_content": true,
+    "discover_links": true
+  },
+  {
+    "type": "path_probe",
+    "base_url": "https://qpain.org",
+    "candidates": [""],
+    "probe_years": [2026, 2027],
+    "verify_year_in_content": true,
+    "discover_links": true
+  },
+  {
+    "type": "path_probe",
+    "base_url": "https://becithcon.org",
+    "candidates": ["/{year}/", "/{year}", "/index.php?year={year}", ""],
+    "probe_years": [2026, 2027],
+    "verify_year_in_content": true,
+    "discover_links": true
+  },
+  {
+    "type": "path_probe",
+    "base_url": "https://spicscon.org",
+    "candidates": ["/{year}/", "/{year}", "/index.php?year={year}", ""],
+    "probe_years": [2026, 2027],
+    "verify_year_in_content": true,
+    "discover_links": true
+  },
+  {
+    "type": "path_probe",
+    "base_url": "https://peeiacon.org",
+    "candidates": ["/{year}/", "/{year}", "/index.php?year={year}", ""],
+    "probe_years": [2026, 2027],
+    "verify_year_in_content": true,
+    "discover_links": true
+  },
+  {
+    "type": "path_probe",
+    "base_url": "https://icece.org.bd",
+    "candidates": ["/{year}/", "/{year}", "/index.php?year={year}", ""],
+    "probe_years": [2026, 2027],
+    "verify_year_in_content": true,
+    "discover_links": true
+  },
+  {
+    "type": "path_probe",
+    "base_url": "https://icche-buet.com",
+    "candidates": ["/{year}/", "/{year}", "/index.php?year={year}", ""],
+    "probe_years": [2026, 2027],
+    "verify_year_in_content": true,
+    "discover_links": true
+  },
+  {
+    "name": "SUST Conference Subdomains",
+    "type": "subdomain_probe",
+    "base_domain": "sust.edu",
+    "known_prefixes": ["icerie", "icps", "icap", "icls", "icce", "icme"],
+    "probe_years": [2026, 2027, 2028],
+    "verify_year_in_content": true
+  },
+  {
+    "name": "KUET Conference Subdomains",
+    "type": "subdomain_probe",
+    "base_domain": "kuet.ac.bd",
+    "known_prefixes": ["icmiee", "icmere", "iceab"],
+    "probe_years": [2026, 2027, 2028],
+    "verify_year_in_content": true
+  },
+  {
+    "name": "RUET Conference Subdomains",
+    "type": "subdomain_probe",
+    "base_domain": "ruet.ac.bd",
+    "known_prefixes": ["isee", "iceab", "icaeee"],
+    "probe_years": [2026, 2027, 2028],
+    "verify_year_in_content": true
+  },
+  {
+    "name": "conf.info.bd",
+    "type": "conf_info_bd",
+    "url": "https://conf.info.bd"
+  },
+  {
+    "name": "JU Research Society",
+    "type": "path_probe",
+    "base_url": "https://jurs.info",
+    "candidates": [
+      "/jicirsigc-{year}",
+      "/jicirsigc{year}",
+      "/{year}/",
+      "/{year}",
+      ""
+    ],
+    "probe_years": [2026, 2027, 2028],
+    "verify_year_in_content": true,
+    "discover_links": true
+  }
+]

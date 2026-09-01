@@ -1,11 +1,11 @@
 """scraper/pipeline/stats.py — RunStats counters."""
 
+import logging
 import threading
 
 from scraper.extractor import total_requests_today
 
 from scraper.pipeline.outcomes import Outcome, _SKIPPED
-import logging
 
 logger = logging.getLogger(__name__)
 
