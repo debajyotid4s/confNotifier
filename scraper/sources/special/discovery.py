@@ -25,11 +25,3 @@ class Discovery:
         self._seen.add(key)
         self.candidates.append(url)
         self.rows.append((url, "special", status))
-
-    def claim_untracked(self, url: str) -> None:
-        """Record a candidate without writing it to seen_links.
-
-        Used by root_year, whose freshness is decided against the conferences
-        table so a failed extraction does not permanently block the edition.
-        """
-        self.candidates.append(url)

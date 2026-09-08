@@ -36,10 +36,8 @@ from scraper.db.seen_links import (  # noqa: F401
 )
 from scraper.db.strategies import (  # noqa: F401
     load_domain_strategies,
-    load_special_path_cache,
     save_domain_strategies_bulk,
     save_domain_strategy,
-    save_special_path_cache,
 )
 from scraper.db.telegram import (  # noqa: F401
     ensure_telegram_messages_table,
@@ -60,7 +58,6 @@ __all__ = [
     "load_seen_urls", "load_terminal_urls", "is_url_processed",
     "load_pending_urls", "load_retryable_urls", "increment_retry",
     "load_domain_strategies", "save_domain_strategy", "save_domain_strategies_bulk",
-    "load_special_path_cache", "save_special_path_cache",
     "save_conference", "load_conference_index", "get_stored_submission_deadlines",
     "mark_notified", "mark_notified_with_retry", "mark_past_conferences_notified",
     "mark_verification_done", "get_task_last_run",

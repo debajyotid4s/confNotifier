@@ -21,7 +21,7 @@ A **three-component pipeline** that discovers, extracts, and distributes confere
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     SCRAPER PIPELINE                            │
-│  83 universities + curated sources + certificate transparency    │
+│  72 university homepages + curated sources, one config file     │
 │  → pattern classifier → Playwright → Gemini 2.5 Flash            │
 │  → PostgreSQL (Neon) → Telegram channel + FCM push               │
 └──────────────┬──────────────────────────┬───────────────────────┘
@@ -45,13 +45,20 @@ A **three-component pipeline** that discovers, extracts, and distributes confere
 
 ### How Discovery Works
 
-The scraper runs **5× daily** via GitHub Actions. Candidate URLs come from three sources and pass through one classifier (`scraper/patterns.py`):
+The scraper runs **5× daily** via GitHub Actions. Candidate URLs come from two discovery runners — both driven by the single `config/sources.json` — and pass through one classifier (`scraper/patterns/`):
 
-1. **University Homepage Scanning** — crawls 83 Bangladeshi university domains for outbound links. A link is a candidate only when it carries a *positive* conference signal — an acronym-shaped host label (`icerie.sust.edu`), a known conference acronym, explicit CFP wording ("call for papers"), an event-word+year path (`/conference-2027/`) or acronym+year path (`/jicirsigc-2027`). Negative signals reject the rest: social/publisher hosts, admin path segments (`notice`, `gallery`, `admission`, …), archival wording ("past", "proceedings"), non-HTML assets, and any URL whose newest year is outside `[current−1, current+3]`. Every rejection is logged with its reason.
+1. **University Homepage Scanning** — scans the 72 `regular` university homepages for outbound links. A link is a candidate only when it carries a *positive* conference signal — an acronym-shaped host label (`icerie.sust.edu`), a known conference acronym, explicit CFP wording ("call for papers"), an event-word+year path (`/conference-2027/`) or acronym+year path (`/jicirsigc-2027`). Negative signals reject the rest: social/publisher hosts, admin path segments (`notice`, `gallery`, `admission`, …), archival wording ("past", "proceedings"), non-HTML assets, and any URL whose newest year is outside `[current−1, current+3]`. Every rejection is logged with its reason.
 
-2. **Certificate Transparency Monitoring** — queries CertSpotter (cursor-based, so each run reads only new issuances) with a crt.sh fallback. New TLS certificates catch `icxyz2027.univ.ac.bd` weeks before anything links to it. The same classifier filters hostnames, with an infrastructure-label blocklist (`webmail`, `moodle`, `portal2027`, …). Runs once daily alongside the digest.
+2. **Curated conference sources** — the `path_probe` / `subdomain_probe` / `conf_info_bd` entries: year-templated URL probing (`/{year}/`, `?year=`, …), prefix+year subdomain sweeps for SUST/KUET/RUET prefixes, and the conf.info.bd community table. (Certificate-transparency monitoring via CertSpotter/crt.sh was retired — every source now lives in the unified config.)
 
-3. **Curated Sources** — conference domains that universities never link: year-path probing with a cached winning pattern (`iccit.org.bd/{year}/home/`), landing-page edition-year detection (`qpain.org`), DNS-only subdomain probing for SUST/KUET/RUET prefixes, and the conf.info.bd community table.
+### How the Resolver Stays Current
+
+Static config (`config/sources.json`: base URLs, candidate patterns, cadence — what a human curated) is separate from dynamic state (`source_state` table: `last_confirmed_year`, `working_candidate`, `consecutive_failures` — what the code learned by running). Four behaviours keep edition URLs correct with zero config edits at year rollover:
+
+1. **Self-advancing anchor** — cadenced sources probe from `max(file's last_known_year, confirmed year)`, so the window stays "confirmed edition + one cycle" forever instead of growing from a fixed point.
+2. **Learned pattern first** — the candidate pattern that worked last time is tried first (usually resolving on the first request); a long-working pattern that suddenly fails logs as possible organizer drift, distinct from a source that never resolved cleanly.
+3. **Strong verification** — a year must appear in `<title>` or outnumber the previous year's mentions in the body, so stale pages served at new URLs (or one stray footer mention) don't pass.
+4. **Discovery as drift net** — when known patterns miss, the homepage is crawled for any link carrying the target year, catching URL restructures no static list anticipated. The bare homepage itself is only accepted last, so it can never shadow discovery.
 
 ### How Extraction Works
 
@@ -100,7 +107,7 @@ Two layers (`scraper/dedup.py`):
 
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
-| **Scraper** | Python 3.11, Playwright, BeautifulSoup, curl | 3-tier fetch across 83+ university sites |
+| **Scraper** | Python 3.11, Playwright, BeautifulSoup, curl | 3-tier fetch across 72 university sites |
 | **Classifier** | `scraper/patterns.py` | Single source of truth for "is this a CFP?" |
 | **LLM** | Gemini 2.5 Flash (3-key rotation) | Structured extraction with JSON repair |
 | **Database** | Neon PostgreSQL | Conferences, seen-links state machine, users, devices |
@@ -117,24 +124,26 @@ Two layers (`scraper/dedup.py`):
 
 | Metric | Value |
 |--------|-------|
-| University domains scraped | **83** |
-| Scraper runs per day | **5** (+1 daily digest/cert-transparency job) |
+| University domains scraped | **72** (plus curated conference sources, all in `config/sources.json`) |
+| Scraper runs per day | **5** (+1 daily digest job) |
 | LLM extraction capacity | **60/day** (3 keys × 20 RPD) |
 | Confidence threshold | **≥0.75** |
 | Notification window | **30 days** before deadline |
 | Deadline types tracked | **2** (abstract, full paper — announced; others dropped pre-storage) |
 | Public API rate limit | **60 req/min/IP** (auth: 10/min) |
-| Tests | **196 unit + 26 SQL integration** (Postgres-backed in CI) |
+| Tests | **230 unit** (+29 Postgres-gated SQL integration, run in CI) |
 | Android min / target SDK | **24 / 35** |
 
 ---
 
 ## Architecture Decisions
 
-- **One classifier for all discovery** — homepage anchors and certificate hostnames answer to the same accept/reject rules, so a fix in one place improves both, and every rejection names its reason in the logs.
+- **One classifier for all discovery** — homepage anchors and special-source pages answer to the same accept/reject rules, so a fix in one place improves both, and every rejection names its reason in the logs.
 - **Permanent vs transient validation failures** — a page whose own text contradicts an extraction ("abstract" field labelled "camera ready") can never yield a different answer on retry; those URLs are terminal immediately instead of burning retries.
 - **Identity dedup before extraction** — same-edition-different-URL duplicates are caught by a dict lookup against an in-memory index loaded once per run, not after paying for an LLM call. This replaced a manually-run SQL cleanup script.
-- **Batched DB writes everywhere** — discovery used to open one connection per link (~83 homepages → hundreds of inserts/run); seen-link statuses, domain strategies and cert-transparency candidates now persist in one round-trip each.
+- **Batched DB writes everywhere** — discovery used to open one connection per link (~72 homepages → hundreds of inserts/run); seen-link statuses, domain strategies and source-state rows now persist in one round-trip each.
+- **One config for all discovery** — `config/sources.json` replaced `universities.json` / `special_sources.json` / `specials.json` (all retired and git-ignored); each entry's `type` identity decides how its live URLs are built.
+- **Static config, learned state** — edition math never hardcodes a year: the probe window derives from `max(last_known_year, last_confirmed_year)` at runtime, and the learned `working_candidate` doubles as a drift detector.
 - **Legacy columns retired, not dropped** — `submission_deadline(_2)` were backfilled into the named columns by `db/migration_011` and are no longer read or written; the OR-ing of two column generations (unindexable) is gone. Columns remain until a later release drops them.
 - **Per-operation DB connections in the scraper, pool in the API** — Neon kills idle connections; the scraper's minutes-long phases cannot hold one, while request-serving benefits from pooling + keepalives + statement timeouts.
 - **Fail-open vs fail-closed** — Redis loss degrades caching/rate limiting (fail open) but blocks JWT issuance/revocation (fail closed): a revoked token must never pass because Redis was down.
@@ -152,7 +161,7 @@ pytest tests/
 
 # Full suite including SQL integration tests (needs PostgreSQL 15+)
 createdb conftest
-for f in db/schema_base.sql db/migration.sql api/migration_0*.sql db/migration_011*.sql api/migration_011_perf_indexes.sql; do psql -d conftest -f "$f"; done
+for f in db/schema_base.sql db/migration.sql api/migration_0*.sql db/migration_011*.sql db/migration_012*.sql api/migration_011_perf_indexes.sql; do psql -d conftest -f "$f"; done
 TEST_DATABASE_URL=postgresql://... pytest tests/
 ```
 

@@ -11,22 +11,25 @@ from ..discovery import Discovery
 logger = logging.getLogger(__name__)
 
 
-def _handle_conf_info_bd(source: dict, found: Discovery) -> None:
+def _handle_conf_info_bd(source: dict, found: Discovery, state: dict | None = None, fetch=None) -> bool:
     """Scrape the conference table at conf.info.bd.
 
     Each data row links out to the conference website via <a class="conf-link">.
+    Accepts the unified ``base_url`` key (falls back to legacy ``url``).
+    Aggregator page — no year logic; participates in the shared
+    success/failure contract by reporting reachability.
     """
-    url = source.get("url", "https://conf.info.bd")
+    url = source.get("base_url") or source.get("url") or "https://conf.info.bd"
     logger.info("conf_info_bd: fetching %s", url)
 
     try:
         resp = requests.get(url, timeout=15, headers={"User-Agent": USER_AGENT})
         if resp.status_code != 200:
             logger.error("conf_info_bd: HTTP %d from %s", resp.status_code, url)
-            return
+            return False
     except requests.RequestException as e:
         logger.error("conf_info_bd: request failed for %s: %s", url, e)
-        return
+        return False
 
     soup = BeautifulSoup(resp.text, "lxml")
     before = len(found.candidates)
@@ -41,3 +44,4 @@ def _handle_conf_info_bd(source: dict, found: Discovery) -> None:
         logger.info("conf_info_bd: new URL found: %s", href)
 
     logger.info("conf_info_bd: found %d new candidate(s)", len(found.candidates) - before)
+    return True

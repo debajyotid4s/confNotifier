@@ -61,6 +61,16 @@ CREATE TABLE IF NOT EXISTS special_path_cache (
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Learned per-source resolver state: the dynamic half of sources.json
+-- resolution (see db/migration_012_source_state.sql).
+CREATE TABLE IF NOT EXISTS source_state (
+    name                 TEXT PRIMARY KEY,
+    last_confirmed_year  INT,
+    working_candidate    TEXT,
+    consecutive_failures INT NOT NULL DEFAULT 0,
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS certspotter_cursor (
     domain  TEXT PRIMARY KEY,
     last_id BIGINT NOT NULL DEFAULT 0

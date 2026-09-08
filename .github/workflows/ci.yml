@@ -68,6 +68,7 @@ jobs:
                    api/migration_009_soft_delete.sql \
                    api/migration_010_soft_delete_index.sql \
                    db/migration_011_retire_legacy_deadlines.sql \
+                   db/migration_012_source_state.sql \
                    api/migration_011_perf_indexes.sql; do
             echo "== $f"
             psql_run "$f"

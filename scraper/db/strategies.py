@@ -1,4 +1,4 @@
-"""scraper/db/strategies.py — per-domain fetch & path caches."""
+"""scraper/db/strategies.py — per-domain fetch tier cache."""
 
 from psycopg2.extras import execute_values
 
@@ -41,23 +41,3 @@ def save_domain_strategies_bulk(rows) -> int:
             template="(%s, %s, %s)",
         )
     return len(values)
-
-
-@_safe("load_special_path_cache", default=dict)
-def load_special_path_cache() -> dict:
-    """Cached URL pattern per special source: {base_url: (year, path_pattern)}."""
-    with db_cursor() as cur:
-        cur.execute("SELECT base_url, year, path_pattern FROM special_path_cache")
-        return {row[0]: (row[1], row[2]) for row in cur.fetchall()}
-
-
-@_safe("save_special_path_cache")
-def save_special_path_cache(base_url: str, year: int, path_pattern: str) -> None:
-    """Remember the path shape that resolved for a special source."""
-    with db_cursor(commit=True) as cur:
-        cur.execute(
-            "INSERT INTO special_path_cache (base_url, year, path_pattern) VALUES (%s, %s, %s) "
-            "ON CONFLICT (base_url) DO UPDATE SET year = EXCLUDED.year, "
-            "path_pattern = EXCLUDED.path_pattern, updated_at = NOW()",
-            (base_url, year, path_pattern),
-        )

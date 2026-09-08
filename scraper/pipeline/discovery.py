@@ -1,4 +1,11 @@
-"""scraper/pipeline/discovery.py — Phase 1-2: discovery and requeue."""
+"""scraper/pipeline/discovery.py — Phase 1-2: discovery and requeue.
+
+Both discovery runners read the single ``config/sources.json``:
+``homepage_links`` scans every ``regular`` homepage, ``special`` dispatches
+on ``path_probe`` / ``subdomain_probe`` / ``conf_info_bd`` and builds the
+live URL(s) for the current year. Certificate-transparency monitoring
+(crt.sh / CertSpotter) was retired.
+"""
 
 import logging
 

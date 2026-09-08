@@ -111,4 +111,10 @@ yarn-debug.log*
 yarn-error.log*
 .scraper-node-env
 
+# Superseded source configs — unified into config/sources.json (single source
+# of truth). Kept on disk locally for reference, never committed.
+config/universities.json
+config/special_sources.json
+config/specials.json
+
 # ML data collection — code is versioned, dataset lives in Neon (ml_* tables)

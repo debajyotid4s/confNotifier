@@ -1,0 +1,441 @@
+[
+  {
+    "type": "regular",
+    "base_url": "https://du.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://ru.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://cu.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://juniv.edu"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://iu.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://ku.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://sust.edu"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://buet.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://bau.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://bup.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://cuet.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://ruet.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://kuet.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://duet.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://hstu.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://mbstu.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://pstu.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://prstu.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://nstu.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://gstu.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://cvasu.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://sau.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://hau.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://bdu.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://cstu.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://ustc.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://aust.edu"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://aiub.edu"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://ewubd.edu"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://northsouth.edu"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://iub.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://bracu.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://daffodilvarsity.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://eub.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://iubat.edu"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://uiu.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://ulab.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://uap-bd.edu"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://iiuc.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://green.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://gub.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://primeasia.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://primeuniversity.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://seu.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://southern.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://cityuniversity.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://baiust.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://bauet.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://baust.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://just.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://kau.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://kkbau.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://kyau.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://neub.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://puc.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://rmu.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://rub.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://uob.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://uoda.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://uttarauniversity.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://asian-university.org"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://metrouni.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://brur.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://bsmmu.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://bu.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://butex.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://cou.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://jkkniu.edu.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://jnu.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://mist.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://nub.ac.bd"
+  },
+  {
+    "type": "regular",
+    "base_url": "https://pust.ac.bd"
+  },
+  {
+    "type": "path_probe",
+    "base_url": "https://iccit.org.bd",
+    "candidates": ["/{year}/", "/{year}", "/index.php?year={year}", ""],
+    "probe_years": [2026, 2027],
+    "verify_year_in_content": true,
+    "discover_links": true,
+    "name": "ICCIT"
+  },
+  {
+    "type": "path_probe",
+    "base_url": "https://qpain.org",
+    "candidates": [""],
+    "probe_years": [2026, 2027],
+    "verify_year_in_content": true,
+    "discover_links": true,
+    "name": "QPAIN"
+  },
+  {
+    "type": "path_probe",
+    "base_url": "https://becithcon.org",
+    "candidates": ["/{year}/", "/{year}", "/index.php?year={year}", ""],
+    "probe_years": [2026, 2027],
+    "verify_year_in_content": true,
+    "discover_links": true,
+    "name": "BECITHCON"
+  },
+  {
+    "type": "path_probe",
+    "base_url": "https://spicscon.org",
+    "candidates": ["/{year}/", "/{year}", "/index.php?year={year}", ""],
+    "probe_years": [2026, 2027],
+    "verify_year_in_content": true,
+    "discover_links": true,
+    "name": "SPICSCON"
+  },
+  {
+    "type": "path_probe",
+    "base_url": "https://peeiacon.org",
+    "candidates": ["/{year}/", "/{year}", "/index.php?year={year}", ""],
+    "probe_years": [2026, 2027],
+    "verify_year_in_content": true,
+    "discover_links": true,
+    "name": "PEEIACON"
+  },
+  {
+    "type": "path_probe",
+    "base_url": "https://icece.org.bd",
+    "candidates": ["/{year}/", "/{year}", "/index.php?year={year}", ""],
+    "probe_years": [2026, 2027],
+    "verify_year_in_content": true,
+    "discover_links": true,
+    "name": "ICECE"
+  },
+  {
+    "type": "path_probe",
+    "base_url": "https://icche-buet.com",
+    "candidates": ["/{year}/", "/{year}", "/index.php?year={year}", ""],
+    "probe_years": [2026, 2027],
+    "verify_year_in_content": true,
+    "discover_links": true,
+    "name": "ICCHE-BUET"
+  },
+  {
+    "name": "SUST Conference Subdomains",
+    "type": "subdomain_probe",
+    "base_domain": "sust.edu",
+    "known_prefixes": ["icerie", "icps", "icap", "icls", "icce", "icme"],
+    "probe_years": [2026, 2027, 2028],
+    "verify_year_in_content": true
+  },
+  {
+    "name": "KUET Conference Subdomains",
+    "type": "subdomain_probe",
+    "base_domain": "kuet.ac.bd",
+    "known_prefixes": ["icmiee", "icmere"],
+    "probe_years": [2026, 2027, 2028],
+    "verify_year_in_content": true
+  },
+  {
+    "name": "RUET Conference Subdomains",
+    "type": "subdomain_probe",
+    "base_domain": "ruet.ac.bd",
+    "known_prefixes": ["isee", "icaeee"],
+    "probe_years": [2026, 2027, 2028],
+    "verify_year_in_content": true
+  },
+  {
+    "name": "JU Research Society",
+    "type": "path_probe",
+    "base_url": "https://jurs.info",
+    "candidates": [
+      "/jicirsigc-{year}",
+      "/jicirsigc{year}",
+      "/{year}/",
+      "/{year}",
+      ""
+    ],
+    "probe_years": [2026, 2027, 2028],
+    "verify_year_in_content": true,
+    "discover_links": true
+  },
+  {
+    "name": "ICCESD (KUET Civil Engg.)",
+    "type": "path_probe",
+    "base_url": "https://iccesd.kuet.ac.bd",
+    "cadence": "biennial",
+    "last_known_year": 2026,
+    "candidates": [""],
+    "verify_year_in_content": true,
+    "discover_links": true
+  },
+  {
+    "name": "IEEE BD APS-MTTS (MARSCON)",
+    "type": "path_probe",
+    "base_url": "https://r10.ieee.org/bd-aps-mtts/marscon",
+    "candidates": [""],
+    "probe_years": [2026, 2027],
+    "verify_year_in_content": true,
+    "discover_links": true
+  },
+  {
+    "name": "ICCA (AIUB)",
+    "type": "path_probe",
+    "base_url": "https://icca.aiub.edu",
+    "cadence": "biennial",
+    "last_known_year": 2026,
+    "candidates": [""],
+    "verify_year_in_content": true,
+    "discover_links": true
+  },
+  {
+    "name": "NSysS (BUET CSE)",
+    "type": "path_probe",
+    "base_url": "https://cse.buet.ac.bd",
+    "cadence": "annual",
+    "last_known_year": 2026,
+    "candidates": ["/nsyss{year}/"],
+    "verify_year_in_content": true,
+    "discover_links": true
+  },
+  {
+    "name": "ICECTE (RUET)",
+    "type": "path_probe",
+    "base_url": "https://icecte.ruet.ac.bd",
+    "cadence": "biennial",
+    "last_known_year": 2026,
+    "candidates": [""],
+    "verify_year_in_content": true,
+    "discover_links": true
+  }
+]

@@ -12,7 +12,13 @@ logger = logging.getLogger(__name__)
 
 
 def parse_root_year_tag(url: str) -> tuple[str, int | None]:
-    """Split a `root_year:{year}:{url}` candidate emitted by special sources."""
+    """Split a legacy ``root_year:{year}:{url}`` candidate.
+
+    The ``root_year`` special-source type was retired in favour of
+    ``path_probe`` (bare ``base_url`` + ``verify_year_in_content``). This
+    parser stays so pending URLs written by older runs still resolve; no new
+    code emits the tag.
+    """
     if url.startswith("root_year:"):
         _, year, real_url = url.split(":", 2)
         return real_url, int(year)

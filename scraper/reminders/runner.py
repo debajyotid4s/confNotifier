@@ -7,7 +7,6 @@ import sys
 from scraper.notifier import send_plain_message
 from scraper.reminders.queries import _fetch_entries
 from scraper.reminders.render import _render
-from scraper.sources.crt_monitor import run as crt_monitor_run
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,11 +39,7 @@ def main():
     if not (os.environ.get("TELEGRAM_CHANNEL_ID") or os.environ.get("TELEGRAM_CHANNEL_LINK")):
         logger.critical("Missing TELEGRAM_CHANNEL_ID or TELEGRAM_CHANNEL_LINK")
         sys.exit(1)
-    try:
-        discovered = crt_monitor_run()
-        if discovered:
-            logger.info("crt_monitor: discovered %d new candidate(s)", len(discovered))
-    except Exception as e:
-        logger.error("crt_monitor failed: %s", e)
+    # Discovery (CT log / certspotter monitoring) was retired: all sources now
+    # come from the unified config/sources.json via the main pipeline run.
     send_deadline_reminders()
     logger.info("=== Daily Reminder Run Complete ===")

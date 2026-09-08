@@ -63,7 +63,7 @@ NON_HTML_EXTENSIONS = frozenset({
     ".exe", ".msi", ".deb", ".rpm", ".dmg", ".apk", ".jar",
 })
 
-#: Host labels that are infrastructure, never a conference (used by crt_monitor).
+#: Host labels that are infrastructure, never a conference (used by hostname filters).
 INFRA_LABELS = frozenset({
     "autodiscover", "autoconfig", "cpanel", "whm", "webdisk", "webmail",
     "cpcontacts", "cpcalendars", "mail", "smtp", "imap", "pop", "mx",
