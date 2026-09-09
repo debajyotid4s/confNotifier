@@ -6,3 +6,6 @@ USER_AGENT = (
 PROBE_TIMEOUT = 10
 #: Minimum body size for a probe to count as a real page.
 MIN_CONTENT = 500
+#: Lower bar for the curl tier: small SPA shells are worth verifying, and the
+#: year check (not size) is what accepts or rejects them.
+CURL_MIN_CONTENT = 200

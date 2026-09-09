@@ -5,6 +5,7 @@ strong verification, and discovery-as-drift-net. All unit-level (no DB, no netwo
 from datetime import datetime
 
 from scraper.sources.special.discovery import Discovery
+from scraper.sources.special.handlers.conf_info_bd import _handle_conf_info_bd
 from scraper.sources.special.handlers.path_probe import _handle_path_probe
 from scraper.sources.special.handlers.subdomain import _handle_subdomain_probe
 from scraper.sources.special.probe import verify_year_is_current
@@ -69,7 +70,8 @@ class TestLearnedCandidate:
 
         state = {"working_candidate": "/{year}"}
         found = Discovery(set())
-        assert _handle_path_probe(source, found, state, fetch) is True
+        ok, outcome = _handle_path_probe(source, found, state, fetch)
+        assert (ok, outcome) == (True, "confirmed")
         # Learned pattern × newest year FIRST — one request.
         assert calls[0] == "https://ex.org/2027"
         assert state["working_candidate"] == "/{year}"
@@ -116,7 +118,8 @@ class TestDiscoveryTier:
 
         state: dict = {}
         found = Discovery(set())
-        assert _handle_path_probe(source, found, state, fetch) is True
+        ok, outcome = _handle_path_probe(source, found, state, fetch)
+        assert (ok, outcome) == (True, "confirmed")
         assert "https://ex.org/brand-new-2027/xyz" in found.candidates
         assert state["last_confirmed_year"] == 2027
 
@@ -128,7 +131,7 @@ class TestDiscoveryTier:
         }
         state = {"working_candidate": "/{year}/"}
         found = Discovery(set())
-        assert _handle_path_probe(source, found, state, lambda url: None) is False
+        assert _handle_path_probe(source, found, state, lambda url: None) == (False, "unreachable")
         assert found.candidates == []
 
     def test_bare_base_must_not_shadow_discovery(self):
@@ -149,7 +152,8 @@ class TestDiscoveryTier:
 
         state = {"working_candidate": "/{year}/", "last_confirmed_year": 2026}
         found = Discovery(set())
-        assert _handle_path_probe(source, found, state, fetch) is True
+        ok, outcome = _handle_path_probe(source, found, state, fetch)
+        assert (ok, outcome) == (True, "confirmed")
         assert "https://moved.org/editions/2027/cfp" in found.candidates
         assert state["working_candidate"] == "/{year}/"
         assert state["last_confirmed_year"] == 2027
@@ -168,6 +172,13 @@ class TestFailureContract:
     def test_learned_pattern_failing_is_drift(self):
         state = {"working_candidate": "/{year}/", "last_confirmed_year": 2026}
         assert record_outcome(state, False) is True
+        assert state["consecutive_failures"] == 1
+
+    def test_unreachable_site_is_not_drift(self):
+        # Same learned pattern, but the site is down rather than restructured:
+        # streak grows, no drift alarm.
+        state = {"working_candidate": "/{year}/", "last_confirmed_year": 2026}
+        assert record_outcome(state, False, "unreachable") is False
         assert state["consecutive_failures"] == 1
 
     def test_state_store_merges(self):
@@ -217,7 +228,7 @@ class TestSubdomainTiers:
         try:
             found = Discovery(seen)
             assert _handle_subdomain_probe(
-                self.SOURCE, found, {}, fetch, datetime(2026, 9, 8)) is True
+                self.SOURCE, found, {}, fetch, datetime(2026, 9, 8)) == (True, "confirmed")
         finally:
             sub._resolves = orig_resolves
         assert "https://icps2027.sust.edu" in found.candidates
@@ -234,8 +245,92 @@ class TestSubdomainTiers:
             found = Discovery(set())
             assert _handle_subdomain_probe(
                 self.SOURCE, found, {}, lambda url: calls.append(url) or None,
-                datetime(2026, 9, 8)) is False
+                datetime(2026, 9, 8)) == (False, "unreachable")
         finally:
             sub._resolves = orig_resolves
         # 2 prefixes × (3 year-hosts + 1 bare), each exactly once.
         assert len(calls) == len(set(calls)) == 8
+
+
+class TestTransportEscalation:
+    SOURCE = {
+        "type": "path_probe", "base_url": "https://tiered.org",
+        "candidates": ["/{year}/"], "probe_years": [2027],
+        "verify_year_in_content": True,
+    }
+    STALE = _page("Conf 2025", "Conf 2025 edition 2025 2025")
+    LIVE = _page("Conf 2027", "Conf 2027 edition 2027 2027")
+
+    class _FakeBrowser:
+        def __init__(self, pages):
+            self.pages = pages
+            self.calls = []
+
+        def fetch_page_html(self, url):
+            self.calls.append(url)
+            return self.pages.get(url)
+
+    def test_escalates_verify_aware_across_tiers(self):
+        import scraper.sources.special.probe as probe
+
+        calls = []
+        orig_curl = probe._curl_body
+        probe._curl_body = lambda url: calls.append(("curl", url)) or self.STALE
+        try:
+            browser = self._FakeBrowser({"https://tiered.org/2027/": self.LIVE})
+            found = Discovery(set())
+            ok, outcome = _handle_path_probe(
+                self.SOURCE, found, {}, lambda url: calls.append(("primary", url)) or None,
+                datetime(2026, 9, 8), playwright=browser)
+        finally:
+            probe._curl_body = orig_curl
+        assert (ok, outcome) == (True, "confirmed")
+        # Primary missed, curl's stale shell failed verification, browser won.
+        assert calls[0] == ("primary", "https://tiered.org/2027/")
+        assert calls[1] == ("curl", "https://tiered.org/2027/")
+        assert browser.calls == ["https://tiered.org/2027/"]
+        assert "https://tiered.org/2027/" in found.candidates
+
+    def test_no_browser_means_single_tier(self):
+        calls = []
+
+        def fetch(url):
+            calls.append(url)
+            return self.STALE
+
+        found = Discovery(set())
+        assert _handle_path_probe(
+            dict(self.SOURCE, discover_links=False), found, {},
+            fetch, datetime(2026, 9, 8)) == (False, "unverified")
+        assert calls == ["https://tiered.org/2027/"]
+
+
+class TestOutcomeSplit:
+    def test_reachable_but_stale_is_unverified(self):
+        source = {
+            "type": "path_probe", "base_url": "https://stale.org",
+            "candidates": ["/x-{year}/"], "probe_years": [2027],
+            "verify_year_in_content": True, "discover_links": False,
+        }
+        stale = _page("Conf 2025", "Conf 2025 edition 2025 2025")
+        found = Discovery(set())
+        assert _handle_path_probe(
+            source, found, {}, lambda url: stale,
+            datetime(2026, 9, 8)) == (False, "unverified")
+
+    def test_conf_info_bd_reports_reachability(self):
+        import scraper.sources.special.handlers.conf_info_bd as cib
+
+        orig_safe = cib.is_safe_url
+        cib.is_safe_url = lambda url: True
+        try:
+            html = ('<html><body><a class="conf-link" href="https://newconf.org/2027">'
+                    "NewConf 2027</a></body></html>")
+            found = Discovery(set())
+            source = {"type": "conf_info_bd", "base_url": "https://conf.info.bd"}
+            assert _handle_conf_info_bd(source, found, {}, lambda url: html) == (True, "confirmed")
+            assert "https://newconf.org/2027" in found.candidates
+            assert _handle_conf_info_bd(source, Discovery(set()), {}, lambda url: None) == (
+                False, "unreachable")
+        finally:
+            cib.is_safe_url = orig_safe

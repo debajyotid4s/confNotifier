@@ -8,9 +8,11 @@ Per prefix, cheapest/most-specific first:
   3. the bare ``https://{prefix}.{domain}`` host, accepted when it
      advertises a still-unconfirmed live year.
 
-DNS prefiltering comes before any HTTP spend. Confirmed years advance
-``last_confirmed_year`` without regressing it. Returns True when a live
-edition was confirmed this run (newly claimed or already known).
+DNS prefiltering comes before any HTTP spend; each tier escalates transport
+(requests → curl → Playwright) while bodies fail verification. Confirmed
+years advance ``last_confirmed_year`` without regressing it.
+
+Returns ``(confirmed, outcome)`` — see :mod:`path_probe` for the contract.
 """
 
 import logging
@@ -18,29 +20,28 @@ import logging
 from scraper.sources.urls import cadence_step, get_probe_years
 
 from ..discovery import Discovery
-from ..probe import _fetch_text, _resolves, verify_year_is_current
+from ..probe import TieredProbe, _resolves
 
 logger = logging.getLogger(__name__)
 
 
 def _handle_subdomain_probe(
-    source: dict, found: Discovery, state: dict | None = None, fetch=None, today=None,
-) -> bool:
+    source: dict, found: Discovery, state: dict | None = None,
+    fetch=None, today=None, playwright=None,
+) -> tuple[bool, str]:
     state = state if state is not None else {}
-    fetch = fetch or _fetch_text
     base_domain = (source.get("base_domain") or "").strip().strip(".")
     if not base_domain:
-        return False
+        return False, "unreachable"
     years = get_probe_years(source, state, today=today)
     if not years:
-        return False
+        return False, "unreachable"
     interval = cadence_step(source)
-    verify = source.get("verify_year_in_content", True)
+    prober = TieredProbe(fetch, playwright, source.get("verify_year_in_content", True))
     prefixes = [p.strip().strip(".") for p in source.get("known_prefixes", []) if (p or "").strip()]
 
     confirmed: set[int] = set()
     hit_pairs: set[tuple[str, int]] = set()
-    bodies: dict[str, str | None] = {}
 
     def _confirm(year: int, url: str, prefix: str = "") -> None:
         confirmed.add(year)
@@ -52,22 +53,9 @@ def _handle_subdomain_probe(
             logger.info("subdomain_probe: %s → new candidate", url)
 
     def _live(url: str, year: int) -> bool:
-        if url not in bodies:
-            if not _resolves(url):
-                bodies[url] = None
-                return False
-            try:
-                bodies[url] = fetch(url)
-            except Exception as e:
-                logger.debug("subdomain_probe: fetch failed for %s: %s", url, e)
-                bodies[url] = None
-        body = bodies[url]
-        if body is None:
+        if not _resolves(url):
             return False
-        if verify and not verify_year_is_current(body, year, year - interval):
-            logger.info("subdomain_probe: %s alive but not a %d edition, skipping", url, year)
-            return False
-        return True
+        return prober.verified(url, year, year - interval) is not None
 
     for prefix in prefixes:
         host = lambda year: f"https://{prefix}{year}.{base_domain}"  # noqa: E731
@@ -92,18 +80,13 @@ def _handle_subdomain_probe(
             continue
         if not _resolves(bare):
             continue
-        try:
-            body = fetch(bare)
-        except Exception as e:
-            logger.debug("subdomain_probe: fetch failed for %s: %s", bare, e)
-            continue
-        if body is None:
-            continue
         for year in years:
             if year in confirmed:
                 continue
-            if not verify or verify_year_is_current(body, year, year - interval):
+            if prober.verified(bare, year, year - interval):
                 _confirm(year, bare)
                 break
 
-    return bool(confirmed)
+    if confirmed:
+        return True, "confirmed"
+    return False, "unreachable" if prober.bodies_seen == 0 else "unverified"

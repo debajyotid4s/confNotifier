@@ -10,10 +10,15 @@ Tiers, cheapest/most-specific first:
   3. homepage link discovery — pattern-agnostic, catches a URL structure
      change the static candidate list never anticipated.
 
-Every tier verifies content before accepting a match. Any confirmed match
-advances ``last_confirmed_year`` (never regresses it) and the newest
-confirmation remembers its working pattern. Returns True when a live
-edition was confirmed this run (newly claimed or already known).
+Every tier verifies content before accepting a match, escalating transport
+(requests → curl → Playwright) while bodies fail verification. Any
+confirmed match advances ``last_confirmed_year`` (never regresses it) and
+the newest confirmation remembers its working pattern.
+
+Returns ``(confirmed, outcome)``: ``confirmed`` is True when a live edition
+was confirmed this run (newly claimed or already known); ``outcome`` is
+``"confirmed"``, ``"unreachable"`` (no tier returned any body) or
+``"unverified"`` (bodies fetched, none verified as a live edition).
 """
 
 import logging
@@ -21,7 +26,7 @@ import logging
 from scraper.sources.urls import cadence_step, get_probe_years, order_candidates
 
 from ..discovery import Discovery
-from ..probe import _fetch_text, discover_year_links, verify_year_is_current
+from ..probe import TieredProbe, discover_year_links
 
 logger = logging.getLogger(__name__)
 
@@ -31,29 +36,19 @@ def _expand(base: str, pattern: str, year: int) -> str:
 
 
 def _handle_path_probe(
-    source: dict, found: Discovery, state: dict | None = None, fetch=None, today=None,
-) -> bool:
+    source: dict, found: Discovery, state: dict | None = None,
+    fetch=None, today=None, playwright=None,
+) -> tuple[bool, str]:
     state = state if state is not None else {}
-    fetch = fetch or _fetch_text
     base = (source.get("base_url") or "").rstrip("/")
     if not base:
-        return False
+        return False, "unreachable"
     years = get_probe_years(source, state, today=today)
     if not years:
-        return False
+        return False, "unreachable"
     interval = cadence_step(source)
     ordered = order_candidates(source.get("candidates") or [""], state)
-    verify = source.get("verify_year_in_content", True)
-    bodies: dict[str, str | None] = {}
-
-    def _body(url: str) -> str | None:
-        if url not in bodies:
-            try:
-                bodies[url] = fetch(url)
-            except Exception as e:
-                logger.debug("special/path_probe: fetch failed for %s: %s", url, e)
-                bodies[url] = None
-        return bodies[url]
+    prober = TieredProbe(fetch, playwright, source.get("verify_year_in_content", True))
 
     def _confirm(year: int, pattern: str, url: str) -> None:
         if state.get("last_confirmed_year") is None or year >= state["last_confirmed_year"]:
@@ -73,8 +68,7 @@ def _handle_path_probe(
     primary = ordered[0]
     for year in years:
         url = _expand(base, primary, year)
-        body = _body(url)
-        if body and (not verify or verify_year_is_current(body, year, year - interval)):
+        if prober.verified(url, year, year - interval):
             confirmed.add(year)
             _confirm(year, primary, url)
             primary_hit_newest = (year == years[0])
@@ -90,14 +84,9 @@ def _handle_path_probe(
             continue
         for pattern in substantive:
             url = _expand(base, pattern, year)
-            if url in bodies or not found.is_new(url):
-                body = bodies.get(url)
-                if body and (not verify or verify_year_is_current(body, year, year - interval)):
-                    confirmed.add(year)
-                    _confirm(year, pattern, url)
+            if not found.is_new(url):
                 continue
-            body = _body(url)
-            if body and (not verify or verify_year_is_current(body, year, year - interval)):
+            if prober.verified(url, year, year - interval):
                 confirmed.add(year)
                 _confirm(year, pattern, url)
                 break
@@ -105,13 +94,17 @@ def _handle_path_probe(
     # Tier 3 — homepage discovery for unconfirmed years, newest first.
     # Sweeps beyond years[0] so a still-live older edition at an
     # unanticipated structure is found even when the newest year genuinely
-    # has no links yet.
+    # has no links yet. The homepage gets the full transport chain; the
+    # discovered links get the cheap primary fetch (bounded cost).
     rescued = False
     if source.get("discover_links"):
         for target in years:
             if target in confirmed:
                 continue
-            hit = discover_year_links(base, target, _body, found, target - interval)
+            hit = discover_year_links(
+                base, target, prober.raw, found, target - interval,
+                fetch_candidates=prober.primary,
+            )
             if hit:
                 rescued = True
                 confirmed.add(target)
@@ -123,11 +116,10 @@ def _handle_path_probe(
     # Tier 2b — bare base fallback (e.g. qpain.org, where the landing page IS
     # the edition). Runs last so it can never shadow discovery.
     if "" in ordered and years[0] not in confirmed:
-        body = _body(base)
         for year in years:
             if year in confirmed:
                 continue
-            if body and (not verify or verify_year_is_current(body, year, year - interval)):
+            if prober.verified(base, year, year - interval):
                 confirmed.add(year)
                 _confirm(year, "", base)
                 break
@@ -140,4 +132,6 @@ def _handle_path_probe(
         )
 
     state.pop("_learned_this_run", None)
-    return bool(confirmed)
+    if confirmed:
+        return True, "confirmed"
+    return False, "unreachable" if prober.bodies_seen == 0 else "unverified"

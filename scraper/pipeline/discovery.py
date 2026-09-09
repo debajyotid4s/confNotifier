@@ -28,7 +28,9 @@ def discover_candidates(playwright, stats) -> list[str]:
 
     for name, run_source in (
         ("homepage_links", lambda: homepage_links.run(playwright=playwright, on_rejected=_on_rejected)),
-        ("special", special.run),
+        # The live browser unlocks the curl/Playwright fallback tiers inside
+        # the special handlers for requests-invisible sites.
+        ("special", lambda: special.run(playwright=playwright)),
     ):
         try:
             found = run_source()

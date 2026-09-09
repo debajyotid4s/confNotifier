@@ -1,37 +1,46 @@
 import logging
 
-import requests
 from bs4 import BeautifulSoup
 
 from scraper.utils import is_safe_url
 
-from ..constants import USER_AGENT
 from ..discovery import Discovery
+from ..probe import TieredProbe
 
 logger = logging.getLogger(__name__)
 
 
-def _handle_conf_info_bd(source: dict, found: Discovery, state: dict | None = None, fetch=None) -> bool:
+def _handle_conf_info_bd(
+    source: dict, found: Discovery, state: dict | None = None,
+    fetch=None, today=None, playwright=None,
+) -> tuple[bool, str]:
     """Scrape the conference table at conf.info.bd.
 
     Each data row links out to the conference website via <a class="conf-link">.
     Accepts the unified ``base_url`` key (falls back to legacy ``url``).
-    Aggregator page — no year logic; participates in the shared
-    success/failure contract by reporting reachability.
+    Aggregator page — no year logic; the tiered transport still applies, and
+    reachability decides the shared success/failure contract.
+
+    Returns ``(confirmed, outcome)`` — see :mod:`path_probe` for the contract.
     """
     url = source.get("base_url") or source.get("url") or "https://conf.info.bd"
     logger.info("conf_info_bd: fetching %s", url)
 
+    prober = TieredProbe(fetch, playwright, verify=False)
     try:
-        resp = requests.get(url, timeout=15, headers={"User-Agent": USER_AGENT})
-        if resp.status_code != 200:
-            logger.error("conf_info_bd: HTTP %d from %s", resp.status_code, url)
-            return False
-    except requests.RequestException as e:
+        body = prober.raw(url)
+    except Exception as e:
         logger.error("conf_info_bd: request failed for %s: %s", url, e)
-        return False
+        return False, "unreachable"
+    if body is None:
+        logger.error("conf_info_bd: no body from any tier for %s", url)
+        return False, "unreachable"
 
-    soup = BeautifulSoup(resp.text, "lxml")
+    try:
+        soup = BeautifulSoup(body, "lxml")
+    except Exception as e:
+        logger.error("conf_info_bd: parse failed for %s: %s", url, e)
+        return False, "unverified"
     before = len(found.candidates)
     for link in soup.select("a.conf-link"):
         href = (link.get("href") or "").strip()
@@ -44,4 +53,4 @@ def _handle_conf_info_bd(source: dict, found: Discovery, state: dict | None = No
         logger.info("conf_info_bd: new URL found: %s", href)
 
     logger.info("conf_info_bd: found %d new candidate(s)", len(found.candidates) - before)
-    return True
+    return True, "confirmed"
