@@ -48,40 +48,20 @@ jobs:
       - name: Lint for unused imports and undefined names
         run: python -m pyflakes scraper api tests
 
-      # Builds the whole schema from nothing, so a broken or non-idempotent
-      # migration fails CI instead of production.
-      - name: Apply migrations
+      # Builds the whole schema from nothing using the single canonical
+      # schema file, twice — the second run proves it is idempotent.
+      # There are no versioned migration files: schema changes are applied
+      # by hand in the Neon SQL editor while the work happens, and
+      # db/schema_base.sql is updated in the same commit to match.
+      - name: Apply canonical schema (twice, proving idempotency)
         run: |
           set -e
           export PGPASSWORD=postgres
           psql_run() { psql -h localhost -U postgres -d conftest -v ON_ERROR_STOP=1 -q -f "$1"; }
-          for f in db/schema_base.sql \
-                   db/migration.sql \
-                   api/migration_001_users.sql \
-                   api/migration_002_user_details.sql \
-                   api/migration_003_firebase_uid.sql \
-                   api/migration_004_login_events.sql \
-                   api/migration_005_conference_deadlines.sql \
-                   api/migration_006_notification_log.sql \
-                   api/migration_007_description.sql \
-                   api/migration_008_fix_tba_dedup.sql \
-                   api/migration_009_soft_delete.sql \
-                   api/migration_010_soft_delete_index.sql \
-                   db/migration_011_retire_legacy_deadlines.sql \
-                   db/migration_012_source_state.sql \
-                   api/migration_011_perf_indexes.sql; do
-            echo "== $f"
-            psql_run "$f"
-          done
-
-      - name: Verify migrations are idempotent
-        run: |
-          set -e
-          export PGPASSWORD=postgres
-          psql -h localhost -U postgres -d conftest -v ON_ERROR_STOP=1 -q \
-            -f db/migration_011_retire_legacy_deadlines.sql
-          psql -h localhost -U postgres -d conftest -v ON_ERROR_STOP=1 -q \
-            -f api/migration_011_perf_indexes.sql
+          echo "== db/schema_base.sql (1st run)"
+          psql_run db/schema_base.sql
+          echo "== db/schema_base.sql (2nd run)"
+          psql_run db/schema_base.sql
 
       - name: Install API dependencies
         run: pip install -r api/requirements.txt

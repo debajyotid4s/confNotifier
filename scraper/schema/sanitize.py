@@ -3,7 +3,22 @@
 from datetime import date
 
 from .constants import DEADLINE_TYPES
-from .date_parsing import _NON_DATES, coerce_date, is_plausible_date
+from .date_parsing import _NON_DATES, coerce_date, find_dates, is_plausible_date
+
+
+def _latest_evidence_date(current: date | None, context, today: date) -> date | None:
+    """Latest plausible date across the field value and its quoted context.
+
+    When a page shows two dates under one submission field (struck-through
+    original beside its extension), the latest date is the updated deadline.
+    Context dates outside the plausibility window are ignored so stray
+    copyright years can never win. Returns None when there is no evidence.
+    """
+    candidates = [current] if current else []
+    if isinstance(context, str) and context.strip():
+        candidates += [d for d in find_dates(context) if is_plausible_date(d, today)]
+    candidates = [d for d in candidates if d and is_plausible_date(d, today)]
+    return max(candidates) if candidates else None
 
 
 def sanitize_dates(result: dict, now: date | None = None) -> tuple[dict, list[str]]:
@@ -47,6 +62,13 @@ def sanitize_dates(result: dict, now: date | None = None) -> tuple[dict, list[st
     for typ in DEADLINE_TYPES:
         field = f"{typ}_deadline"
         deadline = take(field)
+        resolved = _latest_evidence_date(deadline, result.get(f"{typ}_deadline_context"), today)
+        if resolved is not None and (deadline is None or resolved > deadline):
+            notes.append(
+                f"{field}: multiple dates in evidence, latest wins "
+                f"({deadline.isoformat() if deadline else None} → {resolved.isoformat()})"
+            )
+            deadline = resolved
         if deadline and conference_end and deadline > conference_end:
             notes.append(
                 f"{field}: {deadline.isoformat()} falls after the conference "

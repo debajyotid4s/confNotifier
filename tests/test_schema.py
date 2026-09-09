@@ -1,10 +1,13 @@
 """Tests for scraper/schema.py — pure logic, no DB/network required."""
 
+from datetime import date
+
 from scraper.schema import (
     DEADLINE_TYPES,
     EXTRACTION_SCHEMA,
     deadline_range_checks,
     deadline_select_columns,
+    find_dates,
     normalize_extraction,
     validate_deadline_context,
     MAX_DESCRIPTION_WORDS,
@@ -41,10 +44,8 @@ def test_range_checks_exact_string():
 
 
 def test_range_checks_cover_only_tracked_types():
-    """The legacy submission_deadline columns are no longer queried anywhere.
-
-    They were backfilled into the named columns by migration_011 and every read
-    path now uses abstract_deadline / full_paper_deadline only.
+    """The legacy submission_deadline columns are retired: they exist nowhere,
+    so every read path now uses abstract_deadline / full_paper_deadline only.
     """
     checks = deadline_range_checks(30)
     assert len(checks) == 2
@@ -110,3 +111,64 @@ def test_description_non_string_becomes_none():
     result = {"description": 123}
     normalized = normalize_extraction(result)
     assert normalized["description"] is None
+
+
+NOW = date(2026, 9, 8)
+
+
+class TestFindDates:
+    def test_struck_pair_yields_both(self):
+        found = find_dates("Paper submission deadline: August 28 September 11, 2026 (AoE)")
+        assert found == [date(2026, 8, 28), date(2026, 9, 11)]
+
+    def test_mixed_formats_deduped_and_sorted(self):
+        found = find_dates("2026-09-11 and September 11, 2026 and 11/09/2026")
+        assert found == [date(2026, 9, 11)]
+
+    def test_impossible_date_dropped(self):
+        assert find_dates("deadline 2027-02-30, really") == []
+
+    def test_yearless_skipped_when_year_ambiguous(self):
+        # Two distinct dated years in text: "August 28" cannot be assigned safely.
+        found = find_dates("Held June 5, 2025. August 28. See September 11, 2026.")
+        assert found == [date(2025, 6, 5), date(2026, 9, 11)]
+
+    def test_yearless_skipped_with_no_year(self):
+        assert find_dates("due August 28, venue TBA") == []
+
+    def test_empty_and_non_string(self):
+        assert find_dates("") == []
+        assert find_dates(None) == []
+
+
+def _extract(field_date, context):
+    return normalize_extraction(
+        {"full_paper_deadline": {"date": field_date, "context": context}}, now=NOW
+    )
+
+
+class TestLatestWins:
+    CTX = "Paper submission deadline: August 28 September 11, 2026 (AoE)"
+
+    def test_older_field_date_upgraded_to_extension(self):
+        out = _extract("2026-08-28", self.CTX)
+        assert out["full_paper_deadline"] == "2026-09-11"
+        assert any("latest wins" in n for n in out["sanitize_notes"])
+
+    def test_correct_field_date_unchanged(self):
+        out = _extract("2026-09-11", self.CTX)
+        assert out["full_paper_deadline"] == "2026-09-11"
+        assert not any("latest wins" in n for n in out["sanitize_notes"])
+
+    def test_missing_field_date_adopted_from_context(self):
+        out = _extract(None, self.CTX)
+        assert out["full_paper_deadline"] == "2026-09-11"
+
+    def test_implausible_context_year_cannot_win(self):
+        out = _extract("2026-09-11", "Deadline September 11, 2026, gala 2099")
+        assert out["full_paper_deadline"] == "2026-09-11"
+
+    def test_single_date_no_context_unchanged(self):
+        out = _extract("2026-09-11", None)
+        assert out["full_paper_deadline"] == "2026-09-11"
+        assert out["sanitize_notes"] == []

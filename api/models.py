@@ -16,4 +16,4 @@ Any future column added by FastAPI must be nullable and ignored by scraper's UPS
 """
 
 # No ORM — raw psycopg2 per Phase 0.2, keeps stack minimal.
-# Table DDL is in migration_001_users.sql (additive, never touches conferences structure).
+# Table DDL lives in db/schema_base.sql (single canonical file).

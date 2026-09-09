@@ -29,6 +29,14 @@ _TEXT_DATE_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: Bare month-day without a year ("August 28") — resolved against the single
+#: distinct year in the same text, skipped when the year is ambiguous.
+_MONTH_DAY_RE = re.compile(r"\b([a-z]+)\.?\s+(\d{1,2})\b", re.IGNORECASE)
+
+_ISO_DATE_RE = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
+
+_SLASH_DATE_RE = re.compile(r"\b(\d{1,2})[/.](\d{1,2})[/.](\d{4})\b")
+
 def coerce_date(value) -> date | None:
     """Parse a model-supplied date into a real `date`, or None.
 
@@ -72,6 +80,61 @@ def _build_date(year: int, month: int, day: int) -> date | None:
         return date(year, month, day)
     except ValueError:
         return None
+
+
+def find_dates(text) -> list[date]:
+    """Every parseable calendar date in free text, deduped and sorted.
+
+    Finds ISO, written-with-year ("September 11, 2026"), and slash dates,
+    plus yearless month-day pairs ("August 28") resolved against the single
+    distinct year in the same text — skipped when the year is ambiguous or
+    absent. Impossible calendar dates are dropped. Never raises.
+    """
+    if not text or not isinstance(text, str):
+        return []
+    found: list[date] = []
+    consumed: list[tuple[int, int]] = []
+
+    def _overlaps(span: tuple[int, int]) -> bool:
+        return any(span[0] < end and start < span[1] for start, end in consumed)
+
+    for match in _ISO_DATE_RE.finditer(text):
+        built = _build_date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        if built:
+            found.append(built)
+            consumed.append(match.span())
+    for match in _SLASH_DATE_RE.finditer(text):
+        if _overlaps(match.span()):
+            continue
+        day, month, year = (int(g) for g in match.groups())
+        # Same convention as coerce_date: prefer DD/MM, fall back to MM/DD.
+        built = _build_date(year, month, day) or _build_date(year, day, month)
+        if built:
+            found.append(built)
+            consumed.append(match.span())
+    for match in _TEXT_DATE_RE.finditer(text):
+        if _overlaps(match.span()):
+            continue
+        month = _MONTHS.get((match.group("month1") or match.group("month2") or "").lower())
+        day = int(match.group("day1") or match.group("day2"))
+        if month:
+            built = _build_date(int(match.group("year")), month, day)
+            if built:
+                found.append(built)
+                consumed.append(match.span())
+    years = {d.year for d in found}
+    if len(years) == 1:
+        (only_year,) = years
+        for match in _MONTH_DAY_RE.finditer(text):
+            if _overlaps(match.span()):
+                continue
+            month = _MONTHS.get(match.group(1).lower())
+            day = int(match.group(2))
+            if month and 1 <= day <= 31:
+                built = _build_date(only_year, month, day)
+                if built and built not in found:
+                    found.append(built)
+    return sorted(set(found))
 
 
 def is_plausible_date(value: date, now: date | None = None) -> bool:

@@ -44,6 +44,13 @@ def discover_candidates(playwright, stats) -> list[str]:
 
 def requeue_previous_runs(candidates: list[str]) -> tuple[list[str], set[str]]:
     """Merge pending and back-off-eligible URLs from earlier runs."""
+    unknown = db.count_unknown_statuses()
+    if unknown:
+        logger.error(
+            "seen_links has %d URL(s) in unrecognized statuses %s — frozen until "
+            "backfilled to 'pending' with the ops SQL script",
+            sum(unknown.values()), unknown,
+        )
     pending = db.load_pending_urls()
     if pending:
         logger.info("Re-queued %d pending URL(s) from previous runs", len(pending))

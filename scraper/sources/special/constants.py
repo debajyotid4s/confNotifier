@@ -4,7 +4,5 @@ USER_AGENT = (
 )
 
 PROBE_TIMEOUT = 10
-#: Minimum body size for a probe to count as a real page. Single-page apps ship
-#: a small HTML shell, so path handlers lower this.
+#: Minimum body size for a probe to count as a real page.
 MIN_CONTENT = 500
-MIN_CONTENT_SPA = 200

@@ -54,7 +54,6 @@ def seeded(conn):
       3 full paper only
       4 TBA (no dates at all)
       5 past deadline  → excluded from /upcoming
-      6 legacy columns only → must be migrated by db/migration_011
     """
     with conn.cursor() as cur:
         # users must be included: TRUNCATE ... CASCADE from conferences does not
@@ -65,21 +64,18 @@ def seeded(conn):
         cur.execute("""
             INSERT INTO conferences
                 (id, title, website, date_start, date_end,
-                 abstract_deadline, full_paper_deadline,
-                 submission_deadline, submission_deadline_2, is_notified)
+                 abstract_deadline, full_paper_deadline, is_notified)
             VALUES
                 (1, 'Conf Two Deadlines (ICTWO 2027)', 'https://ictwo.org',
-                 %s, %s, %s, %s, NULL, NULL, TRUE),
+                 %s, %s, %s, %s, TRUE),
                 (2, 'Conf Abstract Only (ICABS 2027)', 'https://icabs.org',
-                 %s, %s, %s, NULL, NULL, NULL, TRUE),
+                 %s, %s, %s, NULL, TRUE),
                 (3, 'Conf Full Paper Only (ICFULL 2027)', 'https://icfull.org',
-                 %s, %s, NULL, %s, NULL, NULL, TRUE),
+                 %s, %s, NULL, %s, TRUE),
                 (4, 'Conf TBA (ICTBA)', 'https://ictba.org',
-                 NULL, NULL, NULL, NULL, NULL, NULL, TRUE),
+                 NULL, NULL, NULL, NULL, TRUE),
                 (5, 'Conf Past (ICPAST 2020)', 'https://icpast.org',
-                 %s, %s, %s, NULL, NULL, NULL, TRUE),
-                (6, 'Conf Legacy (ICLEG 2027)', 'https://icleg.org',
-                 %s, %s, NULL, NULL, %s, %s, TRUE)
+                 %s, %s, %s, NULL, TRUE)
         """, (
             TODAY + timedelta(days=200), TODAY + timedelta(days=202),
             TODAY + timedelta(days=10), TODAY + timedelta(days=40),
@@ -89,8 +85,6 @@ def seeded(conn):
             TODAY + timedelta(days=20),
             TODAY - timedelta(days=300), TODAY - timedelta(days=298),
             TODAY - timedelta(days=350),
-            TODAY + timedelta(days=200), TODAY + timedelta(days=202),
-            TODAY + timedelta(days=15), TODAY + timedelta(days=45),
         ))
         # Mirror into the child table the API reads, as save_conference does.
         cur.execute("""
@@ -216,74 +210,18 @@ class TestCalendarEndpointSQL:
         assert ids.count(1) == 1
 
 
-class TestLegacyBackfillMigration:
-    """db/migration_011 must move legacy deadlines into the named columns."""
+class TestNoLegacyDeadlineColumns:
+    """The retired submission_deadline* columns exist nowhere: not in the
+    schema, so every read path uses the named columns only."""
 
-    @staticmethod
-    def _apply_migration(conn):
-        """Run the whole migration file.
-
-        The migration is defensive: no BEGIN/COMMIT (each statement autocommits
-        and is idempotent), DO/EXCEPTION guards around fragile column/table refs,
-        and ANALYZE left in comments (it cannot run inside a transaction block).
-        So the file can be executed verbatim.
-        """
-        import pathlib
-
-        sql = (pathlib.Path(__file__).parent.parent / "db"
-               / "migration_011_retire_legacy_deadlines.sql").read_text()
-        with conn.cursor() as cur:
-            cur.execute(sql)
-        conn.commit()
-
-    def test_legacy_columns_are_migrated_and_cleared(self, seeded):
-        self._apply_migration(seeded)
+    def test_legacy_columns_absent(self, seeded):
         with seeded.cursor() as cur:
-            cur.execute("SELECT abstract_deadline, full_paper_deadline, "
-                        "submission_deadline, submission_deadline_2 "
-                        "FROM conferences WHERE id = 6")
-            abstract, full_paper, legacy1, legacy2 = cur.fetchone()
-
-        assert abstract == TODAY + timedelta(days=15)
-        assert full_paper == TODAY + timedelta(days=45)
-        assert legacy1 is None and legacy2 is None
-
-    def test_child_table_synced_after_migration(self, seeded):
-        """The legacy-only row must become visible to the API's child-table reads."""
-        with seeded.cursor() as cur:
-            cur.execute("SELECT count(*) FROM conference_deadlines WHERE conference_id = 6")
-            assert cur.fetchone()[0] == 0, "fixture starts with no child rows for the legacy row"
-
-        self._apply_migration(seeded)
-
-        with seeded.cursor() as cur:
-            cur.execute("SELECT type, deadline FROM conference_deadlines "
-                        "WHERE conference_id = 6 ORDER BY type")
-            rows = dict(cur.fetchall())
-        assert rows.get("abstract") == TODAY + timedelta(days=15)
-        assert rows.get("full_paper") == TODAY + timedelta(days=45)
-
-    def test_migration_is_idempotent(self, seeded):
-        self._apply_migration(seeded)
-        self._apply_migration(seeded)
-        with seeded.cursor() as cur:
-            cur.execute("SELECT count(*) FROM conference_deadlines WHERE conference_id = 6")
-            assert cur.fetchone()[0] == 2
-
-    def test_upcoming_sees_migrated_legacy_conference(self, seeded):
-        """The point of the backfill: a legacy-only row was invisible to /upcoming."""
-        import sys
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
-        from mappers import CONF_SELECT, HAS_OPEN_DEADLINE
-
-        def ids():
-            with seeded.cursor() as cur:
-                cur.execute(f"{CONF_SELECT} WHERE {HAS_OPEN_DEADLINE}")
-                return {row[0] for row in cur.fetchall()}
-
-        assert 6 not in ids(), "legacy-only row is invisible before the backfill"
-        self._apply_migration(seeded)
-        assert 6 in ids(), "legacy-only row must be visible after the backfill"
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'conferences' "
+                "AND column_name LIKE 'submission_deadline%'"
+            )
+            assert cur.fetchall() == []
 
 
 class TestBookmarkNotificationSQL:

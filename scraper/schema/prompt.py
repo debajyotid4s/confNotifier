@@ -26,7 +26,8 @@ EXTENSIONS — always prefer the current value
 Pages often show an old date struck through, or an "extended to" note beside the
 original. Return the date that is actually in force now: the extended one. If two
 dates are given for the same deadline and one is labelled extended, new, revised
-or final, use that one and ignore the other.
+or final, use that one and ignore the other. If two dates appear with no label
+telling them apart (an old date beside its replacement), return the later date.
 
 FINDING DATES
 Deadlines appear in prose, tables, bullet lists, and visual timelines where the

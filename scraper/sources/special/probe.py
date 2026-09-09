@@ -14,7 +14,6 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from scraper.patterns import classify_link
 from scraper.sources.config import load_sources
 from scraper.utils import is_safe_url
 
@@ -46,21 +45,6 @@ def _fetch_text(url: str, timeout: int = PROBE_TIMEOUT) -> str | None:
     except requests.RequestException as e:
         logger.debug("Probe failed for %s: %s", url, e)
     return None
-
-
-def _probe_url(url: str, timeout: int = PROBE_TIMEOUT, min_content: int = MIN_CONTENT) -> bool:
-    """True when the URL responds 200 with a body worth extracting."""
-    if not is_safe_url(url):
-        logger.warning("SSRF blocked: %s", url)
-        return False
-    try:
-        resp = requests.get(
-            url, timeout=timeout, headers={"User-Agent": USER_AGENT}, allow_redirects=True
-        )
-        return resp.status_code == 200 and len(resp.text) > min_content
-    except requests.RequestException as e:
-        logger.debug("Probe failed for %s: %s", url, e)
-    return False
 
 
 def _resolves(url: str) -> bool:
@@ -95,42 +79,6 @@ def verify_year_is_current(content: str | None, target_year: int, previous_year:
     if previous_year is None:
         return True
     return target_count >= content.count(str(previous_year))
-
-
-def _body_mentions_year(body: str, year: int) -> bool:
-    """Legacy weak check — kept for compatibility, prefer :func:`verify_year_is_current`."""
-    return verify_year_is_current(body, year)
-
-
-def _discover_links(body: str, base_url: str, found, limit: int = 25) -> int:
-    """Claim conference-classified anchors found in an edition page.
-
-    Returns the number of newly claimed URLs. Reuses the same
-    :func:`classify_link` gate as the homepage scanner so signals stay
-    consistent across source types.
-    """
-    if not body:
-        return 0
-    try:
-        soup = BeautifulSoup(body, "lxml")
-    except Exception:
-        return 0
-    added = 0
-    for anchor in soup.find_all("a", href=True):
-        if added >= limit:
-            break
-        href = (anchor["href"] or "").strip()
-        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
-            continue
-        full = urljoin(base_url, href)
-        accepted, _ = classify_link(full)
-        if not accepted or not found.is_new(full):
-            continue
-        if not is_safe_url(full):
-            continue
-        found.claim(full)
-        added += 1
-    return added
 
 
 def discover_year_links(

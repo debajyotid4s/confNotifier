@@ -23,6 +23,7 @@ from .date_parsing import (
     _TEXT_DATE_RE,
     _build_date,
     coerce_date,
+    find_dates,
     is_plausible_date,
 )
 from .keywords import (
@@ -52,6 +53,7 @@ __all__ = [
     "_TEXT_DATE_RE",
     "coerce_date",
     "_build_date",
+    "find_dates",
     "is_plausible_date",
     "sanitize_dates",
     "DEADLINE_SCHEMA_PROPS",

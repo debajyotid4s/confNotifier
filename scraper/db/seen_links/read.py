@@ -3,6 +3,14 @@
 from scraper.db.connection import _safe, db_cursor
 from scraper.db.seen_links.constants import TERMINAL_STATUSES
 
+#: Every status the pipeline writes. Anything else is a legacy leftover that
+#: no query (terminal / pending / retryable) will ever pick up — backfill
+#: such rows to 'pending' with the ops SQL script when this counter fires.
+KNOWN_STATUSES = (
+    "pending", "extracted", "not_conference", "low_confidence",
+    "failed_transient", "failed_permanent",
+)
+
 
 @_safe("load_seen_urls", default=set)
 def load_seen_urls(source: str | None = None) -> set[str]:
@@ -38,3 +46,19 @@ def load_pending_urls() -> list[str]:
     with db_cursor() as cur:
         cur.execute("SELECT url FROM seen_links WHERE status = 'pending'")
         return [row[0] for row in cur.fetchall()]
+
+
+@_safe("count_unknown_statuses", default=dict)
+def count_unknown_statuses() -> dict:
+    """Rows per unrecognized status — the state machine's own drift net.
+
+    Any row counted here is frozen: invisible to the terminal, pending and
+    retryable queries. Non-empty means a backfill (or a code bug) needs
+    attention.
+    """
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT status, COUNT(*) FROM seen_links WHERE status NOT IN %s GROUP BY status",
+            (KNOWN_STATUSES,),
+        )
+        return dict(cur.fetchall())

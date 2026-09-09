@@ -7,8 +7,7 @@ def _pending_query() -> str:
     """Conferences saved but not yet announced, with a deadline in the window.
 
     Only the named deadline columns are consulted: the legacy
-    `submission_deadline*` pair was backfilled by migration_011 and is no longer
-    written or read anywhere.
+    `submission_deadline*` pair is retired and exists nowhere in the schema.
     """
     deadline_cols = ", ".join(deadline_select_columns())
     window = " OR ".join(

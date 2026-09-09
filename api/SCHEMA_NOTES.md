@@ -10,9 +10,8 @@
 id, title, date_start, date_end, city, country (default 'Bangladesh'),
 website (normalized https, no www, no query), organizer, category, confidence,
 raw_source, is_notified, notified_at, created_at, updated_at, deadline_last_verified
--- legacy (kept, now nulled on upsert)
-submission_deadline, submission_deadline_label, submission_deadline_2, _label,
-submission_deadline_previous, submission_deadline_2_previous
+-- retired: submission_deadline* legacy columns (dropped from the schema;
+-- nothing reads or writes them anymore)
 -- 5 named types × 3 cols (date/label/previous) — from schema.py:DEADLINE_TYPES
 abstract_deadline, abstract_deadline_label, abstract_deadline_previous
 full_paper_deadline, full_paper_deadline_label, full_paper_deadline_previous
@@ -26,7 +25,7 @@ Confirmed `DEADLINE_TYPES = [abstract, full_paper, notification_of_acceptance, c
 
 **Other tables (reuse, don't touch):** `seen_links(url PK, source, status, retry_count, last_attempt_at)`, `domain_stats`, `domain_strategies`, `special_path_cache`, `certspotter_cursor`, `daily_tasks(task_name PK, last_run_date)`.
 
-**New tables this project adds (Phase 1):** `users(id UUID, google_subject_id UNIQUE, email UNIQUE, username UNIQUE)`, `bookmarks(user_id, conference_id FK, PK composite)`, `device_tokens(id UUID, user_id FK, fcm_token UNIQUE)`, `telegram_messages(website, message_id UNIQUE, message_type, chat_id)` — all additive migrations.
+**New tables this project adds (Phase 1):** `users(id UUID, google_subject_id UNIQUE, email UNIQUE, username UNIQUE)`, `bookmarks(user_id, conference_id FK, PK composite)`, `device_tokens(id UUID, user_id FK, fcm_token UNIQUE)`, `telegram_messages(website, message_id UNIQUE, message_type, chat_id)` — all in `db/schema_base.sql`.
 
 ## 0.2 Connection strategy (updated 2026-08-23)
 
@@ -34,7 +33,7 @@ Neon kills idle connections. Scraper keeps per-operation `psycopg2.connect()` (o
 
 **Statement timeout (v0.3.1):** applied per request via `SET LOCAL statement_timeout` inside `db_cursor()` — NOT via the connection startup packet, because PgBouncer rejects unknown startup parameters (`options=` broke every pooled connection in v0.3.0). `SET LOCAL` is a plain forwarded statement, scopes itself to the request's transaction, and is re-applied on every checkout. Override with `DB_STATEMENT_TIMEOUT_MS`.
 
-**Deadline storage:** `conferences` wide columns remain for scraper writes, but `conference_deadlines` child table (`conference_id, type, deadline`) is now the indexed source for `GET /conferences/calendar|upcoming` (see `migration_005`). Scraper upserts both (see `scraper/db.py:save_conference`).
+**Deadline storage:** `conferences` wide columns remain for scraper writes, but `conference_deadlines` child table (`conference_id, type, deadline`) is now the indexed source for `GET /conferences/calendar|upcoming` (see `db/schema_base.sql`). Scraper upserts both (see `scraper/db.py:save_conference`).
 
 ## 0.3 Ownership boundary
 

@@ -144,7 +144,7 @@ Two layers (`scraper/dedup.py`):
 - **Batched DB writes everywhere** — discovery used to open one connection per link (~72 homepages → hundreds of inserts/run); seen-link statuses, domain strategies and source-state rows now persist in one round-trip each.
 - **One config for all discovery** — `config/sources.json` replaced `universities.json` / `special_sources.json` / `specials.json` (all retired and git-ignored); each entry's `type` identity decides how its live URLs are built.
 - **Static config, learned state** — edition math never hardcodes a year: the probe window derives from `max(last_known_year, last_confirmed_year)` at runtime, and the learned `working_candidate` doubles as a drift detector.
-- **Legacy columns retired, not dropped** — `submission_deadline(_2)` were backfilled into the named columns by `db/migration_011` and are no longer read or written; the OR-ing of two column generations (unindexable) is gone. Columns remain until a later release drops them.
+- **Legacy columns retired and dropped** — `submission_deadline(_2)` are gone from the schema; only the named deadline columns are read or written.
 - **Per-operation DB connections in the scraper, pool in the API** — Neon kills idle connections; the scraper's minutes-long phases cannot hold one, while request-serving benefits from pooling + keepalives + statement timeouts.
 - **Fail-open vs fail-closed** — Redis loss degrades caching/rate limiting (fail open) but blocks JWT issuance/revocation (fail closed): a revoked token must never pass because Redis was down.
 - **Idempotent internal endpoints** — every `/internal/*` job carries a Redis sent-marker plus durable `notification_log` dedup, so cron double-fires never spam users.
@@ -161,11 +161,13 @@ pytest tests/
 
 # Full suite including SQL integration tests (needs PostgreSQL 15+)
 createdb conftest
-for f in db/schema_base.sql db/migration.sql api/migration_0*.sql db/migration_011*.sql db/migration_012*.sql api/migration_011_perf_indexes.sql; do psql -d conftest -f "$f"; done
+psql -d conftest -f db/schema_base.sql
 TEST_DATABASE_URL=postgresql://... pytest tests/
 ```
 
-Migrations are idempotent and safe to re-run; apply them in filename order. The CI pipeline builds the schema from nothing on every push, verifies migration idempotency, checks every API route registers, lints with pyflakes, then runs the full suite.
+`db/schema_base.sql` is the single canonical schema (applied twice in CI to prove idempotency). There are no versioned migration files: schema changes are applied by hand in the Neon SQL editor while the work happens, and `schema_base.sql` is updated in the same commit. One-off data cleanups live in `db/dedup.sql` (manual ops script).
+
+The schema file is idempotent and safe to re-run. The CI pipeline builds the schema from nothing on every push, checks every API route registers, lints with pyflakes, then runs the full suite.
 
 Deployment: scraper on GitHub Actions cron; API on Render (`render.yaml`); Neon Postgres; Upstash/free Redis optional (degrades gracefully without it).
 

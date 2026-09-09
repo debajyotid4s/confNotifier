@@ -113,7 +113,7 @@ def _upsert_user(*, lookup_col: str, lookup_val: str, email: str, body, ip, user
                     )
                 except Exception as e:
                     logger.warning("%s: update login info failed for %s: %s", log_id, lookup_val, e)
-                # History table (migration_004) — best-effort, don't block login
+                # Login-events history table — best-effort, don't block login
                 try:
                     from database import execute as _exec_hist
 
