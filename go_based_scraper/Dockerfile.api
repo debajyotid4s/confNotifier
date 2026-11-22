@@ -1,0 +1,16 @@
+# Build stage
+FROM golang:1.24-bookworm AS builder
+WORKDIR /app
+COPY . .
+RUN CGO_ENABLED=0 go build -o confnotifier ./cmd/confnotifier
+
+# Final image
+FROM gcr.io/distroless/static-debian12:nonroot
+WORKDIR /app
+COPY --from=builder /app/confnotifier .
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["/app/confnotifier", "healthcheck"]
+USER nonroot
+ENTRYPOINT ["/app/confnotifier"]
+CMD ["api"]
