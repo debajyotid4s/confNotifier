@@ -43,7 +43,14 @@ type CandidateProcessor struct {
 	stats     *RunStats
 	notifier  Notifier
 	logger    *log.Logger
+	dryRun    bool
 }
+
+// SetDryRun toggles dry-run mode. When true, no DB writes (SaveConference,
+// MarkNotified, IncrementRetry) and no Telegram notifications happen; the
+// processor still runs discovery/extraction/validation and reports what it
+// *would* save, so a dry run validates the pipeline without touching prod.
+func (cp *CandidateProcessor) SetDryRun(v bool) { cp.dryRun = v }
 
 // Notifier announces a saved conference to the channel.
 type Notifier interface {
@@ -85,7 +92,11 @@ func (cp *CandidateProcessor) Process(ctx context.Context, url string) (string, 
 	// Retryable URLs count one more attempt.
 	if cp.retryable != nil {
 		if _, retrying := cp.retryable[url]; retrying {
-			_ = cp.store.IncrementRetry(ctx, url)
+			if cp.dryRun {
+				cp.stats.Bump("retry")
+			} else {
+				_ = cp.store.IncrementRetry(ctx, url)
+			}
 		}
 	}
 	// Precheck: reject stale/duplicate/terminal before spending an LLM call.
@@ -158,6 +169,11 @@ func (cp *CandidateProcessor) doExtract(ctx context.Context, url string) (map[st
 }
 
 func (cp *CandidateProcessor) saveAndNotify(ctx context.Context, url string, result map[string]any, existingID int) (string, Outcome) {
+	if cp.dryRun {
+		cp.stats.Bump("inserted")
+		cp.logger.Printf("DRY-RUN would save conference: %s", asString(result["title"]))
+		return url, Saved
+	}
 	result["raw_source"] = url
 	res, err := cp.store.SaveConference(ctx, result, existingID)
 	if err != nil || !res.Success {

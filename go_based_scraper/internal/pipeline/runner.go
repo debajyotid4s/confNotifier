@@ -20,7 +20,13 @@ type Runner struct {
 	notifier Notifier
 	stats    *RunStats
 	logger   *log.Logger
+	dryRun   bool
 }
+
+// SetDryRun toggles dry-run mode for the whole run: no seen_links writes, no
+// conference saves, no Telegram posts. Discovery, extraction and validation
+// still run, so a dry run validates the pipeline end-to-end without touching prod.
+func (r *Runner) SetDryRun(v bool) { r.dryRun = v }
 
 // NewRunner builds a Runner.
 func NewRunner(p *store.Pool, client *extract.Client, disc *discovery.Discoverer, extract Extractor, nf Notifier, logger *log.Logger) *Runner {
@@ -71,8 +77,9 @@ func (r *Runner) Run(ctx context.Context) (found, inserted, skipped, failed int)
 
 	processor := NewCandidateProcessor(newPoolStore(r.pool), index, terminal, retryURLs,
 		r.client, r.extract, r.stats, r.notifier, r.logger)
+	processor.SetDryRun(r.dryRun)
 	loop := NewLoop(processor, r.stats, statusFlushEvery, func(rows [][2]string) {
-		r.logger.Printf("flush %d statuses", len(rows))
+		r.flushSeenLinks(ctx, rows)
 	}, r.logger)
 	loop.Run(ctx, candidates)
 
@@ -80,4 +87,24 @@ func (r *Runner) Run(ctx context.Context) (found, inserted, skipped, failed int)
 	r.logger.Printf("=== run complete: %d found, %d saved, %d skipped, %d failed ===",
 		found, inserted, skipped, failed)
 	return found, inserted, skipped, failed
+}
+
+// flushSeenLinks persists buffered seen_links statuses (scraper/pipeline/
+// status_writer.py). In dry-run mode it only reports the count — nothing is
+// written to the database.
+func (r *Runner) flushSeenLinks(ctx context.Context, rows [][2]string) {
+	if len(rows) == 0 {
+		return
+	}
+	if r.dryRun {
+		r.logger.Printf("DRY-RUN would flush %d seen_links statuses", len(rows))
+		return
+	}
+	sls := make([]store.SeenLink, len(rows))
+	for i := range rows {
+		sls[i] = store.SeenLink{URL: rows[i][0], Source: "phase4", Status: rows[i][1]}
+	}
+	if _, err := store.SaveSeenLinksBulk(ctx, r.pool, sls); err != nil {
+		r.logger.Printf("seen_links flush error: %v", err)
+	}
 }

@@ -147,6 +147,7 @@ func runScrape() {
 	extractor := extract.NewHTTPExtractor(client)
 	disc := discovery.New(p, log.Default())
 	runner := pipeline.NewRunner(p, client, disc, extractor, telegramNotifier{tg}, log.Default())
+	runner.SetDryRun(hasDryRunFlag(os.Args))
 	runner.Run(ctx)
 }
 
@@ -239,4 +240,16 @@ func stripQuotes(s string) string {
 		return s[1 : len(s)-1]
 	}
 	return s
+}
+
+// hasDryRunFlag reports whether --dry-run (or -n) was passed after the
+// subcommand. When set the scrape runs discovery/extraction/validation but
+// writes nothing and posts no Telegram messages.
+func hasDryRunFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--dry-run" || a == "-n" {
+			return true
+		}
+	}
+	return false
 }
