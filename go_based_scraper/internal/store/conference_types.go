@@ -42,6 +42,11 @@ func (ci *ConferenceIndex) Add(id int, website, title, dateStart string, deadlin
 	ci.ByEdition[key] = id
 }
 
+// Len returns how many conferences are in the dedup index.
+func (ci *ConferenceIndex) Len() int {
+	return len(ci.ByURL)
+}
+
 // FindByUrl returns the conference id for a website, or 0 if absent.
 func (ci *ConferenceIndex) FindByUrl(website string) int {
 	return ci.ByURL[website]

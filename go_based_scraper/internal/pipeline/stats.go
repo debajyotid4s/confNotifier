@@ -82,9 +82,10 @@ func (s *RunStats) Bump(field string) {
 	}
 }
 
-// Summary returns the tallies for logging.
-func (s *RunStats) Summary() (found, inserted, skipped, failed int) {
+// DetailedSummary returns every counter the completion log reports, so a run's
+// direction is legible at a glance (saved vs. rejected vs. failed vs. notified).
+func (s *RunStats) DetailedSummary() (found, inserted, updated, merged, tba, notifications, skipped, failed int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.found, s.inserted, s.skipped, s.failed
+	return s.found, s.inserted, s.updated, s.merged, s.tba, s.notifications, s.skipped, s.failed
 }
