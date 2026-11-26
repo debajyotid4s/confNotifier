@@ -47,10 +47,10 @@ jobs:
           if [ "$DRY" = "true" ]; then ARGS="--dry-run"; fi
           docker run --rm \
             -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
-            -e OPENAI_API_KEY=${{ secrets.GOOGLE_AI_KEY }} \
-            -e OPENAI_BASE_URL=https://api.groq.com/openai \
+            -e OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }} \
+            -e OPENAI_BASE_URL=${{ secrets.OPENAI_BASE_URL }} \
             -e NOTIFY_SECRET=${{ secrets.NOTIFY_SECRET }} \
-            -e JWT_SECRET=${{ secrets.JWT_SECRET }} \
+            -e JWT_SECRET=${{ secrets.JWT_SECRET || 'scrape-dummy-jwt-secret' }} \
             -e PORT=8080 \
             -e TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }} \
             -e TELEGRAM_CHANNEL_ID=${{ secrets.TELEGRAM_CHANNEL_ID }} \
