@@ -21,7 +21,9 @@ concurrency:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # ~2294 candidates from the crt.sh sweep; at RPM 30 the 1000/day (RPD) quota
+    # needs ~65-70 min to exhaust, so 60 min was too tight and cancelled the run.
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v4
