@@ -5,6 +5,11 @@ name: Go Scraper
 # a cron. Manual runs only take effect once this file is on the default branch.
 on:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: discovery + extraction only; no DB writes or Telegram posts'
+        type: boolean
+        default: false
 
 # Same group name as scraper.yml (Python scrape) so GitHub never runs the two
 # scrape workflows at once, even by mistake. (Go CI uses its own group — it is
@@ -35,6 +40,11 @@ jobs:
 
       - name: Run scrape
         run: |
+          # Dry-run (discovery + extraction only, no DB writes / Telegram posts)
+          # when the input is true; otherwise a full scrape.
+          DRY="${{ inputs.dry_run }}"
+          ARGS=""
+          if [ "$DRY" = "true" ]; then ARGS="--dry-run"; fi
           docker run --rm \
             -e DATABASE_URL=${{ secrets.DATABASE_URL }} \
             -e OPENAI_API_KEY=${{ secrets.GOOGLE_AI_KEY }} \
@@ -45,4 +55,4 @@ jobs:
             -e TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }} \
             -e TELEGRAM_CHANNEL_ID=${{ secrets.TELEGRAM_CHANNEL_ID }} \
             -e TELEGRAM_CHANNEL_LINK=${{ secrets.TELEGRAM_CHANNEL_LINK }} \
-            confnotifier:go scrape
+            confnotifier:go scrape $ARGS
