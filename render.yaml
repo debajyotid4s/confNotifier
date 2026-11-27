@@ -16,8 +16,6 @@ services:
         generateValue: true
       - key: NOTIFY_SECRET
         generateValue: true
-      - key: GOOGLE_AUTH_DISABLE
-        value: 0
       - key: REDIS_URL
         sync: false
       - key: WEB_CLIENT_ID
