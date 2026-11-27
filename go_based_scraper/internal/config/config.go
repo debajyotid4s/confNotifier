@@ -38,24 +38,66 @@ type Config struct {
 	Port             string
 }
 
-// Load reads all required environment variables.
+// apiRequired lists the variables the REST API process needs. It deliberately
+// omits scraper-only credentials (OPENAI_*): the API serves conference data and
+// must start in an environment that never sets LLM keys.
+var apiRequired = []string{
+	"DATABASE_URL",
+	"JWT_SECRET",
+	"NOTIFY_SECRET",
+	"PORT",
+}
+
+// Load reads all required (scraper-wide) environment variables.
 // Returns one error listing every missing or whitespace-only variable.
 func Load() (*Config, error) {
+	return loadFor(required)
+}
+
+// LoadAPIConfig loads only the variables the REST API process needs. It never
+// requires scraper-only credentials, so the API can start alongside the scraper
+// (or behind a proxy next to Python) without LLM keys present.
+func LoadAPIConfig() (*Config, error) {
+	return loadFor(apiRequired)
+}
+
+// loadFor validates the given variable set against the environment, returning a
+// single error that lists every missing or whitespace-only variable.
+func loadFor(requiredVars []string) (*Config, error) {
 	var missing []string
 	c := &Config{}
 
-	check("DATABASE_URL", &c.DatabaseURL, &missing)
-	check("OPENAI_API_KEY", &c.OpenAIKey, &missing)
-	check("OPENAI_BASE_URL", &c.OpenAIBaseURL, &missing)
-	check("TELEGRAM_BOT_TOKEN", &c.TelegramBotToken, &missing)
-	check("NOTIFY_SECRET", &c.NotifySecret, &missing)
-	check("JWT_SECRET", &c.JWTSecret, &missing)
-	check("PORT", &c.Port, &missing)
+	for _, name := range requiredVars {
+		check(name, configTarget(c, name), &missing)
+	}
 
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("missing environment variables: %s", strings.Join(missing, ", "))
 	}
 	return c, nil
+}
+
+// configTarget maps a variable name to the Config field it populates, or nil
+// when the variable is unknown (kept out of the required/optional lists).
+func configTarget(c *Config, name string) *string {
+	switch name {
+	case "DATABASE_URL":
+		return &c.DatabaseURL
+	case "OPENAI_API_KEY":
+		return &c.OpenAIKey
+	case "OPENAI_BASE_URL":
+		return &c.OpenAIBaseURL
+	case "TELEGRAM_BOT_TOKEN":
+		return &c.TelegramBotToken
+	case "NOTIFY_SECRET":
+		return &c.NotifySecret
+	case "JWT_SECRET":
+		return &c.JWTSecret
+	case "PORT":
+		return &c.Port
+	default:
+		return nil
+	}
 }
 
 // isOptional reports whether a variable may be left blank.

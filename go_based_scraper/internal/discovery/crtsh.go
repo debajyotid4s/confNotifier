@@ -138,9 +138,10 @@ func normalizeCertName(name string) string {
 }
 
 // Discover runs one discovery pass: fetch certs, filter to conference-worthy
-// domains, and queue them as pending seen_links. It returns the number of new
-// candidates queued.
-func Discover(ctx context.Context, p *store.Pool, client *Client) (int, error) {
+// domains, and queue them as pending seen_links. When dryRun is true the sweep
+// still runs and returns the count of new candidates, but persists nothing —
+// keeping a scrape dry run fully read-only.
+func Discover(ctx context.Context, p *store.Pool, client *Client, dryRun bool) (int, error) {
 	names, err := client.FetchCertificates(ctx)
 	if err != nil {
 		return 0, err
@@ -154,12 +155,14 @@ func Discover(ctx context.Context, p *store.Pool, client *Client) (int, error) {
 	if len(candidates) == 0 {
 		return 0, nil
 	}
-	rows := make([]store.SeenLink, 0, len(candidates))
-	for _, c := range candidates {
-		rows = append(rows, store.SeenLink{URL: c, Source: "crt.sh", Status: "pending"})
-	}
-	if _, err := store.SaveSeenLinksBulk(ctx, p, rows); err != nil {
-		return 0, fmt.Errorf("queue crt.sh candidates: %w", err)
+	if !dryRun {
+		rows := make([]store.SeenLink, 0, len(candidates))
+		for _, c := range candidates {
+			rows = append(rows, store.SeenLink{URL: c, Source: "crt.sh", Status: "pending"})
+		}
+		if _, err := store.SaveSeenLinksBulk(ctx, p, rows); err != nil {
+			return 0, fmt.Errorf("queue crt.sh candidates: %w", err)
+		}
 	}
 	return len(candidates), nil
 }

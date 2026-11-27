@@ -108,6 +108,17 @@ CREATE TABLE IF NOT EXISTS daily_tasks (
     last_run_date TIMESTAMPTZ
 );
 
+-- Single-instance execution guard (see store.AcquireRunLock / ReleaseRunLock).
+-- Only one run may hold a given lock_name at a time, across deployments and
+-- independent triggers. Complements GitHub Actions concurrency with a database
+-- backstop so a second deployment or a manually triggered worker cannot run two
+-- scrapes at once. A lock is reclaimable once it ages past the stale TTL.
+CREATE TABLE IF NOT EXISTS run_lock (
+    lock_name   TEXT PRIMARY KEY,
+    held_by     TEXT NOT NULL,
+    acquired_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS domain_strategies (
     domain     TEXT PRIMARY KEY,
     strategy   TEXT,
@@ -167,6 +178,7 @@ CREATE TABLE IF NOT EXISTS users (
     last_login_at TIMESTAMPTZ,
     last_login_ip TEXT,
     deleted_at TIMESTAMPTZ,
+    token_version INT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_users_deleted_at ON users(deleted_at);
@@ -221,7 +233,7 @@ CREATE TABLE IF NOT EXISTS notification_log (
     conference_id INTEGER NOT NULL REFERENCES conferences(id) ON DELETE CASCADE,
     deadline_type TEXT NOT NULL,
     deadline_date DATE NOT NULL,
-    reason TEXT NOT NULL CHECK (reason IN ('approaching', 'changed')),
+    reason TEXT NOT NULL CHECK (reason IN ('approaching', 'changed', 'urgent_24h')),
     notified_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_log_dedup

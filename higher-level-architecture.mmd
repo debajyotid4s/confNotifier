@@ -1,0 +1,46 @@
+
+flowchart TB
+    subgraph Clients
+        A["Android — Kotlin / Compose"]
+        B["Future web clients"]
+        C["External API consumers"]
+    end
+
+    subgraph Backend["Go backend"]
+        API["REST API"]
+        AUTH["Authentication"]
+        WORKER["Scraper worker"]
+        VERIFY["Deadline verifier"]
+        NOTIFY["Notification worker"]
+        DISC["Discovery engine"]
+        EXTRACT["Extraction and validation"]
+    end
+
+    DB[("PostgreSQL")]
+    QUEUE[("Persistent job / candidate state")]
+    CACHE[("Optional Redis")]
+    EXT["University websites / CFP sources"]
+    LLM["LLM provider"]
+    FCM["Firebase Cloud Messaging"]
+    TG["Telegram"]
+
+    A --> API
+    B --> API
+    C --> API
+
+    API --> AUTH
+    API --> DB
+    API --> CACHE
+
+    WORKER --> DISC
+    DISC --> EXT
+    WORKER --> EXTRACT
+    EXTRACT --> LLM
+    WORKER --> DB
+    WORKER --> QUEUE
+
+    VERIFY --> DB
+    VERIFY --> EXT
+    NOTIFY --> DB
+    NOTIFY --> FCM
+    NOTIFY --> TG

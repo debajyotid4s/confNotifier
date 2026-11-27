@@ -24,11 +24,11 @@ import (
 	"syscall"
 	"time"
 
+	"confnotifier/internal/api"
 	"confnotifier/internal/config"
 	"confnotifier/internal/discovery"
 	"confnotifier/internal/extract"
 	"confnotifier/internal/health"
-	"confnotifier/internal/httpapi"
 	"confnotifier/internal/notify"
 	"confnotifier/internal/pipeline"
 	"confnotifier/internal/store"
@@ -87,7 +87,7 @@ func runHealthcheck() {
 }
 
 func runAPI() {
-	cfg, err := config.Load()
+	cfg, err := config.LoadAPIConfig()
 	if err != nil {
 		log.Fatalf("config error: %v", err)
 	}
@@ -97,10 +97,8 @@ func runAPI() {
 		log.Fatalf("db pool: %v", err)
 	}
 	log.Printf("API starting on :%s", cfg.Port)
-	mux := httpapi.NewMux()
-	httpapi.RegisterHealth(mux.ServeMux, p)
-	httpapi.RegisterConferences(mux.ServeMux, p)
-	if err := httpapi.Start(); err != nil {
+	srv := api.NewServer(p)
+	if err := srv.Start(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
 }
@@ -132,6 +130,24 @@ func runScrape() {
 	if err != nil {
 		log.Fatalf("db pool: %v", err)
 	}
+
+	// Single-instance execution guard: only one scrape may hold the 'scrape'
+	// lock at a time. If another deployment or worker already holds it, exit
+	// cleanly — cancel-in-progress is false, so we never run concurrently.
+	holder := store.RunHolderToken()
+	acquired, err := store.AcquireRunLock(ctx, p, "scrape", holder)
+	if err != nil {
+		log.Fatalf("run lock: %v", err)
+	}
+	if !acquired {
+		log.Println("another scrape run holds the 'scrape' lock — exiting")
+		os.Exit(0)
+	}
+	defer func() {
+		if err := store.ReleaseRunLock(ctx, p, "scrape", holder); err != nil {
+			log.Printf("release run lock: %v", err)
+		}
+	}()
 
 	client := extract.NewClient(extract.ClientConfig{
 		BaseURL:  cfg.OpenAIBaseURL,

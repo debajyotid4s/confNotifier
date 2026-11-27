@@ -3,6 +3,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -28,10 +29,14 @@ func LoadSourceState(ctx context.Context, p *Pool, name string) (*SourceState, e
 	return &ss, nil
 }
 
-// GetTaskLastRun returns the timestamp of a task's last run.
+// GetTaskLastRun returns the timestamp of a task's last run, or nil if it has
+// never run (matching Python get_task_last_run, which returns None).
 func GetTaskLastRun(ctx context.Context, p *Pool, taskName string) (*time.Time, error) {
 	var lastRun *time.Time
 	err := p.QueryRow(ctx, "SELECT last_run_date FROM daily_tasks WHERE task_name = $1", taskName).Scan(&lastRun)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("get task last run: %w", err)
 	}

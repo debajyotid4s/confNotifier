@@ -115,7 +115,6 @@ func TestExpandPath(t *testing.T) {
 	}
 }
 
-
 func TestSeedSubdomainPrefixes(t *testing.T) {
 	// Big-5 domain gets seeded.
 	s := Source{BaseDomain: "kuet.ac.bd", KnownPrefixes: []string{"www"}}

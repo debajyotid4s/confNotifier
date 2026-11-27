@@ -1,0 +1,328 @@
+[
+  {
+    "id": "case_01_both_deadlines",
+    "summary": "Successful extraction with both abstract and full-paper deadlines. New website -> insert.",
+    "input": {
+      "url": "https://icmdl.kuet.ac.bd/mdl-2027/",
+      "page_text": "International Conference on Multidisciplinary Engineering (MDL-2027). Abstract submission: 2027-01-15. Full paper submission: 2027-02-20. Registration to be announced.",
+      "prior_db": {
+        "exists": false,
+        "conference_id": 0,
+        "website": null,
+        "title": null,
+        "date_start": null,
+        "deadlines": []
+      }
+    },
+    "expected": {
+      "accepted": true,
+      "reject_reason": null,
+      "title": "International Conference on Multidisciplinary Engineering (MDL-2027)",
+      "submission_dates": {
+        "abstract": "2027-01-15",
+        "full_paper": "2027-02-20"
+      },
+      "edition_identity": {
+        "website": "https://icmdl.kuet.ac.bd/mdl-2027/",
+        "title": "MDL-2027",
+        "date_start": null
+      },
+      "db_decision": "insert",
+      "duplicate": false,
+      "retry": false,
+      "deadline_change": null,
+      "reported_website": "https://icmdl.kuet.ac.bd/mdl-2027/"
+    },
+    "cost": {
+      "llm_requests": 1
+    }
+  },
+  {
+    "id": "case_02_abstract_deadline_only",
+    "summary": "Extraction with a single (abstract) deadline type. New website -> insert with one deadline row.",
+    "input": {
+      "url": "https://cse.buet.ac.bd/seer-2027/",
+      "page_text": "SEER 2027 \u2014 Abstract deadline: 2027-03-31. No full-paper deadline stated.",
+      "prior_db": {
+        "exists": false,
+        "conference_id": 0,
+        "website": null,
+        "title": null,
+        "date_start": null,
+        "deadlines": []
+      }
+    },
+    "expected": {
+      "accepted": true,
+      "reject_reason": null,
+      "title": "SEER 2027",
+      "submission_dates": {
+        "abstract": "2027-03-31",
+        "full_paper": null
+      },
+      "edition_identity": {
+        "website": "https://cse.buet.ac.bd/seer-2027/",
+        "title": "SEER 2027",
+        "date_start": null
+      },
+      "db_decision": "insert",
+      "duplicate": false,
+      "retry": false,
+      "deadline_change": null,
+      "reported_website": "https://cse.buet.ac.bd/seer-2027/"
+    },
+    "cost": {
+      "llm_requests": 1
+    }
+  },
+  {
+    "id": "case_03_no_deadlines_tba",
+    "summary": "TBA page with no announced deadlines. Inserted, but no deadline rows and content flagged tba.",
+    "input": {
+      "url": "https://conf.sust.edu.bd/tba-2028/",
+      "page_text": "TBA 2028 \u2014 dates to be announced. Call for papers open.",
+      "prior_db": {
+        "exists": false,
+        "conference_id": 0,
+        "website": null,
+        "title": null,
+        "date_start": null,
+        "deadlines": []
+      }
+    },
+    "expected": {
+      "accepted": true,
+      "reject_reason": null,
+      "title": "TBA 2028",
+      "submission_dates": {
+        "abstract": null,
+        "full_paper": null
+      },
+      "edition_identity": {
+        "website": "https://conf.sust.edu.bd/tba-2028/",
+        "title": "TBA 2028",
+        "date_start": null
+      },
+      "db_decision": "insert",
+      "duplicate": false,
+      "retry": false,
+      "deadline_change": null,
+      "reported_website": "https://conf.sust.edu.bd/tba-2028/"
+    },
+    "cost": {
+      "llm_requests": 1
+    }
+  },
+  {
+    "id": "case_04_submission_deadline_extended",
+    "summary": "Submission deadline moved later. Existing conference -> update with deadline_previous preserved.",
+    "input": {
+      "url": "https://iccit.org.bd/icccit-2026/",
+      "page_text": "ICCCIT 2026 \u2014 Abstract submission extended to 2026-12-15 (was 2026-11-30).",
+      "prior_db": {
+        "exists": true,
+        "conference_id": 42,
+        "website": "https://iccit.org.bd/icccit-2026/",
+        "title": "ICCCIT 2026",
+        "date_start": null,
+        "deadlines": [
+          {
+            "type": "abstract",
+            "deadline": "2026-11-30",
+            "deadline_previous": null
+          }
+        ]
+      }
+    },
+    "expected": {
+      "accepted": true,
+      "reject_reason": null,
+      "title": "ICCCIT 2026",
+      "submission_dates": {
+        "abstract": "2026-12-15",
+        "full_paper": null
+      },
+      "edition_identity": {
+        "website": "https://iccit.org.bd/icccit-2026/",
+        "title": "ICCCIT 2026",
+        "date_start": null
+      },
+      "db_decision": "update",
+      "duplicate": false,
+      "retry": false,
+      "deadline_change": {
+        "type": "abstract",
+        "from": "2026-11-30",
+        "to": "2026-12-15"
+      },
+      "reported_website": "https://iccit.org.bd/icccit-2026/"
+    },
+    "cost": {
+      "llm_requests": 1
+    }
+  },
+  {
+    "id": "case_05_new_edition_different_url",
+    "summary": "Same conference, new edition under a different URL -> duplicate-edition merge into existing conference.",
+    "input": {
+      "url": "https://iccbs.kuet.ac.bd/new-edition-2027/",
+      "page_text": "ICCCBS 2027 \u2014 International Conference on Computer and Biological Engineering, new edition.",
+      "prior_db": {
+        "exists": true,
+        "conference_id": 7,
+        "website": "https://iccbs.kuet.ac.bd/iccbs-2026/",
+        "title": "ICCCBS",
+        "date_start": null,
+        "deadlines": [
+          {
+            "type": "abstract",
+            "deadline": "2026-10-10",
+            "deadline_previous": null
+          }
+        ]
+      }
+    },
+    "expected": {
+      "accepted": true,
+      "reject_reason": null,
+      "title": "ICCCBS 2027",
+      "submission_dates": {
+        "abstract": null,
+        "full_paper": null
+      },
+      "edition_identity": {
+        "website": "https://iccbs.kuet.ac.bd/iccbs-2026/",
+        "title": "ICCCBS",
+        "date_start": null
+      },
+      "db_decision": "merge",
+      "duplicate": true,
+      "retry": false,
+      "deadline_change": null,
+      "reported_website": "https://iccbs.kuet.ac.bd/iccbs-2026/"
+    },
+    "cost": {
+      "llm_requests": 1
+    }
+  },
+  {
+    "id": "case_06_website_changed_cfp_url",
+    "summary": "Host keeps its identity but moves the CFP path. Discovery must re-find it; new path is a fresh candidate.",
+    "input": {
+      "url": "https://www.ruet.ac.bd/call-for-papers/ic-2027/",
+      "page_text": "RUET IC 2027 \u2014 Abstract: 2027-04-20. The CFP previously lived at /conference/2026/.",
+      "prior_db": {
+        "exists": true,
+        "conference_id": 19,
+        "website": "https://www.ruet.ac.bd/conference/2026/",
+        "title": "RUET IC",
+        "date_start": null,
+        "deadlines": [
+          {
+            "type": "abstract",
+            "deadline": "2026-04-20",
+            "deadline_previous": null
+          }
+        ]
+      }
+    },
+    "expected": {
+      "accepted": true,
+      "reject_reason": null,
+      "title": "RUET IC 2027",
+      "submission_dates": {
+        "abstract": "2027-04-20",
+        "full_paper": null
+      },
+      "edition_identity": {
+        "website": "https://www.ruet.ac.bd/conference/2026/",
+        "title": "RUET IC",
+        "date_start": null
+      },
+      "db_decision": "pending",
+      "duplicate": false,
+      "retry": false,
+      "deadline_change": null,
+      "reported_website": "https://www.ruet.ac.bd/call-for-papers/ic-2027/"
+    },
+    "cost": {
+      "llm_requests": 1
+    }
+  },
+  {
+    "id": "case_07_false_positive_event",
+    "summary": "Ordinary event announcement, not a CFP. Rejected at the URL precheck (junk_segment) \u2014 no LLM spent.",
+    "input": {
+      "url": "https://news.du.ac.bd/annual-sports-day-2026/",
+      "page_text": "University of Dhaka Annual Sports Day 2026 \u2014 to be held on the university grounds. All students are invited.",
+      "prior_db": {
+        "exists": false,
+        "conference_id": 0,
+        "website": null,
+        "title": null,
+        "date_start": null,
+        "deadlines": []
+      }
+    },
+    "expected": {
+      "accepted": false,
+      "reject_reason": "junk_segment",
+      "title": null,
+      "submission_dates": {
+        "abstract": null,
+        "full_paper": null
+      },
+      "edition_identity": {
+        "website": null,
+        "title": null,
+        "date_start": null
+      },
+      "db_decision": "skip",
+      "duplicate": false,
+      "retry": false,
+      "deadline_change": null,
+      "reported_website": "https://news.du.ac.bd/annual-sports-day-2026/"
+    },
+    "cost": {
+      "llm_requests": 0
+    }
+  },
+  {
+    "id": "case_08_stale_previous_year",
+    "summary": "Past edition from a previous year. Rejected at the URL precheck as stale_year \u2014 no insert, no wasted extraction.",
+    "input": {
+      "url": "https://iccbs.kuet.ac.bd/iccbs-2024/",
+      "page_text": "ICCCBS 2024 \u2014 held last year. Abstract was 2024-09-15.",
+      "prior_db": {
+        "exists": false,
+        "conference_id": 0,
+        "website": null,
+        "title": null,
+        "date_start": null,
+        "deadlines": []
+      }
+    },
+    "expected": {
+      "accepted": false,
+      "reject_reason": "stale_year",
+      "title": null,
+      "submission_dates": {
+        "abstract": null,
+        "full_paper": null
+      },
+      "edition_identity": {
+        "website": null,
+        "title": null,
+        "date_start": null
+      },
+      "db_decision": "skip",
+      "duplicate": false,
+      "retry": false,
+      "deadline_change": null,
+      "reported_website": "https://iccbs.kuet.ac.bd/iccbs-2024/"
+    },
+    "cost": {
+      "llm_requests": 0
+    }
+  }
+]

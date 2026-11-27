@@ -11,12 +11,15 @@ on:
         type: boolean
         default: false
 
-# Same group name as scraper.yml (Python scrape) so GitHub never runs the two
-# scrape workflows at once, even by mistake. (Go CI uses its own group — it is
-# a test job, not a scrape, and must not be blocked by a manual run.)
+# Shared literal group so GitHub never runs the Python and Go scrape jobs at
+# once, even by mistake. The group is a literal string (not ${{ github.workflow }},
+# which resolves to different names per workflow and would break the sharing).
+# Go CI uses its own group — it is a test job, not a scrape, and must not be
+# blocked by a manual run. cancel-in-progress is false so a scrape that is
+# already running is never half-cancelled (which can leave confusing state).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: confnotifier-scrape-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   scrape:

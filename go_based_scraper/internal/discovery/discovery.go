@@ -15,7 +15,13 @@ type Discoverer struct {
 	log     *log.Logger
 	browser *BrowserFetcher
 	crt     *Client
+	dryRun  bool // when true, discovery fetches and classifies but writes nothing
 }
+
+// SetDryRun toggles read-only discovery: discovery still runs (fetch + classify
+// + return candidates) but persists no seen_links rows, so a scrape dry run
+// touches no database rows at all.
+func (d *Discoverer) SetDryRun(v bool) { d.dryRun = v }
 
 // New builds a Discoverer. A headless-Chrome fetcher is created up front and
 // shared by every tier-3 lookup; it degrades to nil-safe no-ops when no
@@ -71,10 +77,12 @@ func (d *Discoverer) Run(ctx context.Context) ([]string, []string) {
 	if len(special) > 0 {
 		newCands, newRows := d.runSpecial(ctx, special)
 		candidates = append(candidates, newCands...)
-		if len(newRows) > 0 {
+		if len(newRows) > 0 && !d.dryRun {
 			if _, err := store.SaveSeenLinksBulk(ctx, d.pool, toSeenLinks(newRows)); err != nil {
 				d.log.Printf("discovery: persist special claims: %v", err)
 			}
+		} else if len(newRows) > 0 {
+			d.log.Printf("discovery: skipping persist of %d special claim(s) [dry-run]", len(newRows))
 		}
 	}
 
@@ -83,7 +91,7 @@ func (d *Discoverer) Run(ctx context.Context) ([]string, []string) {
 	// This is the one net that catches a subdomain link-discovery has never
 	// observed, so it runs independent of the others and fails open.
 	if d.crt != nil {
-		if n, err := Discover(ctx, d.pool, d.crt); err != nil {
+		if n, err := Discover(ctx, d.pool, d.crt, d.dryRun); err != nil {
 			d.log.Printf("discovery: crt.sh sweep: %v", err)
 		} else if n > 0 {
 			d.log.Printf("discovery: crt.sh queued %d new candidate(s)", n)

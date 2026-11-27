@@ -49,6 +49,9 @@ func (r *Runner) Run(ctx context.Context) (found, inserted, skipped, failed int)
 	var candidates []string
 	var retryURLs []string
 	if r.disc != nil {
+		// Discovery must honour the same dry-run mode as the processor: a dry
+		// run fetches and classifies but persists no seen_links rows.
+		r.disc.SetDryRun(r.dryRun)
 		candidates, retryURLs = r.disc.Run(ctx)
 		if len(candidates) > 0 {
 			r.logger.Printf("discovery: found %d new candidate(s)", len(candidates))

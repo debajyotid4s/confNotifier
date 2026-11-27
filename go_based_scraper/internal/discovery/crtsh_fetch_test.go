@@ -13,9 +13,9 @@ import (
 // mockCrtServer serves a configurable crt.sh JSON payload and records the
 // queries it received, so tests can assert both parsing and request shape.
 type mockCrtServer struct {
-	server   *httptest.Server
-	mu       sync.Mutex
-	queries  []string
+	server    *httptest.Server
+	mu        sync.Mutex
+	queries   []string
 	responses map[string]string
 }
 
@@ -171,7 +171,7 @@ func TestFetchCertificatesHTTPError(t *testing.T) {
 // TestFetchCertificatesEmpty proves an empty payload yields no candidates.
 func TestFetchCertificatesEmpty(t *testing.T) {
 	srv := newMockCrtServer(map[string]string{
-		"ac.bd": `[]`,
+		"ac.bd":  `[]`,
 		"edu.bd": `[]`,
 	})
 	defer srv.close()
