@@ -129,6 +129,22 @@ func (s *Server) handleConference(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out[0])
 }
 
+// limitedRead enforces the per-IP public-read budget on a read handler,
+// reusing the server's shared limiter (the same one that gates /auth/login).
+// A single client is bounded across every public read, matching the contract's
+// "rate-limited per client IP". A nil limiter (a hand-built Server in tests)
+// fails open, so limiting never takes down a read.
+func (s *Server) limitedRead(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.limiter != nil && !s.limiter.allowed("rl:read:"+clientIP(r)) {
+			s.limiter.prune()
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{"detail": "Too many requests — try again later"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	}
+}
+
 // queryCalendar fetches conferences with a deadline in [start, end).
 func (s *Server) queryCalendar(ctx context.Context, start, end string) []conferenceRow {
 	rows, err := s.pool.Query(ctx, confSelect+

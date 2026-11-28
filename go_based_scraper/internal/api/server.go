@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"confnotifier/internal/store"
@@ -53,9 +54,13 @@ func (s *Server) Handler() http.Handler {
 	return middleware(mux)
 }
 
-// Register wires every route onto the mux.
+// Register wires every route onto the mux. Every public read is served at both
+// its unversioned path (the existing Android contract) and under /api/v1 (the
+// versioned public API); the three conference reads are rate-limited per client
+// IP. /health is operational, not a read, so it is left un-limited.
 func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /health", s.handleHealth)
+	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 
 	mux.HandleFunc("POST /auth/login", s.handleLogin)
 	mux.HandleFunc("POST /auth/logout", s.authMiddleware(s.handleLogout))
@@ -63,9 +68,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /me", s.authMiddleware(s.handleMe))
 	mux.HandleFunc("DELETE /me", s.authMiddleware(s.handleDeleteMe))
 
-	mux.HandleFunc("GET /conferences/calendar", s.handleCalendar)
-	mux.HandleFunc("GET /conferences/upcoming", s.handleUpcoming)
-	mux.HandleFunc("GET /conferences/{conf_id}", s.handleConference)
+	registerRead(mux, "GET /conferences/calendar", s.limitedRead(s.handleCalendar))
+	registerRead(mux, "GET /conferences/upcoming", s.limitedRead(s.handleUpcoming))
+	registerRead(mux, "GET /conferences/{conf_id}", s.limitedRead(s.handleConference))
 
 	mux.HandleFunc("GET /me/bookmarks", s.authMiddleware(s.handleListBookmarks))
 	mux.HandleFunc("POST /me/bookmarks/{conference_id}", s.authMiddleware(s.handleAddBookmark))
@@ -78,6 +83,19 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /internal/notify-bookmarks", s.internalMiddleware(s.handleNotifyBookmarks))
 	mux.HandleFunc("POST /internal/notify-digest", s.internalMiddleware(s.handleNotifyDigest))
 	mux.HandleFunc("POST /internal/notify-daily", s.internalMiddleware(s.handleNotifyDaily))
+}
+
+// registerRead wires a read handler at both the unversioned path and its
+// /api/v1 counterpart, so the existing Android endpoints keep working while the
+// versioned public API is available. The same (already rate-limited) handler
+// serves both, so an IP is bounded across the two prefixes. The ServeMux pattern
+// is "METHOD /path"; the /api/v1 prefix is inserted on the path only, keeping
+// the method first.
+func registerRead(mux *http.ServeMux, pattern string, h http.HandlerFunc) {
+	mux.HandleFunc(pattern, h)
+	if sp := strings.IndexByte(pattern, ' '); sp >= 0 {
+		mux.HandleFunc(pattern[:sp]+" /api/v1"+pattern[sp+1:], h)
+	}
 }
 
 // Start runs the server and blocks until SIGINT/SIGTERM, then shuts down.

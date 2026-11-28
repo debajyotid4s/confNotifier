@@ -78,3 +78,9 @@ jobs:
 
       - name: Run tests
         run: python -m pytest tests/ -q
+
+      - name: Roles + backup/restore gate
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/conftest
+        run: |
+          bash db/maint.sh verify

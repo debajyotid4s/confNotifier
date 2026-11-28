@@ -183,6 +183,57 @@ func TestRateLimiter(t *testing.T) {
 	}
 }
 
+// TestLimitedRead pins the per-IP public-read budget: an IP gets capacity
+// requests before 429, a different IP has its own budget, and the same IP over
+// budget is turned away without reaching the handler. A nil limiter (a
+// hand-built Server) fails open, so limiting never takes down a read.
+func TestLimitedRead(t *testing.T) {
+	s := &Server{limiter: NewRateLimiter(2, time.Minute)}
+	var calls int
+	h := s.limitedRead(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}))
+
+	hit := func(ip string) *httptest.ResponseRecorder {
+		rr := httptest.NewRecorder()
+		rq := httptest.NewRequest("GET", "/conferences/calendar?month=2026-12", nil)
+		rq.RemoteAddr = ip + ":5555"
+		rq.Header.Set("X-Forwarded-For", ip) // clientIP trusts the proxy by default; XFF carries a plain IP
+		h.ServeHTTP(rr, rq)
+		return rr
+	}
+
+	if rr := hit("1.1.1.1"); rr.Code != http.StatusOK {
+		t.Fatalf("first hit: code=%d want 200", rr.Code)
+	}
+	if rr := hit("1.1.1.1"); rr.Code != http.StatusOK {
+		t.Fatalf("second hit (same IP): code=%d want 200", rr.Code)
+	}
+	// Same client IP, different source port — same rate-limit key, so this is
+	// the third request and is over budget.
+	if rr := hit("1.1.1.1"); rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("third hit (same IP): code=%d want 429", rr.Code)
+	}
+	// A different IP has its own budget.
+	if rr := hit("2.2.2.2"); rr.Code != http.StatusOK {
+		t.Fatalf("other IP: code=%d want 200", rr.Code)
+	}
+	if calls != 3 {
+		t.Fatalf("handler called %d times, want 3 (the 429 must not reach it)", calls)
+	}
+
+	// A nil limiter fails open: the handler is always reached.
+	var called bool
+	nilS := &Server{}
+	nilS.limitedRead(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/conferences/calendar", nil))
+	if !called {
+		t.Fatal("nil limiter should fail open (handler must be reached)")
+	}
+}
+
 func TestConstantTimeCompare(t *testing.T) {
 	if !constantTimeCompare("secret", "secret") {
 		t.Fatal("equal strings should match")

@@ -28,7 +28,8 @@ func SaveSeenLinksBulk(ctx context.Context, p *Pool, rows []SeenLink) (int, erro
 		}
 		b.WriteString(fmt.Sprintf("($%d, $%d, $%d)", i*3+1, i*3+2, i*3+3))
 	}
-	b.WriteString(" ON CONFLICT (url) DO UPDATE SET status = EXCLUDED.status, last_seen = NOW() WHERE seen_links.status NOT IN ")
+	b.WriteString(" ON CONFLICT (url) DO UPDATE SET status = EXCLUDED.status, last_seen = NOW(), " +
+		"leased_by = NULL, processing_at = NULL WHERE seen_links.status NOT IN ")
 	b.WriteString(terms)
 	args := make([]any, 0, len(values)*3)
 	for _, r := range values {

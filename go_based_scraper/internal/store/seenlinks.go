@@ -66,7 +66,8 @@ func MarkURLStatus(ctx context.Context, p *Pool, url, status string) error {
 	terms := sqlTerms(TerminalStatuses)
 	_, err := p.Exec(ctx,
 		"INSERT INTO seen_links (url, source, status) VALUES ($1, 'phase4', $2) "+
-			"ON CONFLICT (url) DO UPDATE SET status = $2, last_seen = NOW() "+
+			"ON CONFLICT (url) DO UPDATE SET status = $2, last_seen = NOW(), "+
+			"leased_by = NULL, processing_at = NULL "+
 			"WHERE seen_links.status NOT IN "+terms,
 		url, status)
 	return err

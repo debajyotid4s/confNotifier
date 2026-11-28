@@ -161,6 +161,7 @@ func (cp *CandidateProcessor) Process(ctx context.Context, url string) (string, 
 }
 
 func (cp *CandidateProcessor) doExtract(ctx context.Context, url string) (map[string]any, error) {
+	cp.stats.MarkExtraction()
 	text, err := cp.extract.Extract(ctx, url)
 	if err != nil {
 		return nil, err

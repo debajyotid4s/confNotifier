@@ -50,7 +50,6 @@ func NewPool(ctx context.Context) (*Pool, error) {
 		}
 		if err := pool.Ping(ctx); err == nil {
 			log.Printf("DB pool inited (%d-%d conns)", poolMinConns, poolMaxConns)
-			ensureSchema(ctx, &Pool{pool})
 			return &Pool{pool}, nil
 		}
 		log.Printf("DB connect attempt %d/3 failed: %v", i+1, err)
@@ -66,25 +65,4 @@ func StatementTimeout() string {
 		return fmt.Sprintf("%d", stmtTimeoutMs)
 	}
 	return v
-}
-
-// schemaDDL are idempotent DDL statements the Go scraper ensures exist. They
-// mirror the Python scraper's tables (idempotent, safe to re-run).
-var schemaDDL = []string{
-	`CREATE TABLE IF NOT EXISTS source_state (
-	    name                 TEXT PRIMARY KEY,
-	    last_confirmed_year  INT,
-	    working_candidate    TEXT,
-	    consecutive_failures INT NOT NULL DEFAULT 0,
-	    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
-	)`,
-}
-
-// ensureSchema runs any DDL the scraper needs, best-effort (logged, not fatal).
-func ensureSchema(ctx context.Context, pool *Pool) {
-	for _, stmt := range schemaDDL {
-		if _, err := pool.Exec(ctx, stmt); err != nil {
-			log.Printf("schema ensure: %v", err)
-		}
-	}
 }

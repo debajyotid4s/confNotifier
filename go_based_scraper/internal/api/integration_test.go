@@ -52,6 +52,48 @@ func TestServerWiring(t *testing.T) {
 	}
 }
 
+// TestV1ReadRoutesWired proves the versioned /api/v1 public-read routes are
+// registered on the served mux (not 404) and behave identically to the
+// unversioned endpoints. A nil pool makes the reads panic in the handler; the
+// recovery middleware turns that into 500, so "not 404" proves the route is
+// wired. The versioned and unversioned responses must match, so a client gets
+// the same shape regardless of prefix.
+func TestV1ReadRoutesWired(t *testing.T) {
+	h := NewServer(nil).Handler()
+	run := func(method, path string) *httptest.ResponseRecorder {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest(method, path, nil))
+		return rr
+	}
+
+	// /api/v1/health must reach its handler (200/500/503), never 404.
+	if rr := run("GET", "/api/v1/health"); rr.Code == http.StatusNotFound {
+		t.Fatalf("/api/v1/health returned 404: versioned routes are not on the server")
+	}
+
+	// Each versioned read must mirror the unversioned one's status (both 500 via
+	// nil-pool recovery), proving identical wiring.
+	for _, path := range []string{
+		"/conferences/calendar?month=2026-12",
+		"/conferences/upcoming",
+		"/conferences/42",
+	} {
+		plain := run("GET", path)
+		v1 := run("GET", "/api/v1"+path)
+		if v1.Code == http.StatusNotFound {
+			t.Errorf("/api/v1%s returned 404: versioned read not wired", path)
+		}
+		if v1.Code != plain.Code {
+			t.Errorf("/api/v1%s = %d, unversioned = %d: they must match", path, v1.Code, plain.Code)
+		}
+	}
+
+	// A versioned-but-unregistered path must 404 (no catch-all swallows it).
+	if rr := run("GET", "/api/v2/conferences/calendar"); rr.Code != http.StatusNotFound {
+		t.Errorf("/api/v2/... = %d, want 404", rr.Code)
+	}
+}
+
 // TestMiddlewareGzipEndToEnd runs a body through the full middleware chain with
 // Accept-Encoding: gzip and verifies the response is real gzip that
 // decompresses to the original bytes. It also verifies a client that does not

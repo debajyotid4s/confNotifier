@@ -2,20 +2,24 @@ package pipeline
 
 import (
 	"sync"
+
+	"confnotifier/internal/store"
 )
 
 // RunStats accumulates counters for one run (scraper/pipeline/stats.py).
 type RunStats struct {
-	mu             sync.Mutex
-	found          int
-	inserted       int
-	updated        int
-	merged         int
-	tba            int
-	notifications  int
-	skipped        int
-	failed         int
-	quotaExhausted bool
+	mu                 sync.Mutex
+	found              int
+	processed          int
+	extractionAttempts int
+	inserted           int
+	updated            int
+	merged             int
+	tba                int
+	notifications      int
+	skipped            int
+	failed             int
+	quotaExhausted     bool
 }
 
 // SetFound records how many unique candidates were processed.
@@ -79,6 +83,47 @@ func (s *RunStats) Bump(field string) {
 		s.tba++
 	case "notifications":
 		s.notifications++
+	case "extraction_attempts":
+		s.extractionAttempts++
+	case "processed":
+		s.processed++
+	}
+}
+
+// MarkProcessed counts one candidate that ran through the pipeline (passed the
+// quota gate and was handed to the processor). It is the "candidates processed"
+// funnel step, between found and extraction attempts.
+func (s *RunStats) MarkProcessed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.processed++
+}
+
+// MarkExtraction counts one actual extraction call (the model trip). This is the
+// faithful proxy for LLM usage: a candidate rejected at the cheap URL precheck
+// never reaches extraction, so processed >= extraction_attempts.
+func (s *RunStats) MarkExtraction() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.extractionAttempts++
+}
+
+// Counters snapshots every counter the scraper_runs row needs, in one lock.
+func (s *RunStats) Counters() store.RunCounters {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return store.RunCounters{
+		CandidatesFound:     s.found,
+		CandidatesProcessed: s.processed,
+		ExtractionAttempts:  s.extractionAttempts,
+		Inserted:            s.inserted,
+		Updated:             s.updated,
+		Merged:              s.merged,
+		TBA:                 s.tba,
+		Skipped:             s.skipped,
+		Failed:              s.failed,
+		NotificationsSent:   s.notifications,
+		QuotaExhausted:      s.quotaExhausted,
 	}
 }
 

@@ -3,9 +3,11 @@ package store
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // SourceState holds learned per-source resolver state.
@@ -34,7 +36,7 @@ func LoadSourceState(ctx context.Context, p *Pool, name string) (*SourceState, e
 func GetTaskLastRun(ctx context.Context, p *Pool, taskName string) (*time.Time, error) {
 	var lastRun *time.Time
 	err := p.QueryRow(ctx, "SELECT last_run_date FROM daily_tasks WHERE task_name = $1", taskName).Scan(&lastRun)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

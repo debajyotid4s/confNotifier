@@ -270,6 +270,129 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/DetailError' }
 
+  # --- Versioned public API (additive superset of the unversioned reads) ---
+  # The unversioned paths above remain the shared contract both backends serve.
+  # The Go backend additionally serves these under /api/v1 as the versioned
+  # public API. They are byte-identical to the unversioned responses; the three
+  # conference reads are rate-limited per client IP (429 when over budget).
+  /api/v1/health:
+    get:
+      tags: [operational]
+      summary: Liveness probe (anonymous).
+      security: []
+      responses:
+        '200':
+          description: OK when the database is reachable.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: {type: boolean}
+        '503':
+          description: Database unreachable.
+
+  /api/v1/conferences/calendar:
+    get:
+      tags: [conferences]
+      summary: Conferences with a submission deadline inside a month (rate-limited).
+      security: []
+      parameters:
+        - name: month
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{4}-\d{2}$'
+          description: YYYY-MM; deadlines in [start, end) of that month.
+      responses:
+        '200':
+          description: Matching conferences, soonest deadline first (<= 500).
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ConferenceOut' }
+        '400':
+          description: Invalid month.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DetailError' }
+        '429':
+          description: Too many requests from this client IP.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DetailError' }
+
+  /api/v1/conferences/upcoming:
+    get:
+      tags: [conferences]
+      summary: Conferences with at least one open submission deadline (rate-limited).
+      security: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 30
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Open conferences, soonest deadline first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ConferenceOut' }
+        '429':
+          description: Too many requests from this client IP.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DetailError' }
+
+  /api/v1/conferences/{conf_id}:
+    get:
+      tags: [conferences]
+      summary: One conference by id; bookmarked flag when signed in (rate-limited).
+      security: []
+      parameters:
+        - name: conf_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Conference. bookmarked omitted when anonymous.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConferenceOut' }
+        '400':
+          description: Invalid id.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DetailError' }
+        '404':
+          description: Not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DetailError' }
+        '429':
+          description: Too many requests from this client IP.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DetailError' }
+
   /me/bookmarks:
     get:
       tags: [bookmarks]
