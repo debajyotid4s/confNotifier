@@ -50,7 +50,10 @@ func main() {
 	case "api":
 		runAPI()
 	case "scrape":
-		runScrape()
+		if err := runScrape(); err != nil {
+			log.Printf("scrape: %v", err)
+			os.Exit(1)
+		}
 	case "verify":
 		runVerify()
 	case "remind":
@@ -118,7 +121,7 @@ func (n telegramNotifier) SendPlain(ctx context.Context, text string) (int, erro
 	return n.t.SendPlain(ctx, text)
 }
 
-func runScrape() {
+func runScrape() error {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config error: %v", err)
@@ -164,7 +167,18 @@ func runScrape() {
 	disc := discovery.New(p, log.Default())
 	runner := pipeline.NewRunner(p, client, disc, extractor, telegramNotifier{tg}, log.Default())
 	runner.SetDryRun(hasDryRunFlag(os.Args))
-	runner.Run(ctx)
+	result := runner.Run(ctx)
+	if result.Err != nil {
+		// The run did not complete faithfully (a discovery/store failure). The
+		// scraper_runs row already records status='failed'; surface it here too
+		// without leaking the run lock (normal return runs the deferred release).
+		log.Printf("scrape run did not complete faithfully: %v", result.Err)
+		return result.Err
+	}
+	if result.Failed > 0 {
+		log.Printf("scrape run complete: %d failed candidate(s) queued for retry", result.Failed)
+	}
+	return nil
 }
 
 func runVerify() {
